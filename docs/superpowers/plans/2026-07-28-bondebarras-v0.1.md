@@ -435,6 +435,19 @@ mod tests {
         assert_eq!(pr_number_from_ref("refs/pull/abc/merge"), None);
     }
 
+    /// A wrong `Some(n)` here would flag a live cache as dead weight, and the
+    /// ⚑ shortcut deletes every flagged row in one keystroke. These lock the
+    /// fail-closed behaviour against a future refactor of the parse chain.
+    #[test]
+    fn malformed_pull_refs_never_yield_a_number() {
+        assert_eq!(pr_number_from_ref(""), None);
+        assert_eq!(pr_number_from_ref("refs/pull/"), None);
+        assert_eq!(pr_number_from_ref("refs/pull//merge"), None);
+        assert_eq!(pr_number_from_ref("refs/pull/-1/merge"), None);
+        // 20 digits — overflows u64, whose max is ~1.8e19.
+        assert_eq!(pr_number_from_ref("refs/pull/99999999999999999999/merge"), None);
+    }
+
     #[test]
     fn a_cache_is_stale_only_when_its_pr_is_closed() {
         let closed = HashSet::from([25_u64, 32]);
