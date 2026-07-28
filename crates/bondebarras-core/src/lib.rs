@@ -3,6 +3,7 @@
 pub mod api;
 pub mod auth;
 pub mod model;
+pub mod scan;
 pub mod stale;
 
 use std::process::ExitCode;
