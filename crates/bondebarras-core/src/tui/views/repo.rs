@@ -116,4 +116,18 @@ mod tests {
     fn a_fresh_row_carries_no_flag() {
         assert!(!text(&row_spans(&res(false), false)).contains('⚑'));
     }
+
+    /// The flag is the safest thing on screen to delete, so it must never be
+    /// painted like an error. Task 11 locked `STALE != ERROR` in the theme;
+    /// this locks the row actually reaching for the right one — asserting on
+    /// content alone would let a swapped style through unnoticed.
+    #[test]
+    fn the_flag_is_painted_stale_not_error() {
+        let spans = row_spans(&res(true), false);
+        let flag = spans
+            .last()
+            .expect("a row always ends with a flag or an age");
+        assert_eq!(flag.style, theme::stale_style());
+        assert_ne!(flag.style, theme::status_error());
+    }
 }
