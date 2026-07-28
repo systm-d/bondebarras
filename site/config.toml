@@ -1,0 +1,19 @@
+base_url = "https://systm-d.github.io/bondebarras"
+title = "bondebarras"
+description = "Audit and clean up your GitHub organizations from one terminal interface — dead caches, stale artifacts, forgotten workflow runs."
+default_language = "en"
+compile_sass = true
+build_search_index = false
+generate_feeds = false
+
+[markdown]
+highlight_code = false
+
+# French served under /fr/ (English is at the root).
+[languages.fr]
+title = "bondebarras"
+description = "Auditez et nettoyez vos organisations GitHub depuis une seule interface terminal — caches morts, artifacts périmés, workflow runs oubliés."
+
+[extra]
+brand_color = "#d97757"
+repo_url = "https://github.com/systm-d/bondebarras"

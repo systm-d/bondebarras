@@ -1,0 +1,327 @@
+name: Release
+
+# Build multi-plateforme : Windows (Microsoft), macOS (Apple), Debian/Ubuntu,
+# Arch Linux et Fedora/RHEL — couvre les distributions les plus répandues.
+#
+# Déclenché par un tag `v*` (crée une release GitHub avec tous les artefacts)
+# ou manuellement (build + artefacts uniquement).
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Binaires natifs : Windows, macOS (Apple Silicon), Linux
+  # ---------------------------------------------------------------------------
+  binaries:
+    name: Binaire ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            name: linux-x86_64
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            name: windows-x86_64
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            name: macos-aarch64
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Installer Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: cargo build --release
+        run: cargo build --release --locked --bin bondebarras --target ${{ matrix.target }}
+
+      - name: Empaqueter (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          staging="bondebarras-${{ matrix.name }}"
+          mkdir "$staging"
+          cp "target/${{ matrix.target }}/release/bondebarras" "$staging/"
+          cp README.md LICENSE-MIT LICENSE-APACHE "$staging/"
+          tar czf "$staging.tar.gz" "$staging"
+
+      - name: Empaqueter (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          staging="bondebarras-${{ matrix.name }}"
+          mkdir "$staging"
+          cp "target/${{ matrix.target }}/release/bondebarras.exe" "$staging/"
+          cp README.md LICENSE-MIT LICENSE-APACHE "$staging/"
+          7z a "$staging.zip" "$staging"
+          # .exe autonome (sans archive) pour téléchargement direct / winget.
+          cp "target/${{ matrix.target }}/release/bondebarras.exe" "bondebarras-${{ matrix.name }}.exe"
+
+      - name: Upload artefact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bondebarras-${{ matrix.name }}
+          path: |
+            bondebarras-${{ matrix.name }}.tar.gz
+            bondebarras-${{ matrix.name }}.zip
+            bondebarras-${{ matrix.name }}.exe
+          if-no-files-found: ignore
+
+  # ---------------------------------------------------------------------------
+  # Paquet Debian / Ubuntu (.deb)
+  # ---------------------------------------------------------------------------
+  debian:
+    name: Paquet Debian (.deb)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Installer cargo-deb
+        run: cargo install cargo-deb --locked
+
+      - name: Construire le .deb
+        run: cargo deb -p bondebarras
+
+      - name: Upload artefact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bondebarras-deb
+          path: target/debian/*.deb
+
+  # ---------------------------------------------------------------------------
+  # Paquet Fedora / RHEL (.rpm)
+  # ---------------------------------------------------------------------------
+  fedora:
+    name: Paquet Fedora (.rpm)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Construire le binaire
+        run: cargo build --release --locked --bin bondebarras
+
+      - name: Installer cargo-generate-rpm
+        run: cargo install cargo-generate-rpm --locked
+
+      - name: Construire le .rpm
+        run: cargo generate-rpm -p crates/bondebarras
+
+      - name: Upload artefact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bondebarras-rpm
+          path: target/generate-rpm/*.rpm
+
+  # ---------------------------------------------------------------------------
+  # Release GitHub (uniquement sur tag) : agrège tous les artefacts
+  # ---------------------------------------------------------------------------
+  release:
+    name: Publier la release
+    needs: [binaries, debian, fedora]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Télécharger les artefacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      # Rend la formule Homebrew et le PKGBUILD AUR à partir des gabarits
+      # packaging/ : URL + sha256 du tarball source de ce tag. Les deux
+      # recettes pointent sur la même archive, donc partagent le même sha256.
+      # Gabarit manquant (ex. tag antérieur à leur ajout) : on saute juste ce
+      # rendu, sans faire échouer le reste de la release (binaires/deb/rpm).
+      - name: Rendre la formule Homebrew et le PKGBUILD AUR
+        env:
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          version="${TAG#v}"
+          url="https://github.com/${GH_REPO}/archive/refs/tags/${TAG}.tar.gz"
+          sha=$(curl -fsSL "$url" | sha256sum | cut -d' ' -f1)
+
+          if [ -f packaging/homebrew/bondebarras.rb ]; then
+            sed \
+              -e "s|url \".*\"|url \"${url}\"|" \
+              -e "s|sha256 \"[0-9a-f]*\"|sha256 \"${sha}\"|" \
+              -e "/# Placeholder: release.yml/d" \
+              packaging/homebrew/bondebarras.rb > bondebarras.rb
+            echo "Rendu bondebarras.rb pour ${TAG} (sha256 ${sha}) :"
+            cat bondebarras.rb
+          else
+            echo "packaging/homebrew/bondebarras.rb absent — formule Homebrew ignorée pour cette release."
+          fi
+
+          if [ -f packaging/aur/PKGBUILD ]; then
+            sed \
+              -e "s|^pkgver=.*|pkgver=${version}|" \
+              -e "s|^sha256sums=('[0-9a-f]*')|sha256sums=('${sha}')|" \
+              -e "/# Fill with the real checksum/d" \
+              -e "/# release tarball's sha256/d" \
+              packaging/aur/PKGBUILD > PKGBUILD
+            echo "Rendu PKGBUILD pour ${TAG} (sha256 ${sha}) :"
+            cat PKGBUILD
+          else
+            echo "packaging/aur/PKGBUILD absent — PKGBUILD AUR ignoré pour cette release."
+          fi
+
+      - name: Publier la release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/**/*
+            bondebarras.rb
+            PKGBUILD
+          generate_release_notes: true
+
+  # ---------------------------------------------------------------------------
+  # Homebrew (macOS) : rend Formula/bondebarras.rb sur la branche par défaut à
+  # partir du gabarit packaging/homebrew/bondebarras.rb (source de vérité unique,
+  # même sed que le rendu de l'asset de release ci-dessus). Installation
+  # côté utilisateur :
+  #   brew tap systm-d/bondebarras https://github.com/systm-d/bondebarras
+  #   brew install bondebarras
+  # ---------------------------------------------------------------------------
+  homebrew:
+    name: Mettre à jour la formule Homebrew
+    needs: release
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Mettre à jour la formule
+        env:
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          if [ ! -f packaging/homebrew/bondebarras.rb ]; then
+            echo "packaging/homebrew/bondebarras.rb absent sur main (branche pas encore mergée) — étape ignorée."
+            exit 0
+          fi
+          version="${TAG#v}"
+          url="https://github.com/${GH_REPO}/archive/refs/tags/${TAG}.tar.gz"
+          sha=$(curl -fsSL "$url" | sha256sum | cut -d' ' -f1)
+          mkdir -p Formula
+          sed \
+            -e "s|url \".*\"|url \"${url}\"|" \
+            -e "s|sha256 \"[0-9a-f]*\"|sha256 \"${sha}\"|" \
+            -e "/# Placeholder: release.yml/d" \
+            packaging/homebrew/bondebarras.rb > Formula/bondebarras.rb
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/bondebarras.rb
+          git commit -m "homebrew: bondebarras ${version}" || { echo "Formule déjà à jour"; exit 0; }
+          git push
+
+  # ---------------------------------------------------------------------------
+  # winget (Windows) : génère les manifestes pointant sur le .exe autonome.
+  # Les manifestes sont joints à la release ; la soumission à microsoft/winget-pkgs
+  # se fait ensuite (voir packaging/winget/README.md).
+  # ---------------------------------------------------------------------------
+  winget:
+    name: Générer les manifestes winget
+    needs: release
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+    steps:
+      - name: Générer les manifestes
+        env:
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          version="${TAG#v}"
+          url="https://github.com/${GH_REPO}/releases/download/${TAG}/bondebarras-windows-x86_64.exe"
+          sha=$(curl -fsSL "$url" | sha256sum | cut -d' ' -f1 | tr 'a-f' 'A-F')
+          out="manifests/systm-d.bondebarras/${version}"
+          mkdir -p "$out"
+          cat > "$out/systm-d.bondebarras.yaml" <<EOF
+          PackageIdentifier: systm-d.bondebarras
+          PackageVersion: ${version}
+          DefaultLocale: en-US
+          ManifestType: version
+          ManifestVersion: 1.6.0
+          EOF
+          cat > "$out/systm-d.bondebarras.installer.yaml" <<EOF
+          PackageIdentifier: systm-d.bondebarras
+          PackageVersion: ${version}
+          InstallerType: portable
+          Commands:
+            - bondebarras
+          Installers:
+            - Architecture: x64
+              InstallerUrl: ${url}
+              InstallerSha256: ${sha}
+          ManifestType: installer
+          ManifestVersion: 1.6.0
+          EOF
+          cat > "$out/systm-d.bondebarras.locale.en-US.yaml" <<EOF
+          PackageIdentifier: systm-d.bondebarras
+          PackageVersion: ${version}
+          PackageLocale: en-US
+          Publisher: systm-d
+          PackageName: bondebarras
+          License: MIT OR Apache-2.0
+          ShortDescription: TUI to audit and clean up GitHub organization resources
+          PackageUrl: https://github.com/${GH_REPO}
+          ManifestType: defaultLocale
+          ManifestVersion: 1.6.0
+          EOF
+          tar czf winget-manifests.tar.gz -C manifests .
+
+      - name: Joindre les manifestes à la release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: winget-manifests.tar.gz
+
+  # ---------------------------------------------------------------------------
+  # crates.io : publication opt-in. Activée en réglant la variable de dépôt
+  # PUBLISH_CRATES=true et le secret CARGO_REGISTRY_TOKEN ; sinon ce job est
+  # ignoré (les autres canaux de release ne sont pas affectés).
+  # bondebarras-core est publié avant bondebarras (dépendance de chemin interne).
+  # ---------------------------------------------------------------------------
+  crates-io:
+    name: Publier sur crates.io
+    needs: [binaries]
+    if: ${{ vars.PUBLISH_CRATES == 'true' && startsWith(github.ref, 'refs/tags/v') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Publier bondebarras-core puis bondebarras
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          cargo publish -p bondebarras-core --locked
+          cargo publish -p bondebarras --locked

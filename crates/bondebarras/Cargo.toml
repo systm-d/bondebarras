@@ -6,10 +6,44 @@ version.workspace = true
 license.workspace = true
 description.workspace = true
 repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+readme = "../../README.md"
 
 [[bin]]
 name = "bondebarras"
 path = "src/main.rs"
+
+# --- Debian/Ubuntu packaging (cargo-deb) ------------------------------------
+# Asset paths are relative to this Cargo.toml; cargo-deb rewrites
+# `target/release/...` to the workspace's target directory automatically.
+[package.metadata.deb]
+maintainer = "systm-d <k@levilainpetit.dev>"
+copyright = "2026, systm-d"
+license-file = ["../../LICENSE-MIT", "0"]
+extended-description = """\
+bondebarras is a Rust TUI to audit and clean up GitHub organization \
+resources: Actions caches, artifacts and workflow runs, with a flag for \
+caches pinned to a closed pull request — the safest, highest-volume cleanup \
+available."""
+section = "utils"
+priority = "optional"
+assets = [
+    ["target/release/bondebarras", "usr/bin/", "755"],
+    ["../../README.md", "usr/share/doc/bondebarras/README.md", "644"],
+]
+
+# --- Fedora/RHEL packaging (cargo-generate-rpm) -----------------------------
+# cargo-generate-rpm is invoked from the workspace root, so `source` paths
+# are relative to that root.
+[package.metadata.generate-rpm]
+summary = "TUI to audit and clean up GitHub organization resources"
+assets = [
+    { source = "target/release/bondebarras", dest = "/usr/bin/bondebarras", mode = "755" },
+    { source = "README.md", dest = "/usr/share/doc/bondebarras/README.md", mode = "644", doc = true },
+    { source = "LICENSE-MIT", dest = "/usr/share/doc/bondebarras/LICENSE-MIT", mode = "644", doc = true },
+    { source = "LICENSE-APACHE", dest = "/usr/share/doc/bondebarras/LICENSE-APACHE", mode = "644", doc = true },
+]
 
 [dependencies]
 bondebarras-core = { path = "../bondebarras-core", version = "0.1.0" }

@@ -1,0 +1,4 @@
+# cargo-audit configuration — mirrors the advisory policy in deny.toml.
+# (cargo-audit does not read deny.toml, hence this separate file.)
+[advisories]
+ignore = []
