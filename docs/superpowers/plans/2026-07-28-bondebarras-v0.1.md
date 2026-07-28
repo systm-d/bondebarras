@@ -21,7 +21,10 @@ Ces règles s'appliquent à **toutes** les tâches, sans être répétées à ch
 - `all = { level = "warn", priority = -1 }` dans `[workspace.lints.clippy]`, chaque crate héritant via `[lints] workspace = true`.
 - `rustfmt.toml` : `max_width = 100`, `edition = "2024"`.
 - **Documentation** (README, gouvernance) en **anglais**. **Chaînes user-facing** (CLI et TUI) en **français**. **Identifiants de code** en anglais.
-- Jamais `ERROR`, `FATAL` ni `PANIC` dans un texte user-facing. Le préfixe d'erreur est `Erreur : `.
+- Jamais `ERROR`, `FATAL` ni `PANIC` dans un texte user-facing. Le préfixe d'erreur est
+  `Erreur : `, **ajouté une seule fois** par `run()` au sommet de la pile
+  (`eprintln!("Erreur : {e}")`). Les valeurs d'erreur — `bail!`, `.context(…)` — ne
+  doivent donc **pas** le porter, sous peine de le doubler à l'affichage.
 - Le binaire et les crates sont en **ASCII** : `bondebarras`, `bondebarras-core`. Les textes d'interface portent les accents : « Bon débarras ! ».
 - **Multi-plateforme** : Linux, Windows, macOS. Aucune hypothèse Linux-only (pas de systemd, pas de `/sys`, pas de libnotify).
 - **Conventional Commits** (`feat:`, `fix:`, `docs:`, `refactor:`, `chore:`, `test:`, `build:`, `style:`).
@@ -627,8 +630,10 @@ pub fn resolve_token() -> Result<String> {
         }
     }
 
+    // Pas de préfixe « Erreur : » ici : `run()` l'ajoute une fois, en haut de
+    // la pile. Le porter aussi dans la valeur d'erreur le doublerait.
     bail!(
-        "Erreur : aucun jeton GitHub trouvé.\n\
+        "aucun jeton GitHub trouvé.\n\
          Connectez-vous avec `gh auth login`, ou définissez la variable \
          d'environnement GITHUB_TOKEN."
     )
