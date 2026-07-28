@@ -9,7 +9,7 @@ use crate::clean::{self, Plan, Progress};
 use crate::model::{OrgSummary, human_size};
 use crate::scan;
 use anyhow::Result;
-use app::{App, Focus};
+use app::{App, Focus, View};
 use crossterm::cursor::Show;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use crossterm::execute;
@@ -160,12 +160,36 @@ where
             continue;
         }
 
+        // The Billing tab is strictly diagnostic. Everything below this
+        // point — including `d` — is `Orgs`-only, so as long as this block
+        // `continue`s, no selection and no deletion is reachable while
+        // Billing is on screen; only quitting, switching tabs back, and
+        // moving between months are.
+        if app.view == View::Billing {
+            match key.code {
+                KeyCode::Char('q') | KeyCode::Esc => app.should_quit = true,
+                KeyCode::Char('b') => app.view = View::Orgs,
+                KeyCode::Left => app.month_cursor = app.month_cursor.saturating_sub(1),
+                KeyCode::Right => {
+                    let max = app
+                        .orgs
+                        .get(app.org_cursor)
+                        .and_then(|o| o.billing.as_ref())
+                        .map_or(0, |b| b.months().len().saturating_sub(1));
+                    app.month_cursor = (app.month_cursor + 1).min(max);
+                }
+                _ => {}
+            }
+            continue;
+        }
+
         match key.code {
             KeyCode::Esc if !app.filter.is_empty() => {
                 app.filter.clear();
                 app.res_cursor = 0;
             }
             KeyCode::Char('q') | KeyCode::Esc => app.should_quit = true,
+            KeyCode::Char('b') => app.view = View::Billing,
             KeyCode::Tab => {
                 app.focus = match app.focus {
                     Focus::Orgs => Focus::Repos,

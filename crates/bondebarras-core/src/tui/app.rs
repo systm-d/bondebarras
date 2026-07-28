@@ -18,6 +18,13 @@ pub enum Focus {
     Resources,
 }
 
+/// Which top-level view is on screen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum View {
+    Orgs,
+    Billing,
+}
+
 /// Sort order of the resource pane.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SortKey {
@@ -63,6 +70,11 @@ pub struct App {
     /// handling keys — so `loaded` is not it: it can point somewhere else by
     /// the time the purge finishes. Captured when the purge starts.
     pub purging_org: Option<String>,
+    /// Which top-level tab is on screen.
+    pub view: View,
+    /// Index into `BillingReport::months()` for the org under the cursor —
+    /// which month the Billing tab shows.
+    pub month_cursor: usize,
 }
 
 impl App {
@@ -84,6 +96,8 @@ impl App {
             org_state: ListState::default(),
             res_state: ListState::default(),
             purging_org: None,
+            view: View::Orgs,
+            month_cursor: 0,
         }
     }
 
