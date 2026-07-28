@@ -2779,11 +2779,17 @@ pub async fn run_tui(client: Arc<Client>, orgs: Vec<OrgSummary>) -> Result<()> {
     result
 }
 
+// The `where` clause is required, not decorative: `Backend::Error` is not
+// `Send + Sync + 'static` on its own, so `?` cannot convert it into
+// `anyhow::Error` without it. This is rustc's own suggested bound.
 async fn event_loop<B: ratatui::backend::Backend>(
     client: Arc<Client>,
     terminal: &mut Terminal<B>,
     mut app: App,
-) -> Result<()> {
+) -> Result<()>
+where
+    B::Error: std::error::Error + Send + Sync + 'static,
+{
     let mut pending: Option<Plan> = None;
     let (tx, mut rx) = mpsc::unbounded_channel::<Progress>();
 
