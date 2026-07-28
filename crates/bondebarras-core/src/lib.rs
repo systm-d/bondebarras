@@ -1,5 +1,6 @@
 //! bondebarras — audit and cleanup of GitHub organization resources.
 
+pub mod auth;
 pub mod model;
 pub mod stale;
 
