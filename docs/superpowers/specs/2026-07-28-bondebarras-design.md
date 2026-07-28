@@ -37,7 +37,7 @@ d'un coup, puis permet de nettoyer sélectivement, vite et sans se tromper.
 |---|---|
 | Axes du problème | Stockage **et** minutes Actions **et** repos morts |
 | Nettoyage des minutes | **Impossible** rétroactivement → l'axe minutes est purement diagnostique |
-| Périmètre destructif | Caches, artifacts, runs, packages GHCR, branches/tags/releases, repos |
+| Périmètre destructif | Caches, artifacts, runs, packages GHCR, branches/tags/releases, **archivage** de repos |
 | Modèle d'interaction | **Navigation manuelle pure** — pas de moteur de règles, pas de config persistée |
 | Sélection en masse | Primitives **ad hoc** dans le TUI (tri, filtre, « tout cocher ⚑ »), rien de persisté |
 | Garde-fou | **3 paliers gradués** selon le risque |
@@ -122,7 +122,7 @@ crates/bondebarras-core/src/
 │  ├─ artifacts.rs       list, delete
 │  ├─ runs.rs            list, delete
 │  ├─ packages.rs        packages, versions, delete
-│  └─ repos.rs           repos, branches, tags, releases, archive, delete
+│  └─ repos.rs           repos, branches, tags, releases, archive
 ├─ model.rs              Org, Repo, Resource, ResourceKind, RiskTier, Selection
 ├─ scan.rs               orchestration deux étages
 ├─ clean.rs              planificateur + exécuteur, événements de progression
@@ -164,7 +164,9 @@ sont grisées dans le TUI avec leur motif** plutôt que d'échouer au moment du 
 | Versions de packages | `delete:packages` | ✅ |
 | Branches, tags, releases | `repo` | ✅ |
 | Archiver un repo | `repo` | ✅ |
-| **Supprimer un repo** | `delete_repo` | ❌ — `gh auth refresh -s delete_repo` |
+
+La **suppression de repos est hors périmètre** (cf. §12), donc le scope `delete_repo`
+n'est jamais requis : tout ce que l'outil sait faire tient dans les scopes déjà accordés.
 
 ## 5. Stratégie de scan — deux étages
 
@@ -264,10 +266,11 @@ sur la palette. La couleur de marque sera alignée sur celle du site Zola.
  ⚠ irréversible, les pulls par digest casseront
  Confirmer ?                                [y/N]
 
-── palier 3 : suppression de repo ───────────────
- ⚠⚠ systm-d/vieux-poc — DESTRUCTION DÉFINITIVE
- Tapez le nom du repo pour confirmer :
- > vieux-poc_
+── palier 3 : réservé ───────────────────────────
+ Aucune ressource ne relève de ce palier dans le
+ périmètre actuel. Il reste défini pour le jour où
+ une opération vraiment irréversible entrera dans
+ l'outil (cf. §12).
 ```
 
 **Le palier est porté par le type, pas par l'UI.** `model.rs` définit
@@ -291,8 +294,9 @@ bondebarras scan --org systm-d --json
 bondebarras clean --org systm-d --caches --stale-pr --yes
 ```
 
-Le **palier 3 est refusé en headless** : supprimer un repo exige la confirmation
-interactive par saisie du nom, sans exception ni drapeau de contournement.
+Le **palier 3 est refusé en headless**, sans exception ni drapeau de contournement.
+Aucune ressource n'y est rattachée aujourd'hui ; la règle est posée d'avance pour qu'une
+opération future ne puisse pas se glisser dans un cron par inadvertance.
 
 ## 9. Infrastructure — kit `claude-tui` complet
 
@@ -303,7 +307,7 @@ interactive par saisie du nom, sans exception ni drapeau de contournement.
 (`max_width = 100`), `.cargo/audit.toml`, `.github/` (CODEOWNERS, `dependabot.yml`,
 templates issue et PR).
 
-Rust **edition 2024**, MSRV **1.85**, `unsafe_code = "forbid"`,
+Rust **edition 2024**, MSRV **1.88**, `unsafe_code = "forbid"`,
 clippy `all = { level = "warn", priority = -1 }`.
 
 ### 9.2 Workflows
@@ -341,7 +345,7 @@ préserver.
 | **v0.2** | Onglet Billing (minutes + coûts par repo), CLI headless | diagnostic minutes |
 | **v0.3** | Packages GHCR, priorité aux versions untagged — palier 2 | stockage packages |
 | **v0.4** | Branches / tags / releases — palier 2 | ménage repo |
-| **v0.5** | Archivage / suppression de repos — palier 3, scope `delete_repo` | repos morts |
+| **v0.5** | Archivage de repos — palier 2, scope `repo` | repos morts |
 
 Chaque version fait l'objet de sa propre spec dans `docs/superpowers/specs/`.
 
@@ -371,3 +375,8 @@ variantes de `ResourceKind`.
 - **Pas de gestion du LFS** — l'API ne permet pas de purger les objets LFS.
 - **Pas de nettoyage rétroactif des minutes** — elles sont consommées, l'axe est diagnostique.
 - **Pas de jauge « % du quota de stockage »** — l'endpoint qui la fournissait est mort (§3.1).
+- **Pas de suppression de dépôts.** L'outil sait *archiver* un repo, ce qui est réversible
+  et tient dans le scope `repo` déjà accordé. La suppression définitive est écartée : elle
+  n'apporte rien que l'archivage ne règle pour un dépôt abandonné, et elle exigerait à la
+  fois un scope supplémentaire (`delete_repo`) et le palier de confirmation le plus lourd
+  pour un gain nul en stockage.

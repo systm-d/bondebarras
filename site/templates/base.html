@@ -1,0 +1,18 @@
+<!DOCTYPE html>
+<html lang="{{ lang }}">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}{{ config.title }}{% endblock %}</title>
+  <meta name="description" content="{{ config.description }}">
+  <meta name="theme-color" content="{{ config.extra.brand_color }}">
+  <link rel="stylesheet" href="{{ get_url(path='main.css') }}">
+</head>
+<body>
+  {% block content %}{% endblock %}
+  <footer class="footer">
+    <span>bondebarras · local-first · open source ·
+      <a href="{{ config.extra.repo_url }}">GitHub</a></span>
+  </footer>
+</body>
+</html>

@@ -1,0 +1,37 @@
+# Maintainer: systm-d <k@levilainpetit.dev>
+pkgname=bondebarras
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="TUI to audit and clean up GitHub organization resources"
+arch=('x86_64')
+url="https://github.com/systm-d/bondebarras"
+license=('MIT' 'Apache-2.0')
+depends=('gcc-libs')
+makedepends=('cargo')
+source=("$pkgname-$pkgver.tar.gz::https://github.com/systm-d/bondebarras/archive/refs/tags/v$pkgver.tar.gz")
+# Fill with the real checksum before publishing: run `updpkgsums` (or paste the
+# release tarball's sha256). Do NOT use 'SKIP' — it bypasses integrity checks.
+sha256sums=('0000000000000000000000000000000000000000000000000000000000000000')
+
+prepare() {
+  cd "$pkgname-$pkgver"
+  cargo fetch --locked --target "x86_64-unknown-linux-gnu"
+}
+
+build() {
+  cd "$pkgname-$pkgver"
+  export RUSTUP_TOOLCHAIN=stable
+  cargo build --frozen --release
+}
+
+check() {
+  cd "$pkgname-$pkgver"
+  cargo test --frozen --release
+}
+
+package() {
+  cd "$pkgname-$pkgver"
+  install -Dm755 "target/release/bondebarras" "$pkgdir/usr/bin/bondebarras"
+  install -Dm644 "LICENSE-MIT" "$pkgdir/usr/share/licenses/$pkgname/LICENSE-MIT"
+  install -Dm644 "LICENSE-APACHE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE-APACHE"
+}

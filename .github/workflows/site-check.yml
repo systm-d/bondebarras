@@ -1,0 +1,23 @@
+name: Site check
+
+# Build le site (Zola) sur les PR qui touchent site/, pour détecter une erreur
+# avant le merge — `pages.yml` ne s'exécute qu'après merge sur main.
+on:
+  pull_request:
+    paths:
+      - "site/**"
+      - ".github/workflows/site-check.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: zola@0.21.0
+      - name: Build site
+        run: cd site && zola build

@@ -12,15 +12,19 @@
 
 Ces règles s'appliquent à **toutes** les tâches, sans être répétées à chaque fois.
 
-- Rust **edition 2024**, MSRV **1.85** (`rust-version = "1.85"` dans `[workspace.package]`).
-- **Pas de let-chains** (`if let Some(x) = a && cond`). La syntaxe n'est stabilisée qu'en
-  Rust **1.88** ; elle compilerait sur une toolchain récente et en CI (qui utilise
-  `stable`), mais rendrait la MSRV annoncée mensongère. Utiliser des `if` imbriqués.
+- Rust **edition 2024**, MSRV **1.88** (`rust-version = "1.88"` dans `[workspace.package]`).
+  C'est le plancher réel imposé par `ratatui 0.30.2` et `ratatui-core`, qui déclarent tous
+  deux `rust-version = "1.88.0"`. Déclarer 1.85 comme le fait claudine serait faux :
+  `cargo +1.85 check` échoue avec « package `ratatui v0.30.2` cannot be built because it
+  requires rustc 1.88.0 or newer ».
 - `unsafe_code = "forbid"` dans `[workspace.lints.rust]`.
 - `all = { level = "warn", priority = -1 }` dans `[workspace.lints.clippy]`, chaque crate héritant via `[lints] workspace = true`.
 - `rustfmt.toml` : `max_width = 100`, `edition = "2024"`.
 - **Documentation** (README, gouvernance) en **anglais**. **Chaînes user-facing** (CLI et TUI) en **français**. **Identifiants de code** en anglais.
-- Jamais `ERROR`, `FATAL` ni `PANIC` dans un texte user-facing. Le préfixe d'erreur est `Erreur : `.
+- Jamais `ERROR`, `FATAL` ni `PANIC` dans un texte user-facing. Le préfixe d'erreur est
+  `Erreur : `, **ajouté une seule fois** par `run()` au sommet de la pile
+  (`eprintln!("Erreur : {e}")`). Les valeurs d'erreur — `bail!`, `.context(…)` — ne
+  doivent donc **pas** le porter, sous peine de le doubler à l'affichage.
 - Le binaire et les crates sont en **ASCII** : `bondebarras`, `bondebarras-core`. Les textes d'interface portent les accents : « Bon débarras ! ».
 - **Multi-plateforme** : Linux, Windows, macOS. Aucune hypothèse Linux-only (pas de systemd, pas de `/sys`, pas de libnotify).
 - **Conventional Commits** (`feat:`, `fix:`, `docs:`, `refactor:`, `chore:`, `test:`, `build:`, `style:`).
@@ -69,7 +73,10 @@ liste des repos (2 appels par org). Le marqueur ⚠ et l'onglet Billing arrivent
 ### Task 1: Squelette du workspace
 
 **Files:**
-- Create: `Cargo.toml`, `rustfmt.toml`, `deny.toml`, `.gitignore`
+- Create: `Cargo.toml`, `rustfmt.toml`, `.gitignore`
+
+`deny.toml` n'est **pas** créé ici : il est copié depuis claude-tui à la Task 15 Step 1,
+en même temps que le reste de la gouvernance.
 - Create: `crates/bondebarras-core/Cargo.toml`, `crates/bondebarras-core/src/lib.rs`
 - Create: `crates/bondebarras/Cargo.toml`, `crates/bondebarras/src/main.rs`
 
@@ -86,7 +93,7 @@ members = ["crates/bondebarras-core", "crates/bondebarras"]
 
 [workspace.package]
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.88"
 version = "0.1.0"
 license = "MIT OR Apache-2.0"
 description = "TUI Rust pour auditer et nettoyer les ressources des organisations GitHub."
@@ -102,6 +109,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
 octocrab = "0.41"
+http = "1"
 ratatui = "0.30"
 crossterm = "0.29"
 chrono = { version = "0.4", features = ["serde"] }
@@ -431,6 +439,19 @@ mod tests {
         assert_eq!(pr_number_from_ref("refs/pull/abc/merge"), None);
     }
 
+    /// A wrong `Some(n)` here would flag a live cache as dead weight, and the
+    /// ⚑ shortcut deletes every flagged row in one keystroke. These lock the
+    /// fail-closed behaviour against a future refactor of the parse chain.
+    #[test]
+    fn malformed_pull_refs_never_yield_a_number() {
+        assert_eq!(pr_number_from_ref(""), None);
+        assert_eq!(pr_number_from_ref("refs/pull/"), None);
+        assert_eq!(pr_number_from_ref("refs/pull//merge"), None);
+        assert_eq!(pr_number_from_ref("refs/pull/-1/merge"), None);
+        // 20 digits — overflows u64, whose max is ~1.8e19.
+        assert_eq!(pr_number_from_ref("refs/pull/99999999999999999999/merge"), None);
+    }
+
     #[test]
     fn a_cache_is_stale_only_when_its_pr_is_closed() {
         let closed = HashSet::from([25_u64, 32]);
@@ -610,8 +631,10 @@ pub fn resolve_token() -> Result<String> {
         }
     }
 
+    // Pas de préfixe « Erreur : » ici : `run()` l'ajoute une fois, en haut de
+    // la pile. Le porter aussi dans la valeur d'erreur le doublerait.
     bail!(
-        "Erreur : aucun jeton GitHub trouvé.\n\
+        "aucun jeton GitHub trouvé.\n\
          Connectez-vous avec `gh auth login`, ou définissez la variable \
          d'environnement GITHUB_TOKEN."
     )
@@ -715,6 +738,44 @@ mod tests {
             .unwrap();
     }
 
+    #[test]
+    fn retry_after_reads_the_header_as_seconds() {
+        let mut headers = http::HeaderMap::new();
+        assert_eq!(retry_after(&headers), None);
+
+        headers.insert("retry-after", "42".parse().unwrap());
+        assert_eq!(retry_after(&headers), Some(Duration::from_secs(42)));
+
+        // GitHub only ever sends integer seconds here; an HTTP-date or any
+        // other shape must read as "no delay named", not as an error.
+        headers.insert("retry-after", "Wed, 21 Oct 2026 07:28:00 GMT".parse().unwrap());
+        assert_eq!(retry_after(&headers), None);
+    }
+
+    #[tokio::test]
+    async fn delete_retries_when_github_throttles() {
+        let server = MockServer::start().await;
+        // A 0-second Retry-After keeps the test fast while still exercising
+        // the header path; the retry loop is what is under test here.
+        Mock::given(method("DELETE"))
+            .and(path("/repos/systm-d/claudine/actions/caches/9"))
+            .respond_with(ResponseTemplate::new(429).insert_header("retry-after", "0"))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("DELETE"))
+            .and(path("/repos/systm-d/claudine/actions/caches/9"))
+            .respond_with(ResponseTemplate::new(204))
+            .mount(&server)
+            .await;
+
+        let client = Client::with_base("t0ken", &server.uri()).unwrap();
+        client
+            .delete("/repos/systm-d/claudine/actions/caches/9")
+            .await
+            .unwrap();
+    }
+
     #[tokio::test]
     async fn delete_surfaces_a_failing_status() {
         let server = MockServer::start().await;
@@ -757,10 +818,12 @@ pub mod runs;
 
 use crate::auth::Scopes;
 use anyhow::{Context, Result, bail};
+use http::StatusCode;
 use octocrab::Octocrab;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Semaphore;
+use tokio::time::sleep;
 
 /// GitHub's public API root.
 const DEFAULT_BASE: &str = "https://api.github.com";
@@ -773,6 +836,13 @@ const HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 /// binding constraint at this scale; the secondary limit on burst concurrency
 /// is.
 const READ_CONCURRENCY: usize = 8;
+
+/// How many times a throttled deletion is retried before giving up. Three
+/// covers the transient case without stalling the interface indefinitely.
+const MAX_DELETE_RETRIES: usize = 3;
+
+/// Wait used when GitHub throttles without naming a delay in `Retry-After`.
+const DEFAULT_BACKOFF: Duration = Duration::from_secs(5);
 
 pub struct Client {
     gh: Octocrab,
@@ -822,25 +892,69 @@ impl Client {
             .with_context(|| format!("GET {path}"))
     }
 
-    /// DELETE ignoring the (usually empty) body, surfacing the status code.
+    /// DELETE ignoring the (usually empty) body, retrying when GitHub throttles.
     ///
     /// `Octocrab::delete` would try to deserialise the empty 204 body, so we
     /// go through `_delete` and read the status ourselves. `BaseUriLayer`
     /// still supplies scheme and authority, so a bare path is enough.
+    ///
+    /// Retry lives here rather than on reads because deletions are what hit
+    /// the ceiling: a purge of 132 caches is a burst, and GitHub answers a
+    /// burst with its secondary rate limit. A stage-1 scan is 60 reads at a
+    /// concurrency of 8 and never gets close.
     pub async fn delete(&self, path: &str) -> Result<()> {
-        let _permit = self.sem.acquire().await.expect("semaphore never closed");
-        let response = self
-            .gh
-            ._delete(path, None::<&()>)
-            .await
-            .with_context(|| format!("DELETE {path}"))?;
+        let mut attempt = 0;
+        loop {
+            let wait = {
+                let _permit = self.sem.acquire().await.expect("semaphore never closed");
+                let response = self
+                    .gh
+                    ._delete(path, None::<&()>)
+                    .await
+                    .with_context(|| format!("DELETE {path}"))?;
 
-        let status = response.status();
-        if !status.is_success() {
-            bail!("DELETE {path} a échoué : {status}");
+                let status = response.status();
+                if status.is_success() {
+                    return Ok(());
+                }
+
+                let delay = retry_after(response.headers());
+
+                // 429 is unambiguous. 403 is not: GitHub returns it both for
+                // the secondary rate limit and for a missing scope, and the
+                // second is far more common. Only the throttling one carries
+                // `Retry-After` — without that header a 403 is a permission
+                // error, and retrying it would just delay the real message by
+                // three backoffs. Any other status is a real failure too.
+                let throttled = status == StatusCode::TOO_MANY_REQUESTS
+                    || (status == StatusCode::FORBIDDEN && delay.is_some());
+                if !throttled || attempt == MAX_DELETE_RETRIES {
+                    bail!("DELETE {path} a échoué : {status}");
+                }
+                delay.unwrap_or(DEFAULT_BACKOFF)
+            };
+
+            attempt += 1;
+            // The permit has dropped here: the backoff does not hold a slot.
+            sleep(wait).await;
         }
-        Ok(())
     }
+}
+
+/// The delay GitHub asked us to wait, when it named one in `Retry-After`.
+///
+/// The header is seconds-as-integer in the throttling responses GitHub sends.
+/// An absent or unparseable value is not an error — the caller falls back to
+/// [`DEFAULT_BACKOFF`].
+fn retry_after(headers: &http::HeaderMap) -> Option<Duration> {
+    headers
+        .get("retry-after")?
+        .to_str()
+        .ok()?
+        .trim()
+        .parse::<u64>()
+        .ok()
+        .map(Duration::from_secs)
 }
 ```
 
@@ -1144,7 +1258,7 @@ mod tests {
 
 - [ ] **Step 2: Lancer les tests pour vérifier qu'ils échouent**
 
-Run: `cargo test -p bondebarras-core "artifacts|runs"`
+Run: `cargo test -p bondebarras-core artifacts && cargo test -p bondebarras-core runs`
 Expected: FAIL — `cannot find function list`.
 
 - [ ] **Step 3: Écrire les deux implémentations**
@@ -1249,7 +1363,7 @@ pub async fn delete(client: &Client, owner: &str, repo: &str, id: u64) -> Result
 
 - [ ] **Step 4: Relancer les tests**
 
-Run: `cargo test -p bondebarras-core "artifacts|runs"`
+Run: `cargo test -p bondebarras-core artifacts && cargo test -p bondebarras-core runs`
 Expected: PASS (2 tests).
 
 - [ ] **Step 5: Commit**
@@ -1334,7 +1448,7 @@ mod tests {
 
 - [ ] **Step 2: Lancer les tests pour vérifier qu'ils échouent**
 
-Run: `cargo test -p bondebarras-core "repos|prs"`
+Run: `cargo test -p bondebarras-core repos && cargo test -p bondebarras-core prs`
 Expected: FAIL — `cannot find function list` / `closed_numbers`.
 
 - [ ] **Step 3: Écrire les deux implémentations**
@@ -1370,32 +1484,48 @@ use super::Client;
 use anyhow::Result;
 use std::collections::HashSet;
 
+/// GitHub's maximum page size for this endpoint.
+const PAGE_SIZE: usize = 100;
+
+/// Hard stop on pagination. Ten pages covers a thousand closed pull requests;
+/// beyond that the drill-down would cost more requests than the flag is worth.
+const MAX_PR_PAGES: u32 = 10;
+
 /// Numbers of every pull request that is no longer open.
 ///
 /// `state=closed` covers merged PRs too — GitHub reports a merged PR as
 /// closed, which is exactly the semantics we want: its caches are dead either
 /// way.
 pub async fn closed_numbers(client: &Client, owner: &str, repo: &str) -> Result<HashSet<u64>> {
-    let v = client
-        .get_json(&format!(
-            "repos/{owner}/{repo}/pulls?state=closed&per_page=100"
-        ))
-        .await?;
+    let mut out = HashSet::new();
 
-    Ok(v.as_array()
-        .map(|items| {
-            items
-                .iter()
-                .filter_map(|item| item["number"].as_u64())
-                .collect()
-        })
-        .unwrap_or_default())
+    // A single page would silently drop a busy repo's older closed PRs, and
+    // every cache pinned to them would stay unflagged. That under-flags rather
+    // than over-flags, so nothing gets wrongly deleted — but it is reclaimable
+    // space the user never sees, in a tool whose whole job is to show it.
+    for page in 1..=MAX_PR_PAGES {
+        let v = client
+            .get_json(&format!(
+                "/repos/{owner}/{repo}/pulls?state=closed&per_page={PAGE_SIZE}&page={page}"
+            ))
+            .await?;
+
+        let Some(items) = v.as_array() else { break };
+        out.extend(items.iter().filter_map(|item| item["number"].as_u64()));
+
+        // A short page is the last one.
+        if items.len() < PAGE_SIZE {
+            break;
+        }
+    }
+
+    Ok(out)
 }
 ```
 
 - [ ] **Step 4: Relancer les tests**
 
-Run: `cargo test -p bondebarras-core "repos|prs"`
+Run: `cargo test -p bondebarras-core repos && cargo test -p bondebarras-core prs`
 Expected: PASS (2 tests).
 
 - [ ] **Step 5: Commit**
@@ -1515,7 +1645,7 @@ pub async fn overview(client: &Client, orgs: &[String]) -> Vec<OrgSummary> {
                 });
             }
         }
-        repos_out.sort_by(|a, b| b.cache_bytes.cmp(&a.cache_bytes));
+        repos_out.sort_by_key(|r| std::cmp::Reverse(r.cache_bytes));
 
         Some(OrgSummary {
             login: org.clone(),
@@ -1530,7 +1660,7 @@ pub async fn overview(client: &Client, orgs: &[String]) -> Vec<OrgSummary> {
         .into_iter()
         .flatten()
         .collect();
-    out.sort_by(|a, b| b.cache_bytes.cmp(&a.cache_bytes));
+    out.sort_by_key(|o| std::cmp::Reverse(o.cache_bytes));
     out
 }
 
@@ -1551,7 +1681,7 @@ pub async fn repo_detail(client: &Client, owner: &str, repo: &str) -> Result<Vec
     // shows, just without the ⚑ shortcut.
     mark_stale(&mut items, &closed.unwrap_or_default());
 
-    items.sort_by(|a, b| b.size_bytes.cmp(&a.size_bytes));
+    items.sort_by_key(|i| std::cmp::Reverse(i.size_bytes));
     Ok(items)
 }
 
@@ -2104,8 +2234,8 @@ impl App {
             .collect();
 
         match self.sort {
-            SortKey::Size => out.sort_by(|a, b| b.size_bytes.cmp(&a.size_bytes)),
-            SortKey::Age => out.sort_by(|a, b| b.age_days.cmp(&a.age_days)),
+            SortKey::Size => out.sort_by_key(|r| std::cmp::Reverse(r.size_bytes)),
+            SortKey::Age => out.sort_by_key(|r| std::cmp::Reverse(r.age_days)),
             SortKey::Name => out.sort_by(|a, b| a.label.cmp(&b.label)),
         }
         out
@@ -2251,6 +2381,18 @@ mod tests {
     #[test]
     fn a_fresh_row_carries_no_flag() {
         assert!(!text(&row_spans(&res(false), false)).contains('⚑'));
+    }
+
+    /// The flag is the safest thing on screen to delete, so it must never be
+    /// painted like an error. Task 11 locked `STALE != ERROR` in the theme;
+    /// this locks the row actually reaching for the right one — asserting on
+    /// content alone would let a swapped style through unnoticed.
+    #[test]
+    fn the_flag_is_painted_stale_not_error() {
+        let spans = row_spans(&res(true), false);
+        let flag = spans.last().expect("a row always ends with a flag or an age");
+        assert_eq!(flag.style, theme::stale_style());
+        assert_ne!(flag.style, theme::status_error());
     }
 }
 ```
@@ -2525,6 +2667,19 @@ git commit -m "feat(tui): rendu split-pane et modale de confirmation palier 1"
 
 ### Task 14: Boucle d'événements, CLI et câblage
 
+> **Le code pasté ci-dessous est dépassé sur trois points**, corrigés après la revue de
+> cette tâche (commit `82c25cb`) — se référer au dépôt, pas à ce bloc, pour ces trois-là :
+>
+> 1. `Focus` a **trois** variantes (`Orgs`, `Repos`, `Resources`). Avec deux seulement,
+>    `repo_cursor` n'était déplacé par aucune touche et seul `repos[0]` était atteignable —
+>    le niveau repo du modèle de navigation n'existait pas.
+> 2. Le filtre est un **mode explicite** (`app.filter_mode`, `[f]` pour entrer, `Entrée`/`Esc`
+>    pour sortir). Le bras attrape-tout `Char(c)` placé après ceux de `q`/`s`/`d`/`A`/espace
+>    rendait ces caractères intypables dans un filtre.
+> 3. La restauration du terminal passe par un **garde `Drop`** armé juste après
+>    `enable_raw_mode`, sinon un panic ou un échec de setup laisse le shell inutilisable.
+
+
 **Files:**
 - Modify: `crates/bondebarras-core/src/tui/mod.rs`, `crates/bondebarras-core/src/lib.rs`
 - Create: `crates/bondebarras-core/src/cli.rs`
@@ -2637,11 +2792,17 @@ pub async fn run_tui(client: Arc<Client>, orgs: Vec<OrgSummary>) -> Result<()> {
     result
 }
 
+// The `where` clause is required, not decorative: `Backend::Error` is not
+// `Send + Sync + 'static` on its own, so `?` cannot convert it into
+// `anyhow::Error` without it. This is rustc's own suggested bound.
 async fn event_loop<B: ratatui::backend::Backend>(
     client: Arc<Client>,
     terminal: &mut Terminal<B>,
     mut app: App,
-) -> Result<()> {
+) -> Result<()>
+where
+    B::Error: std::error::Error + Send + Sync + 'static,
+{
     let mut pending: Option<Plan> = None;
     let (tx, mut rx) = mpsc::unbounded_channel::<Progress>();
 
@@ -2746,9 +2907,17 @@ async fn event_loop<B: ratatui::backend::Backend>(
                     }
                 }
             }
-            KeyCode::Char(c) => app.filter.push(c),
+            // Typing in the filter reshuffles the visible list, so the cursor
+            // has to come back to a row that still exists — `cycle_sort` resets
+            // it for the same reason. Without this, a filter that shrinks the
+            // list below the cursor makes [espace] silently do nothing.
+            KeyCode::Char(c) => {
+                app.filter.push(c);
+                app.res_cursor = 0;
+            }
             KeyCode::Backspace => {
                 app.filter.pop();
+                app.res_cursor = 0;
             }
             _ => {}
         }
