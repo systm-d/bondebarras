@@ -20,5 +20,8 @@ pub enum Command {
         /// Limite le scan à une organisation.
         #[arg(long)]
         org: Option<String>,
+        /// Sortie JSON sur stdout, pour un pipeline machine.
+        #[arg(long)]
+        json: bool,
     },
 }

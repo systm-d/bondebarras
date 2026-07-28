@@ -20,3 +20,13 @@ fn version_is_reported() {
         .success()
         .stdout(contains("0.1.0"));
 }
+
+#[test]
+fn scan_json_is_documented_in_help() {
+    Command::cargo_bin("bondebarras")
+        .unwrap()
+        .args(["scan", "--help"])
+        .assert()
+        .success()
+        .stdout(contains("--json"));
+}

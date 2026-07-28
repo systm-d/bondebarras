@@ -5,6 +5,7 @@ pub mod auth;
 pub mod billing;
 pub mod clean;
 pub mod cli;
+pub mod commands;
 pub mod model;
 pub mod scan;
 pub mod stale;
@@ -50,19 +51,12 @@ async fn run_async() -> anyhow::Result<()> {
         .unwrap_or_default();
 
     match cli.command {
-        Some(cli::Command::Scan { org }) => {
+        Some(cli::Command::Scan { org, json }) => {
             let targets: Vec<String> = match org {
                 Some(o) => vec![o],
                 None => orgs,
             };
-            for summary in scan::overview(&client, &targets).await {
-                println!(
-                    "{:<24} {:>10}  ({} caches)",
-                    summary.login,
-                    model::human_size(summary.cache_bytes),
-                    summary.cache_count
-                );
-            }
+            commands::scan::run(&client, &targets, json).await?;
         }
         None => {
             let summaries = scan::overview(&client, &orgs).await;
