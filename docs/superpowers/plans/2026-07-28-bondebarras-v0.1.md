@@ -12,10 +12,11 @@
 
 Ces règles s'appliquent à **toutes** les tâches, sans être répétées à chaque fois.
 
-- Rust **edition 2024**, MSRV **1.85** (`rust-version = "1.85"` dans `[workspace.package]`).
-- **Pas de let-chains** (`if let Some(x) = a && cond`). La syntaxe n'est stabilisée qu'en
-  Rust **1.88** ; elle compilerait sur une toolchain récente et en CI (qui utilise
-  `stable`), mais rendrait la MSRV annoncée mensongère. Utiliser des `if` imbriqués.
+- Rust **edition 2024**, MSRV **1.88** (`rust-version = "1.88"` dans `[workspace.package]`).
+  C'est le plancher réel imposé par `ratatui 0.30.2` et `ratatui-core`, qui déclarent tous
+  deux `rust-version = "1.88.0"`. Déclarer 1.85 comme le fait claudine serait faux :
+  `cargo +1.85 check` échoue avec « package `ratatui v0.30.2` cannot be built because it
+  requires rustc 1.88.0 or newer ».
 - `unsafe_code = "forbid"` dans `[workspace.lints.rust]`.
 - `all = { level = "warn", priority = -1 }` dans `[workspace.lints.clippy]`, chaque crate héritant via `[lints] workspace = true`.
 - `rustfmt.toml` : `max_width = 100`, `edition = "2024"`.
@@ -89,7 +90,7 @@ members = ["crates/bondebarras-core", "crates/bondebarras"]
 
 [workspace.package]
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.88"
 version = "0.1.0"
 license = "MIT OR Apache-2.0"
 description = "TUI Rust pour auditer et nettoyer les ressources des organisations GitHub."
