@@ -121,8 +121,21 @@ pub fn render(app: &mut App, f: &mut Frame, area: Rect) {
             // part of the tab — which repository to go and fix. Minutes
             // cannot be reclaimed retroactively, so naming the offender is
             // not decoration, it is the tab's reason to exist.
-            for minute_line in report.minute_lines(&month).iter().take(MAX_MINUTE_LINES) {
+            let minute_lines = report.minute_lines(&month);
+            for minute_line in minute_lines.iter().take(MAX_MINUTE_LINES) {
                 lines.push(minute_line_row(minute_line));
+            }
+            // The cap keeps the block compact, but a truncation that leaves
+            // no trace would hide the count of repositories the user cannot
+            // see — the one number a diagnostic view must never bury.
+            if minute_lines.len() > MAX_MINUTE_LINES {
+                lines.push(Line::from(Span::styled(
+                    format!(
+                        "   … et {} autre(s) dépôt(s)",
+                        minute_lines.len() - MAX_MINUTE_LINES
+                    ),
+                    theme::muted(),
+                )));
             }
 
             let (gross, covered, billed) = report.cost(&month);
