@@ -2667,6 +2667,19 @@ git commit -m "feat(tui): rendu split-pane et modale de confirmation palier 1"
 
 ### Task 14: Boucle d'événements, CLI et câblage
 
+> **Le code pasté ci-dessous est dépassé sur trois points**, corrigés après la revue de
+> cette tâche (commit `82c25cb`) — se référer au dépôt, pas à ce bloc, pour ces trois-là :
+>
+> 1. `Focus` a **trois** variantes (`Orgs`, `Repos`, `Resources`). Avec deux seulement,
+>    `repo_cursor` n'était déplacé par aucune touche et seul `repos[0]` était atteignable —
+>    le niveau repo du modèle de navigation n'existait pas.
+> 2. Le filtre est un **mode explicite** (`app.filter_mode`, `[f]` pour entrer, `Entrée`/`Esc`
+>    pour sortir). Le bras attrape-tout `Char(c)` placé après ceux de `q`/`s`/`d`/`A`/espace
+>    rendait ces caractères intypables dans un filtre.
+> 3. La restauration du terminal passe par un **garde `Drop`** armé juste après
+>    `enable_raw_mode`, sinon un panic ou un échec de setup laisse le shell inutilisable.
+
+
 **Files:**
 - Modify: `crates/bondebarras-core/src/tui/mod.rs`, `crates/bondebarras-core/src/lib.rs`
 - Create: `crates/bondebarras-core/src/cli.rs`
