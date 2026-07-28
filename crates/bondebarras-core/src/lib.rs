@@ -2,6 +2,7 @@
 
 pub mod api;
 pub mod auth;
+pub mod clean;
 pub mod model;
 pub mod scan;
 pub mod stale;
