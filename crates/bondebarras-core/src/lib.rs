@@ -2,6 +2,7 @@
 
 pub mod api;
 pub mod auth;
+pub mod billing;
 pub mod clean;
 pub mod cli;
 pub mod model;
