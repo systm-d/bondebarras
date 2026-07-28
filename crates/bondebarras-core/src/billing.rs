@@ -285,7 +285,11 @@ mod tests {
     fn minute_lines_name_the_repo_and_rank_by_allowance_cost() {
         let r = BillingReport {
             items: vec![
-                item("2026-07", "Actions Linux", 3311.0, 19.8, 0.0, "josephine"),
+                // josephine burns more wall-clock minutes; claudine burns more
+                // allowance. Ranking by raw quantity would put josephine first
+                // and point the user at the wrong repository — the fixture is
+                // built so the two sort keys disagree.
+                item("2026-07", "Actions Linux", 8000.0, 48.0, 0.0, "josephine"),
                 item("2026-07", "Actions Windows", 6079.0, 60.7, 0.0, "claudine"),
                 item(
                     "2026-07",
@@ -299,13 +303,15 @@ mod tests {
         };
         let lines = r.minute_lines("2026-07");
 
-        // Windows x2 outranks a larger raw Linux count — the ranking is by
-        // what the allowance actually pays, not by wall-clock minutes.
         assert_eq!(lines.len(), 2, "the fully discounted repo must not appear");
-        assert_eq!(lines[0].repo, "claudine");
+        assert_eq!(
+            lines[0].repo, "claudine",
+            "ranking must follow allowance cost"
+        );
         assert_eq!(lines[0].quantity, 6079);
         assert_eq!(lines[0].equivalent, 12158);
         assert_eq!(lines[1].repo, "josephine");
-        assert_eq!(lines[1].equivalent, 3311);
+        assert_eq!(lines[1].quantity, 8000);
+        assert_eq!(lines[1].equivalent, 8000);
     }
 }
