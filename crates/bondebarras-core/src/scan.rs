@@ -1,10 +1,10 @@
 //! Two-stage scanning.
 //!
-//! Stage 1 runs at launch and only touches org-level aggregates — two requests
-//! per org, so fifteen orgs land in about three seconds. Stage 2 fetches a
-//! repository's individual resources, and only when the user opens it. Paying
-//! only for what you look at is what keeps manual navigation viable across a
-//! hundred repositories.
+//! Stage 1 runs at launch and only touches org-level aggregates — three
+//! requests per org, so fifteen orgs still land in a few seconds. Stage 2
+//! fetches a repository's individual resources, and only when the user opens
+//! it. Paying only for what you look at is what keeps manual navigation
+//! viable across a hundred repositories.
 
 use crate::api::{Client, artifacts, caches, prs, repos, runs};
 use crate::model::{OrgSummary, Resource};
@@ -39,11 +39,16 @@ pub async fn overview(client: &Client, orgs: &[String]) -> Vec<OrgSummary> {
         }
         repos_out.sort_by_key(|r| std::cmp::Reverse(r.cache_bytes));
 
+        // Third and last stage-1 request. Deliberately not `?`-propagated: an
+        // org whose billing is refused is still worth showing.
+        let billing = crate::api::billing::fetch(client, org).await;
+
         Some(OrgSummary {
             login: org.clone(),
             cache_bytes,
             cache_count,
             repos: repos_out,
+            billing,
         })
     });
 
@@ -167,5 +172,40 @@ mod tests {
         assert_eq!(summaries.len(), 1);
         assert_eq!(summaries[0].login, "healthy-org");
         assert!(summaries.iter().all(|s| s.login != "broken-org"));
+    }
+
+    #[tokio::test]
+    async fn an_org_without_billing_access_is_still_scanned() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/orgs/systm-d/actions/cache/usage-by-repository"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "repository_cache_usages": [
+                    { "full_name": "systm-d/josephine",
+                      "active_caches_size_in_bytes": 1000, "active_caches_count": 2 }
+                ]
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/orgs/systm-d/repos"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                { "name": "josephine" }
+            ])))
+            .mount(&server)
+            .await;
+        // Billing refused: the org must survive with `billing: None`.
+        Mock::given(method("GET"))
+            .and(path("/organizations/systm-d/settings/billing/usage"))
+            .respond_with(ResponseTemplate::new(403))
+            .mount(&server)
+            .await;
+
+        let client = Client::with_base("t0ken", &server.uri()).unwrap();
+        let out = overview(&client, &["systm-d".to_string()]).await;
+
+        assert_eq!(out.len(), 1, "a billing 403 must not drop the org");
+        assert_eq!(out[0].cache_bytes, 1000);
+        assert!(out[0].billing.is_none());
     }
 }

@@ -349,6 +349,7 @@ mod tests {
             cache_bytes: 0,
             cache_count: 0,
             repos: vec![repo("josephine"), repo("claudine")],
+            billing: None,
         }]);
         a.repo_cursor = 1;
 
@@ -375,12 +376,14 @@ mod tests {
                 cache_bytes: 0,
                 cache_count: 0,
                 repos: vec![repo("claudine")],
+                billing: None,
             },
             OrgSummary {
                 login: "josephine-org".into(),
                 cache_bytes: 0,
                 cache_count: 0,
                 repos: vec![repo("josephine")],
+                billing: None,
             },
         ]);
         a.resources = vec![res(1, "cache-1", 100, 1, false)];
@@ -429,6 +432,7 @@ mod tests {
                 repo("claudine", 11_130_027_303, 69),
                 repo("josephine", 0, 0),
             ],
+            billing: None,
         }]);
 
         // The fresh report is exactly what usage-by-repository returns after
