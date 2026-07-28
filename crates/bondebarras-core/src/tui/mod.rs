@@ -25,6 +25,19 @@ use tokio::sync::mpsc;
 /// progress lands smoothly, long enough not to spin.
 const TICK: Duration = Duration::from_millis(120);
 
+/// Restores the terminal when it goes out of scope — including on an unwind.
+///
+/// Without this, a panic inside the event loop leaves raw mode enabled and the
+/// alternate screen active, and the user's shell needs `reset` to recover.
+struct TerminalGuard;
+
+impl Drop for TerminalGuard {
+    fn drop(&mut self) {
+        let _ = disable_raw_mode();
+        let _ = execute!(std::io::stdout(), LeaveAlternateScreen);
+    }
+}
+
 /// Run the TUI until the user quits, restoring the terminal on every path.
 ///
 /// The client arrives behind an `Arc` because deletions run on a spawned task:
@@ -32,14 +45,15 @@ const TICK: Duration = Duration::from_millis(120);
 /// is exactly what the progress channel exists to avoid.
 pub async fn run_tui(client: Arc<Client>, orgs: Vec<OrgSummary>) -> Result<()> {
     enable_raw_mode()?;
+    // Armed before anything else can fail: every path from here on restores.
+    let _guard = TerminalGuard;
+
     let mut stdout = std::io::stdout();
     execute!(stdout, EnterAlternateScreen)?;
     let mut terminal = Terminal::new(CrosstermBackend::new(stdout))?;
 
     let result = event_loop(client, &mut terminal, App::new(orgs)).await;
 
-    disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     terminal.show_cursor()?;
     result
 }
@@ -104,17 +118,47 @@ where
             continue;
         }
 
+        // Filter input owns the keyboard while it is active.
+        if app.filter_mode {
+            match key.code {
+                KeyCode::Enter | KeyCode::Esc => app.filter_mode = false,
+                KeyCode::Backspace => {
+                    app.filter.pop();
+                    app.res_cursor = 0;
+                }
+                KeyCode::Char(c) => {
+                    app.filter.push(c);
+                    app.res_cursor = 0;
+                }
+                _ => {}
+            }
+            continue;
+        }
+
         match key.code {
+            KeyCode::Esc if !app.filter.is_empty() => {
+                app.filter.clear();
+                app.res_cursor = 0;
+            }
             KeyCode::Char('q') | KeyCode::Esc => app.should_quit = true,
             KeyCode::Tab => {
                 app.focus = match app.focus {
-                    Focus::Orgs => Focus::Resources,
+                    Focus::Orgs => Focus::Repos,
+                    Focus::Repos => Focus::Resources,
                     Focus::Resources => Focus::Orgs,
                 }
             }
             KeyCode::Down => match app.focus {
                 Focus::Orgs => {
-                    app.org_cursor = (app.org_cursor + 1).min(app.orgs.len().saturating_sub(1))
+                    app.org_cursor = (app.org_cursor + 1).min(app.orgs.len().saturating_sub(1));
+                    app.repo_cursor = 0;
+                }
+                Focus::Repos => {
+                    let max = app
+                        .orgs
+                        .get(app.org_cursor)
+                        .map_or(0, |o| o.repos.len().saturating_sub(1));
+                    app.repo_cursor = (app.repo_cursor + 1).min(max);
                 }
                 Focus::Resources => {
                     let max = app.visible_resources().len().saturating_sub(1);
@@ -122,7 +166,11 @@ where
                 }
             },
             KeyCode::Up => match app.focus {
-                Focus::Orgs => app.org_cursor = app.org_cursor.saturating_sub(1),
+                Focus::Orgs => {
+                    app.org_cursor = app.org_cursor.saturating_sub(1);
+                    app.repo_cursor = 0;
+                }
+                Focus::Repos => app.repo_cursor = app.repo_cursor.saturating_sub(1),
                 Focus::Resources => app.res_cursor = app.res_cursor.saturating_sub(1),
             },
             KeyCode::Enter => {
@@ -153,14 +201,7 @@ where
                     pending = Some(app.take_plan(&org, &repo));
                 }
             }
-            KeyCode::Char(c) => {
-                app.filter.push(c);
-                app.res_cursor = 0;
-            }
-            KeyCode::Backspace => {
-                app.filter.pop();
-                app.res_cursor = 0;
-            }
+            KeyCode::Char('f') => app.filter_mode = true,
             _ => {}
         }
     }

@@ -42,8 +42,13 @@ pub fn render(app: &App, f: &mut Frame, pending: Option<&Plan>) {
     orgs::render(app, f, cols[0]);
     repo::render(app, f, cols[1]);
 
+    let status = if app.filter_mode {
+        format!(" filtre : {}▏", app.filter)
+    } else {
+        app.status.clone()
+    };
     f.render_widget(
-        Paragraph::new(Span::styled(app.status.clone(), theme::muted())),
+        Paragraph::new(Span::styled(status, theme::muted())),
         rows[2],
     );
     f.render_widget(

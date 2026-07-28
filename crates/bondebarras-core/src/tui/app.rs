@@ -8,10 +8,12 @@ use crate::clean::Plan;
 use crate::model::{OrgSummary, Resource};
 use std::collections::HashSet;
 
-/// Which pane the keyboard drives.
+/// Which pane the keyboard drives. The tree has three levels, and each one
+/// needs its own cursor: an org, one of its repos, then that repo's resources.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Focus {
     Orgs,
+    Repos,
     Resources,
 }
 
@@ -36,6 +38,10 @@ pub struct App {
     pub focus: Focus,
     pub sort: SortKey,
     pub filter: String,
+    /// True while the user is typing into the filter. Filtering has to be a
+    /// mode: without one, the shortcut keys shadow every character they use,
+    /// and a cache key containing `s` or `d` becomes untypeable.
+    pub filter_mode: bool,
     pub status: String,
     pub should_quit: bool,
 }
@@ -52,6 +58,7 @@ impl App {
             focus: Focus::Orgs,
             sort: SortKey::Size,
             filter: String::new(),
+            filter_mode: false,
             status: String::new(),
             should_quit: false,
         }
@@ -231,5 +238,20 @@ mod tests {
             a.current_target(),
             Some(("systm-d".to_string(), "claudine".to_string()))
         );
+    }
+
+    #[test]
+    fn focus_cycles_through_all_three_levels() {
+        // The repo level was unreachable at one point because Focus only had
+        // two variants; this locks the tree's shape.
+        let mut f = Focus::Orgs;
+        for expected in [Focus::Repos, Focus::Resources, Focus::Orgs] {
+            f = match f {
+                Focus::Orgs => Focus::Repos,
+                Focus::Repos => Focus::Resources,
+                Focus::Resources => Focus::Orgs,
+            };
+            assert_eq!(f, expected);
+        }
     }
 }
