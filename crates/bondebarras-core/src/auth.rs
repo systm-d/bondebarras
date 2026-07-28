@@ -55,8 +55,10 @@ pub fn resolve_token() -> Result<String> {
         }
     }
 
+    // Pas de préfixe « Erreur : » ici : `run()` l'ajoute une fois, en haut de
+    // la pile. Le porter aussi dans la valeur d'erreur le doublerait.
     bail!(
-        "Erreur : aucun jeton GitHub trouvé.\n\
+        "aucun jeton GitHub trouvé.\n\
          Connectez-vous avec `gh auth login`, ou définissez la variable \
          d'environnement GITHUB_TOKEN."
     )
