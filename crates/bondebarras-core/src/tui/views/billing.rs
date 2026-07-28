@@ -176,13 +176,18 @@ mod tests {
 
     #[test]
     fn a_zero_allowance_does_not_divide_by_zero() {
+        // Without the guard this computes inf and the cast saturates to
+        // u64::MAX, which renders as a large finite number — so asserting the
+        // absence of "NaN"/"inf" would not catch it. Assert the value.
         let line = gauge_line(100, 0);
-        assert!(!line.contains("NaN"), "got: {line}");
-        assert!(!line.contains("inf"), "got: {line}");
+        assert!(line.ends_with(" 0 %"), "got: {line}");
+        assert!(!line.contains(&u64::MAX.to_string()), "got: {line}");
     }
 
     #[test]
     fn an_unused_month_reads_zero_percent() {
-        assert!(gauge_line(0, 2_000).contains('0'));
+        // `.contains('0')` would pass on any percentage: the allowance operand
+        // "2 000" carries a zero of its own.
+        assert!(gauge_line(0, 2_000).ends_with(" 0 %"));
     }
 }
