@@ -6,6 +6,7 @@ pub mod clean;
 pub mod model;
 pub mod scan;
 pub mod stale;
+pub mod tui;
 
 use std::process::ExitCode;
 
