@@ -178,6 +178,49 @@ mod tests {
     }
 
     #[test]
+    fn cost_trusts_githubs_net_rather_than_recomputing_it() {
+        // GitHub sends all three amounts. When they disagree — rounding, a
+        // credit, a promotional adjustment — `net` is the authoritative billed
+        // figure, and recomputing `gross - discount` would silently diverge
+        // from the real invoice. This fixture cannot be satisfied by both.
+        let r = BillingReport {
+            items: vec![UsageItem {
+                month: "2026-07".into(),
+                product: "actions".into(),
+                sku: "Actions Linux".into(),
+                quantity: 100.0,
+                unit_type: "Minutes".into(),
+                gross: 10.0,
+                discount: 4.0,
+                net: 2.0, // deliberately not gross - discount
+                repo: "a".into(),
+            }],
+        };
+        let (_, _, billed) = r.cost("2026-07");
+        assert!(
+            (billed - 2.0).abs() < 1e-9,
+            "cost must sum net, got {billed}"
+        );
+    }
+
+    #[test]
+    fn storage_line_items_do_not_pollute_the_minutes_gauge() {
+        // A real systm-d report carries `Actions storage` in GigabyteHours
+        // alongside the minute SKUs. Counting it would add gigabyte-hours to a
+        // minutes total, and it would also show up as an unknown runner.
+        let mut storage = item("2026-07", "Actions storage", 41.5, 0.014, 0.0, "a");
+        storage.unit_type = "GigabyteHours".into();
+        let r = BillingReport {
+            items: vec![
+                item("2026-07", "Actions Linux", 100.0, 0.6, 0.0, "a"),
+                storage,
+            ],
+        };
+        assert_eq!(r.included_minutes("2026-07"), 100);
+        assert!(r.unknown_skus("2026-07").is_empty());
+    }
+
+    #[test]
     fn months_are_sorted_and_deduplicated() {
         let r = BillingReport {
             items: vec![
