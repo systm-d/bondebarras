@@ -1,6 +1,7 @@
 //! bondebarras — audit and cleanup of GitHub organization resources.
 
 pub mod model;
+pub mod stale;
 
 use std::process::ExitCode;
 
