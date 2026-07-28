@@ -1,0 +1,22 @@
+[package]
+name = "bondebarras"
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+license.workspace = true
+description.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "bondebarras"
+path = "src/main.rs"
+
+[dependencies]
+bondebarras-core = { path = "../bondebarras-core", version = "0.1.0" }
+
+[dev-dependencies]
+assert_cmd.workspace = true
+predicates.workspace = true
+
+[lints]
+workspace = true
