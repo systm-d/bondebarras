@@ -10,6 +10,7 @@ use crate::model::{OrgSummary, human_size};
 use crate::scan;
 use anyhow::Result;
 use app::{App, Focus};
+use crossterm::cursor::Show;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use crossterm::execute;
 use crossterm::terminal::{
@@ -34,7 +35,10 @@ struct TerminalGuard;
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
         let _ = disable_raw_mode();
-        let _ = execute!(std::io::stdout(), LeaveAlternateScreen);
+        // ratatui hides the cursor on every draw and never shows it again on
+        // its own: without `Show` here, a panic exits with an invisible
+        // cursor and the shell needs `reset` to recover it.
+        let _ = execute!(std::io::stdout(), LeaveAlternateScreen, Show);
     }
 }
 
