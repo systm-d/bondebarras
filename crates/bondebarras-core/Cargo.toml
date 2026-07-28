@@ -15,6 +15,7 @@ serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 octocrab.workspace = true
+http.workspace = true
 ratatui.workspace = true
 crossterm.workspace = true
 chrono.workspace = true
