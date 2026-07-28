@@ -69,7 +69,10 @@ liste des repos (2 appels par org). Le marqueur ⚠ et l'onglet Billing arrivent
 ### Task 1: Squelette du workspace
 
 **Files:**
-- Create: `Cargo.toml`, `rustfmt.toml`, `deny.toml`, `.gitignore`
+- Create: `Cargo.toml`, `rustfmt.toml`, `.gitignore`
+
+`deny.toml` n'est **pas** créé ici : il est copié depuis claude-tui à la Task 15 Step 1,
+en même temps que le reste de la gouvernance.
 - Create: `crates/bondebarras-core/Cargo.toml`, `crates/bondebarras-core/src/lib.rs`
 - Create: `crates/bondebarras/Cargo.toml`, `crates/bondebarras/src/main.rs`
 
