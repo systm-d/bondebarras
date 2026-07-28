@@ -99,13 +99,17 @@ where
                     // total for the org the purge just happened in. One
                     // request is enough — a stale number would be worse than
                     // just leaving the old one if this fails.
-                    if let Some((org_login, _)) = app.loaded.clone()
+                    //
+                    // Reads `purging_org`, not `loaded`: the purge runs on a
+                    // spawned task while this loop keeps handling keys, so the
+                    // user can load a different repo — possibly in a
+                    // different org — before `Finished` lands. `loaded` would
+                    // then name the wrong org. `take()` both reads it and
+                    // clears it, success or not.
+                    if let Some(org_login) = app.purging_org.take()
                         && let Ok(repos) = caches::usage_by_repository(&client, &org_login).await
-                        && let Some(org) = app.orgs.iter_mut().find(|o| o.login == org_login)
                     {
-                        org.cache_bytes = repos.iter().map(|r| r.cache_bytes).sum();
-                        org.cache_count = repos.iter().map(|r| r.cache_count).sum();
-                        org.repos = repos;
+                        app.refresh_org_cache(&org_login, repos);
                     }
                 }
             }
@@ -125,6 +129,9 @@ where
         if let Some(plan) = pending.take() {
             if matches!(key.code, KeyCode::Char('y') | KeyCode::Char('Y')) {
                 app.status = format!("Suppression de {} …", plan.summary());
+                // Captured now, not read from `loaded` when `Finished` lands:
+                // the user can navigate to a different org while this runs.
+                app.purging_org = Some(plan.owner.clone());
                 // Spawned, not awaited: the loop keeps drawing and draining
                 // `rx` while the purge runs.
                 let tx = tx.clone();

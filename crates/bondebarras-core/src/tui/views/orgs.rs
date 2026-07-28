@@ -49,9 +49,12 @@ pub fn render(app: &mut App, f: &mut Frame, area: Rect) {
     }
 
     // Flattened index of the row the cursor is on: the org row itself while
-    // focus is on the org level, otherwise the unfolded repo row. Focus on
-    // Resources keeps pointing at the loaded repo, so the tree stays
-    // scrolled to it while the right pane has the keyboard.
+    // focus is on the org level, otherwise the unfolded repo row at
+    // `repo_cursor`. Focus on Resources reuses the same `repo_cursor` row
+    // rather than clearing the selection (`None`) — a `List` with nothing
+    // selected does not keep the viewport anchored anywhere, so it would
+    // leave the tree scrolled wherever it last happened to be instead of
+    // showing which repo the right pane belongs to.
     let flat_index = match app.focus {
         Focus::Orgs => app.org_cursor,
         Focus::Repos | Focus::Resources => app.org_cursor + 1 + app.repo_cursor,

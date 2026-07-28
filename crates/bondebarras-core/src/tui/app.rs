@@ -5,7 +5,7 @@
 //! the user decides, every time.
 
 use crate::clean::Plan;
-use crate::model::{OrgSummary, Resource, ResourceKind};
+use crate::model::{OrgSummary, RepoSummary, Resource, ResourceKind};
 use ratatui::widgets::ListState;
 use std::collections::HashSet;
 
@@ -58,6 +58,11 @@ pub struct App {
     pub org_state: ListState,
     /// Persistent cursor state for the right (resources) pane. Same reason.
     pub res_state: ListState,
+    /// The org a running purge belongs to. The user can navigate away while
+    /// it runs — purges execute on a spawned task while the event loop keeps
+    /// handling keys — so `loaded` is not it: it can point somewhere else by
+    /// the time the purge finishes. Captured when the purge starts.
+    pub purging_org: Option<String>,
 }
 
 impl App {
@@ -78,6 +83,7 @@ impl App {
             loaded: None,
             org_state: ListState::default(),
             res_state: ListState::default(),
+            purging_org: None,
         }
     }
 
@@ -172,6 +178,31 @@ impl App {
             owner,
             repo,
         })
+    }
+
+    /// Update one org's cache figures from a fresh `usage_by_repository`
+    /// report, after a purge.
+    ///
+    /// Updates the existing rows in place rather than replacing `org.repos`
+    /// wholesale: `scan::overview` deliberately adds every repo the org has,
+    /// including cache-free ones, because they may still hold artifacts or
+    /// runs stage 2 can surface. Replacing the vec with the fresh report
+    /// would drop every repo the report has nothing to say about — a repo
+    /// missing from it has simply lost the last of its cache, not left the
+    /// tree. This also does not re-sort: the order was fixed at scan time,
+    /// and reordering right after a purge would move rows out from under the
+    /// user's cursor, which is worse than a now-stale size order.
+    pub fn refresh_org_cache(&mut self, org_login: &str, fresh: Vec<RepoSummary>) {
+        let Some(org) = self.orgs.iter_mut().find(|o| o.login == org_login) else {
+            return;
+        };
+        for existing in org.repos.iter_mut() {
+            let found = fresh.iter().find(|r| r.name == existing.name);
+            existing.cache_bytes = found.map_or(0, |r| r.cache_bytes);
+            existing.cache_count = found.map_or(0, |r| r.cache_count);
+        }
+        org.cache_bytes = org.repos.iter().map(|r| r.cache_bytes).sum();
+        org.cache_count = org.repos.iter().map(|r| r.cache_count).sum();
     }
 }
 
@@ -373,6 +404,52 @@ mod tests {
     #[test]
     fn take_plan_is_none_before_anything_loads() {
         assert!(app().take_plan().is_none());
+    }
+
+    /// Locks the re-review's first regression: `scan::overview` deliberately
+    /// keeps cache-free repos in the tree (they may still hold artifacts or
+    /// runs), so a post-purge refresh must not replace `org.repos` wholesale
+    /// with a report that only lists repos that still have a cache — that
+    /// would silently drop every cache-free repo, including the one just
+    /// purged to zero, from the tree.
+    #[test]
+    fn refresh_org_cache_keeps_repos_the_fresh_report_omits() {
+        let repo = |name: &str, bytes: u64, count: u32| RepoSummary {
+            name: name.to_string(),
+            cache_bytes: bytes,
+            cache_count: count,
+        };
+        let mut a = App::new(vec![OrgSummary {
+            login: "systm-d".into(),
+            cache_bytes: 11_130_027_303,
+            cache_count: 69,
+            // "josephine" holds no cache — `scan::overview` put it here
+            // anyway because it may hold artifacts or runs.
+            repos: vec![
+                repo("claudine", 11_130_027_303, 69),
+                repo("josephine", 0, 0),
+            ],
+        }]);
+
+        // The fresh report is exactly what usage-by-repository returns after
+        // purging "claudine" to zero: it omits any repo with no cache left,
+        // "josephine" included.
+        a.refresh_org_cache("systm-d", vec![]);
+
+        assert_eq!(
+            a.orgs[0].repos.len(),
+            2,
+            "no repo should vanish from the tree"
+        );
+        assert_eq!(
+            a.orgs[0].repos[0].name, "claudine",
+            "order must stay stable"
+        );
+        assert_eq!(a.orgs[0].repos[0].cache_bytes, 0);
+        assert_eq!(a.orgs[0].repos[1].name, "josephine");
+        assert_eq!(a.orgs[0].repos[1].cache_bytes, 0);
+        assert_eq!(a.orgs[0].cache_bytes, 0);
+        assert_eq!(a.orgs[0].cache_count, 0);
     }
 
     #[test]
