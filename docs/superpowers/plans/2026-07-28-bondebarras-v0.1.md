@@ -1484,26 +1484,42 @@ use super::Client;
 use anyhow::Result;
 use std::collections::HashSet;
 
+/// GitHub's maximum page size for this endpoint.
+const PAGE_SIZE: usize = 100;
+
+/// Hard stop on pagination. Ten pages covers a thousand closed pull requests;
+/// beyond that the drill-down would cost more requests than the flag is worth.
+const MAX_PR_PAGES: u32 = 10;
+
 /// Numbers of every pull request that is no longer open.
 ///
 /// `state=closed` covers merged PRs too — GitHub reports a merged PR as
 /// closed, which is exactly the semantics we want: its caches are dead either
 /// way.
 pub async fn closed_numbers(client: &Client, owner: &str, repo: &str) -> Result<HashSet<u64>> {
-    let v = client
-        .get_json(&format!(
-            "repos/{owner}/{repo}/pulls?state=closed&per_page=100"
-        ))
-        .await?;
+    let mut out = HashSet::new();
 
-    Ok(v.as_array()
-        .map(|items| {
-            items
-                .iter()
-                .filter_map(|item| item["number"].as_u64())
-                .collect()
-        })
-        .unwrap_or_default())
+    // A single page would silently drop a busy repo's older closed PRs, and
+    // every cache pinned to them would stay unflagged. That under-flags rather
+    // than over-flags, so nothing gets wrongly deleted — but it is reclaimable
+    // space the user never sees, in a tool whose whole job is to show it.
+    for page in 1..=MAX_PR_PAGES {
+        let v = client
+            .get_json(&format!(
+                "/repos/{owner}/{repo}/pulls?state=closed&per_page={PAGE_SIZE}&page={page}"
+            ))
+            .await?;
+
+        let Some(items) = v.as_array() else { break };
+        out.extend(items.iter().filter_map(|item| item["number"].as_u64()));
+
+        // A short page is the last one.
+        if items.len() < PAGE_SIZE {
+            break;
+        }
+    }
+
+    Ok(out)
 }
 ```
 
