@@ -918,14 +918,20 @@ impl Client {
                     return Ok(());
                 }
 
-                // 429 and 403 are how GitHub signals its secondary rate limit.
-                // Any other status is a real failure that retrying cannot mend.
-                let throttled =
-                    status == StatusCode::TOO_MANY_REQUESTS || status == StatusCode::FORBIDDEN;
+                let delay = retry_after(response.headers());
+
+                // 429 is unambiguous. 403 is not: GitHub returns it both for
+                // the secondary rate limit and for a missing scope, and the
+                // second is far more common. Only the throttling one carries
+                // `Retry-After` — without that header a 403 is a permission
+                // error, and retrying it would just delay the real message by
+                // three backoffs. Any other status is a real failure too.
+                let throttled = status == StatusCode::TOO_MANY_REQUESTS
+                    || (status == StatusCode::FORBIDDEN && delay.is_some());
                 if !throttled || attempt == MAX_DELETE_RETRIES {
                     bail!("DELETE {path} a échoué : {status}");
                 }
-                retry_after(response.headers()).unwrap_or(DEFAULT_BACKOFF)
+                delay.unwrap_or(DEFAULT_BACKOFF)
             };
 
             attempt += 1;
