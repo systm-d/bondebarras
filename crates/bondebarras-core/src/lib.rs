@@ -1,5 +1,7 @@
 //! bondebarras — audit and cleanup of GitHub organization resources.
 
+pub mod model;
+
 use std::process::ExitCode;
 
 /// Entry point shared by the binary. Returns the process exit code.
