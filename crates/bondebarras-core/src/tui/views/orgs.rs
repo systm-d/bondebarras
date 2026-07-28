@@ -9,8 +9,14 @@ use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem};
 
-pub fn render(app: &App, f: &mut Frame, area: Rect) {
-    let mut items: Vec<ListItem> = Vec::new();
+/// Renders the org/repo tree as a stateful list so ratatui scrolls to keep
+/// the selection visible — without a persistent `ListState` it only draws
+/// the rows that fit and the cursor walks off screen past that point.
+pub fn render(app: &mut App, f: &mut Frame, area: Rect) {
+    // Built first, from shared borrows only: the items own their strings
+    // (`ListItem<'static>`), so the borrow of `app` ends here, before
+    // `app.org_state` is borrowed mutably below.
+    let mut items: Vec<ListItem<'static>> = Vec::new();
 
     for (i, org) in app.orgs.iter().enumerate() {
         let is_current = i == app.org_cursor;
@@ -24,16 +30,12 @@ pub fn render(app: &App, f: &mut Frame, area: Rect) {
                 theme::muted(),
             ),
         ]);
-        items.push(if is_current && app.focus == Focus::Orgs {
-            ListItem::new(line).style(theme::selection_style())
-        } else {
-            ListItem::new(line)
-        });
+        items.push(ListItem::new(line));
 
         // The current org unfolds: its repos are the second level of the tree,
         // and the only way to reach anything but the biggest one.
         if is_current {
-            for (j, repo) in org.repos.iter().enumerate() {
+            for repo in &org.repos {
                 let line = Line::from(vec![
                     Span::styled(format!("   {:<11}", repo.name), theme::text_style()),
                     Span::styled(
@@ -41,22 +43,33 @@ pub fn render(app: &App, f: &mut Frame, area: Rect) {
                         theme::muted(),
                     ),
                 ]);
-                items.push(if j == app.repo_cursor && app.focus == Focus::Repos {
-                    ListItem::new(line).style(theme::selection_style())
-                } else {
-                    ListItem::new(line)
-                });
+                items.push(ListItem::new(line));
             }
         }
     }
 
-    f.render_widget(
-        List::new(items).block(
+    // Flattened index of the row the cursor is on: the org row itself while
+    // focus is on the org level, otherwise the unfolded repo row. Focus on
+    // Resources keeps pointing at the loaded repo, so the tree stays
+    // scrolled to it while the right pane has the keyboard.
+    let flat_index = match app.focus {
+        Focus::Orgs => app.org_cursor,
+        Focus::Repos | Focus::Resources => app.org_cursor + 1 + app.repo_cursor,
+    };
+    app.org_state.select(if items.is_empty() {
+        None
+    } else {
+        Some(flat_index.min(items.len() - 1))
+    });
+
+    let list = List::new(items)
+        .block(
             Block::default()
                 .title(" ORGS ")
                 .borders(Borders::ALL)
                 .border_style(theme::border_style()),
-        ),
-        area,
-    );
+        )
+        .highlight_style(theme::selection_style());
+
+    f.render_stateful_widget(list, area, &mut app.org_state);
 }

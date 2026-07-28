@@ -1,7 +1,12 @@
 //! Core data model: resources, risk tiers, and display formatting.
 
 /// A deletable GitHub resource family. v0.1 covers the three regenerable ones.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// `Hash` matters as much as `Eq` here: GitHub numbers caches, artifacts and
+/// workflow runs in independent namespaces, so a selection set keyed on `id`
+/// alone would collide across kinds. Keying on `(ResourceKind, u64)` needs
+/// both derives.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ResourceKind {
     Cache,
     Artifact,

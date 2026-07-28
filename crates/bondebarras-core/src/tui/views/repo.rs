@@ -42,19 +42,20 @@ pub fn row_spans(r: &Resource, checked: bool) -> Vec<Span<'static>> {
     spans
 }
 
-pub fn render(app: &App, f: &mut Frame, area: Rect) {
-    let items: Vec<ListItem> = app
+/// Renders the resource list as a stateful list so ratatui scrolls to keep
+/// the selection visible. On a 69-cache repo, an 80x24 terminal only fits
+/// about 19 rows without this — the plain `render_widget` used before left
+/// most of them unreachable.
+pub fn render(app: &mut App, f: &mut Frame, area: Rect) {
+    // Built first, from a shared borrow of `app` only: the items own their
+    // strings (`ListItem<'static>`), so the borrow ends here, before
+    // `app.res_state` is borrowed mutably below.
+    let items: Vec<ListItem<'static>> = app
         .visible_resources()
-        .iter()
-        .enumerate()
-        .map(|(i, r)| {
-            let spans = row_spans(r, app.selected.contains(&r.id));
-            let line = Line::from(spans);
-            if i == app.res_cursor {
-                ListItem::new(line).style(theme::selection_style())
-            } else {
-                ListItem::new(line)
-            }
+        .into_iter()
+        .map(|r| {
+            let spans = row_spans(r, app.selected.contains(&(r.kind, r.id)));
+            ListItem::new(Line::from(spans))
         })
         .collect();
 
@@ -63,15 +64,23 @@ pub fn render(app: &App, f: &mut Frame, area: Rect) {
         items.len(),
         human_size(app.selection_bytes())
     );
-    f.render_widget(
-        List::new(items).block(
+
+    app.res_state.select(if items.is_empty() {
+        None
+    } else {
+        Some(app.res_cursor.min(items.len() - 1))
+    });
+
+    let list = List::new(items)
+        .block(
             Block::default()
                 .title(title)
                 .borders(Borders::ALL)
                 .border_style(theme::border_style()),
-        ),
-        area,
-    );
+        )
+        .highlight_style(theme::selection_style());
+
+    f.render_stateful_widget(list, area, &mut app.res_state);
 }
 
 #[cfg(test)]

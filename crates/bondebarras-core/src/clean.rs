@@ -45,11 +45,26 @@ impl Plan {
 }
 
 /// Emitted as the deletion runs, so the TUI stays responsive.
+///
+/// `Done` and `Failed` carry `kind` alongside `id` because ids are only
+/// unique within one resource kind: without it, the event loop cannot tell
+/// which row to remove from `app.resources` when a cache and an artifact
+/// happen to share an id.
 #[derive(Debug, Clone)]
 pub enum Progress {
-    Done { id: u64 },
-    Failed { id: u64, reason: String },
-    Finished { freed: u64, failures: usize },
+    Done {
+        kind: ResourceKind,
+        id: u64,
+    },
+    Failed {
+        kind: ResourceKind,
+        id: u64,
+        reason: String,
+    },
+    Finished {
+        freed: u64,
+        failures: usize,
+    },
 }
 
 /// Delete every item of the plan, reporting each outcome as it lands.
@@ -71,11 +86,15 @@ pub async fn execute(client: &Client, plan: Plan, tx: UnboundedSender<Progress>)
         match result {
             Ok(()) => {
                 freed += item.size_bytes;
-                let _ = tx.send(Progress::Done { id: item.id });
+                let _ = tx.send(Progress::Done {
+                    kind: item.kind,
+                    id: item.id,
+                });
             }
             Err(e) => {
                 failures += 1;
                 let _ = tx.send(Progress::Failed {
+                    kind: item.kind,
                     id: item.id,
                     reason: e.to_string(),
                 });

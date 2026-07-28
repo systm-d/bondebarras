@@ -5,7 +5,8 @@
 //! the user decides, every time.
 
 use crate::clean::Plan;
-use crate::model::{OrgSummary, Resource};
+use crate::model::{OrgSummary, Resource, ResourceKind};
+use ratatui::widgets::ListState;
 use std::collections::HashSet;
 
 /// Which pane the keyboard drives. The tree has three levels, and each one
@@ -34,7 +35,10 @@ pub struct App {
     pub repo_cursor: usize,
     pub resources: Vec<Resource>,
     pub res_cursor: usize,
-    pub selected: HashSet<u64>,
+    /// Keyed on `(kind, id)`, not `id` alone: GitHub numbers caches,
+    /// artifacts and workflow runs in independent namespaces, so a cache 5
+    /// and an artifact 5 are different things that must not share a slot.
+    pub selected: HashSet<(ResourceKind, u64)>,
     pub focus: Focus,
     pub sort: SortKey,
     pub filter: String,
@@ -44,6 +48,16 @@ pub struct App {
     pub filter_mode: bool,
     pub status: String,
     pub should_quit: bool,
+    /// The repository `resources` were loaded from. A plan must target this,
+    /// not wherever the cursor has wandered since — they are not the same
+    /// thing the moment the user moves after loading.
+    pub loaded: Option<(String, String)>,
+    /// Persistent cursor state for the left (orgs/repos tree) pane. Without
+    /// it ratatui only ever draws the rows that fit and the cursor walks off
+    /// screen past that point.
+    pub org_state: ListState,
+    /// Persistent cursor state for the right (resources) pane. Same reason.
+    pub res_state: ListState,
 }
 
 impl App {
@@ -61,6 +75,9 @@ impl App {
             filter_mode: false,
             status: String::new(),
             should_quit: false,
+            loaded: None,
+            org_state: ListState::default(),
+            res_state: ListState::default(),
         }
     }
 
@@ -83,19 +100,31 @@ impl App {
 
     /// Toggle the row under the cursor, in the order currently displayed.
     pub fn toggle_selected(&mut self) {
-        let Some(id) = self.visible_resources().get(self.res_cursor).map(|r| r.id) else {
+        let Some(key) = self
+            .visible_resources()
+            .get(self.res_cursor)
+            .map(|r| (r.kind, r.id))
+        else {
             return;
         };
-        if !self.selected.remove(&id) {
-            self.selected.insert(id);
+        if !self.selected.remove(&key) {
+            self.selected.insert(key);
         }
     }
 
     /// Select every ⚑ row: the whole point of the flag is this one keystroke.
+    ///
+    /// Iterates `visible_resources()`, not `self.resources` — the pane shows
+    /// the filtered list, and a bulk select feeding an irreversible delete
+    /// must act on what is actually on screen.
     pub fn select_all_stale(&mut self) {
-        for r in self.resources.iter().filter(|r| r.stale_pr) {
-            self.selected.insert(r.id);
-        }
+        let keys: Vec<(ResourceKind, u64)> = self
+            .visible_resources()
+            .into_iter()
+            .filter(|r| r.stale_pr)
+            .map(|r| (r.kind, r.id))
+            .collect();
+        self.selected.extend(keys);
     }
 
     pub fn cycle_sort(&mut self) {
@@ -110,7 +139,7 @@ impl App {
     pub fn selection_bytes(&self) -> u64 {
         self.resources
             .iter()
-            .filter(|r| self.selected.contains(&r.id))
+            .filter(|r| self.selected.contains(&(r.kind, r.id)))
             .map(|r| r.size_bytes)
             .sum()
     }
@@ -126,18 +155,23 @@ impl App {
         Some((org.login.clone(), repo.name.clone()))
     }
 
-    /// Freeze the current selection into a plan.
-    pub fn take_plan(&self, owner: &str, repo: &str) -> Plan {
-        Plan {
+    /// Freeze the current selection into a plan, targeting the repository
+    /// `resources` was loaded from — not wherever the cursor sits now.
+    /// `resources` only changes on `Enter`, so a plan built from the live
+    /// cursor position can target a repository the user only glanced at
+    /// afterwards. `None` when nothing has been loaded yet.
+    pub fn take_plan(&self) -> Option<Plan> {
+        let (owner, repo) = self.loaded.clone()?;
+        Some(Plan {
             items: self
                 .resources
                 .iter()
-                .filter(|r| self.selected.contains(&r.id))
+                .filter(|r| self.selected.contains(&(r.kind, r.id)))
                 .cloned()
                 .collect(),
-            owner: owner.to_string(),
-            repo: repo.to_string(),
-        }
+            owner,
+            repo,
+        })
     }
 }
 
@@ -173,9 +207,62 @@ mod tests {
         let mut a = app();
         a.select_all_stale();
         assert_eq!(a.selection_bytes(), 400);
-        assert!(a.selected.contains(&1));
-        assert!(a.selected.contains(&3));
-        assert!(!a.selected.contains(&2));
+        assert!(a.selected.contains(&(ResourceKind::Cache, 1)));
+        assert!(a.selected.contains(&(ResourceKind::Cache, 3)));
+        assert!(!a.selected.contains(&(ResourceKind::Cache, 2)));
+    }
+
+    /// Locks the fix for the cross-cutting review's most severe finding:
+    /// caches, artifacts and workflow runs number their ids in independent
+    /// namespaces, so a cache 5 and an artifact 5 must not share a selection
+    /// slot. On the old `HashSet<u64>` this test fails — toggling the
+    /// artifact also selects the cache, and `selection_bytes` double-counts.
+    #[test]
+    fn selection_is_keyed_by_kind_not_just_id() {
+        let mut a = App::new(vec![]);
+        a.resources = vec![
+            Resource {
+                kind: ResourceKind::Cache,
+                id: 5,
+                label: "cache-5".into(),
+                size_bytes: 100,
+                age_days: 1,
+                git_ref: None,
+                stale_pr: false,
+            },
+            Resource {
+                kind: ResourceKind::Artifact,
+                id: 5,
+                label: "artifact-5".into(),
+                size_bytes: 200,
+                age_days: 1,
+                git_ref: None,
+                stale_pr: false,
+            },
+        ];
+        // Default sort is by size descending, so the artifact (200) is row 0
+        // and the cache (100) is row 1.
+        a.res_cursor = 0;
+        a.toggle_selected();
+
+        assert!(a.selected.contains(&(ResourceKind::Artifact, 5)));
+        assert!(!a.selected.contains(&(ResourceKind::Cache, 5)));
+        assert_eq!(a.selection_bytes(), 200);
+    }
+
+    /// Locks finding 4's third leg: `[A]` must act on what is visible, not on
+    /// everything loaded. Before the fix, `select_all_stale` iterated
+    /// `self.resources` directly and selected rows the filter was hiding.
+    #[test]
+    fn select_all_stale_does_not_select_rows_hidden_by_the_filter() {
+        let mut a = app();
+        // Hides "coverage-macos" (id 3, stale) but keeps "coverage-linux"
+        // (id 1, stale) visible.
+        a.filter = "linux".into();
+        a.select_all_stale();
+
+        assert!(a.selected.contains(&(ResourceKind::Cache, 1)));
+        assert!(!a.selected.contains(&(ResourceKind::Cache, 3)));
     }
 
     #[test]
@@ -238,6 +325,54 @@ mod tests {
             a.current_target(),
             Some(("systm-d".to_string(), "claudine".to_string()))
         );
+    }
+
+    /// Locks finding 3: `resources` only refreshes on `Enter`, so a plan must
+    /// target `loaded`, not wherever the cursors sit when `d` is pressed. On
+    /// the old `take_plan(&self, owner, repo)` reading the live cursor, a
+    /// plan built after the cursor wanders would name the wrong repository.
+    #[test]
+    fn take_plan_targets_the_loaded_repo_not_the_wandered_cursor() {
+        let repo = |name: &str| RepoSummary {
+            name: name.to_string(),
+            cache_bytes: 0,
+            cache_count: 0,
+        };
+        let mut a = App::new(vec![
+            OrgSummary {
+                login: "claudine-org".into(),
+                cache_bytes: 0,
+                cache_count: 0,
+                repos: vec![repo("claudine")],
+            },
+            OrgSummary {
+                login: "josephine-org".into(),
+                cache_bytes: 0,
+                cache_count: 0,
+                repos: vec![repo("josephine")],
+            },
+        ]);
+        a.resources = vec![res(1, "cache-1", 100, 1, false)];
+        a.loaded = Some(("claudine-org".to_string(), "claudine".to_string()));
+        a.selected.insert((ResourceKind::Cache, 1));
+
+        // The cursor wanders to a different org/repo after the load.
+        a.org_cursor = 1;
+        a.repo_cursor = 0;
+        assert_eq!(
+            a.current_target(),
+            Some(("josephine-org".to_string(), "josephine".to_string()))
+        );
+
+        let plan = a.take_plan().expect("a repo was loaded");
+        assert_eq!(plan.owner, "claudine-org");
+        assert_eq!(plan.repo, "claudine");
+        assert_eq!(plan.items.len(), 1);
+    }
+
+    #[test]
+    fn take_plan_is_none_before_anything_loads() {
+        assert!(app().take_plan().is_none());
     }
 
     #[test]

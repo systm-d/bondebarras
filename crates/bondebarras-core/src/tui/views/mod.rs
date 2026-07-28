@@ -16,7 +16,7 @@ use ratatui::widgets::Paragraph;
 const FOOTER: &str =
     " [espace] cocher  [s] trier  [f] filtrer  [A] tout ⚑  [d] supprimer  [q] quitter";
 
-pub fn render(app: &App, f: &mut Frame, pending: Option<&Plan>) {
+pub fn render(app: &mut App, f: &mut Frame, pending: Option<&Plan>) {
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -42,8 +42,15 @@ pub fn render(app: &App, f: &mut Frame, pending: Option<&Plan>) {
     orgs::render(app, f, cols[0]);
     repo::render(app, f, cols[1]);
 
-    let status = if app.filter_mode {
-        format!(" filtre : {}▏", app.filter)
+    // A filter left in place must stay visible even once the user stops
+    // typing — otherwise it silently keeps hiding rows with no indication
+    // why. The cursor mark (▏) only appears while actively typing.
+    let status = if !app.filter.is_empty() {
+        if app.filter_mode {
+            format!(" filtre : {}▏", app.filter)
+        } else {
+            format!(" filtre : {}", app.filter)
+        }
     } else {
         app.status.clone()
     };

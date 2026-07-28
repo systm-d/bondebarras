@@ -4,7 +4,7 @@ pub mod app;
 pub mod theme;
 pub mod views;
 
-use crate::api::Client;
+use crate::api::{Client, caches};
 use crate::clean::{self, Plan, Progress};
 use crate::model::{OrgSummary, human_size};
 use crate::scan;
@@ -71,17 +71,17 @@ where
     let (tx, mut rx) = mpsc::unbounded_channel::<Progress>();
 
     while !app.should_quit {
-        terminal.draw(|f| views::render(&app, f, pending.as_ref()))?;
+        terminal.draw(|f| views::render(&mut app, f, pending.as_ref()))?;
 
         // Drain deletion progress without blocking the draw.
         while let Ok(msg) = rx.try_recv() {
             match msg {
-                Progress::Done { id } => {
-                    app.resources.retain(|r| r.id != id);
-                    app.selected.remove(&id);
+                Progress::Done { kind, id } => {
+                    app.resources.retain(|r| !(r.kind == kind && r.id == id));
+                    app.selected.remove(&(kind, id));
                 }
-                Progress::Failed { id, reason } => {
-                    app.selected.remove(&id);
+                Progress::Failed { kind, id, reason } => {
+                    app.selected.remove(&(kind, id));
                     app.status = format!("Erreur : suppression de {id} — {reason}");
                 }
                 Progress::Finished { freed, failures } => {
@@ -93,6 +93,20 @@ where
                             human_size(freed)
                         )
                     };
+
+                    // The recap above talks about bytes freed; the left pane
+                    // must agree on the same frame, not show the pre-purge
+                    // total for the org the purge just happened in. One
+                    // request is enough — a stale number would be worse than
+                    // just leaving the old one if this fails.
+                    if let Some((org_login, _)) = app.loaded.clone()
+                        && let Ok(repos) = caches::usage_by_repository(&client, &org_login).await
+                        && let Some(org) = app.orgs.iter_mut().find(|o| o.login == org_login)
+                    {
+                        org.cache_bytes = repos.iter().map(|r| r.cache_bytes).sum();
+                        org.cache_count = repos.iter().map(|r| r.cache_count).sum();
+                        org.repos = repos;
+                    }
                 }
             }
         }
@@ -188,6 +202,11 @@ where
                             app.resources = items;
                             app.res_cursor = 0;
                             app.selected.clear();
+                            // A filter typed for the previous repository must
+                            // not silently keep hiding rows in this one.
+                            app.filter.clear();
+                            app.filter_mode = false;
+                            app.loaded = Some((org, repo));
                             app.focus = Focus::Resources;
                             app.status.clear();
                         }
@@ -199,10 +218,10 @@ where
             KeyCode::Char('s') => app.cycle_sort(),
             KeyCode::Char('A') => app.select_all_stale(),
             KeyCode::Char('d') => {
-                if let Some((org, repo)) = app.current_target()
-                    && !app.selected.is_empty()
+                if let Some(plan) = app.take_plan()
+                    && !plan.items.is_empty()
                 {
-                    pending = Some(app.take_plan(&org, &repo));
+                    pending = Some(plan);
                 }
             }
             KeyCode::Char('f') => app.filter_mode = true,
