@@ -1,4 +1,4 @@
-# gitcleaner — TUI Rust pour auditer et nettoyer les orgs GitHub
+# bondebarras — TUI Rust pour auditer et nettoyer les orgs GitHub
 
 - **Date :** 2026-07-28
 - **Statut :** Design validé (en attente de relecture utilisateur)
@@ -45,7 +45,8 @@ d'un coup, puis permet de nettoyer sélectivement, vite et sans se tromper.
 | Auth | `gh auth token` → `$GITHUB_TOKEN` → erreur |
 | Structure projet | Kit complet `claude-tui` : workspace, site Zola, CI, packaging |
 | Visibilité du repo | **Public** — minutes Actions gratuites et illimitées |
-| Nom | `gitcleaner` (alternative envisagée : `ramona`) |
+| Nom | `bondebarras` — l'expression dit le geste et le soulagement |
+| Orthographe | binaire et crates en ASCII (`bondebarras`), textes d'interface accentués (« Bon débarras ! ») |
 
 ## 3. Contraintes d'API découvertes
 
@@ -102,14 +103,14 @@ Ce qui consomme réellement le quota facturable, c'est **artifacts + packages**.
 Workspace calqué sur `claude-tui` : cœur testé + binaire shim.
 
 ```
-gitcleaner/                      (workspace, le repo)
+bondebarras/                      (workspace, le repo)
 ├─ crates/
-│  ├─ gitcleaner-core/  (lib)    ← toute la logique, la CLI et le TUI
-│  └─ gitcleaner/       (bin)    ← fn main() -> ExitCode { gitcleaner_core::run() }
+│  ├─ bondebarras-core/  (lib)    ← toute la logique, la CLI et le TUI
+│  └─ bondebarras/       (bin)    ← fn main() -> ExitCode { bondebarras_core::run() }
 ```
 
 ```
-crates/gitcleaner-core/src/
+crates/bondebarras-core/src/
 ├─ lib.rs                run() -> ExitCode
 ├─ cli.rs                parsing clap
 ├─ commands/             scan.rs, clean.rs, tui.rs
@@ -208,7 +209,7 @@ Squelette identique à claudine : header (onglets + logo en demi-blocs) / corps 
 de statut / footer de raccourcis, modales rendues par-dessus en conditionnel.
 
 ```
- gitcleaner · kdelfour          [ Orgs ]  Billing   Aide
+ bondebarras · kdelfour         [ Orgs ]  Billing   Aide
 
  ORGS                  │ systm-d / claudine              69 caches · 11.1 Go
  ───────────────────── │ ──────────────────────────────────────────────────
@@ -278,15 +279,16 @@ d'undo** — la promesse serait mensongère. À la place :
 
 - la suppression s'exécute en tâche de fond, TUI non bloqué, avec barre de progression ;
 - chaque ligne reçoit son résultat (`✓` / `✗` + motif) ;
-- un journal de fin de run récapitule ce qui est parti.
+- un journal de fin de run récapitule ce qui est parti, et se referme sur
+  « Bon débarras ! ».
 
 ## 8. CLI headless
 
 Le même cœur sans TUI, pour un cron mensuel :
 
 ```sh
-gitcleaner scan --org systm-d --json
-gitcleaner clean --org systm-d --caches --stale-pr --yes
+bondebarras scan --org systm-d --json
+bondebarras clean --org systm-d --caches --stale-pr --yes
 ```
 
 Le **palier 3 est refusé en headless** : supprimer un repo exige la confirmation
@@ -315,8 +317,8 @@ clippy `all = { level = "warn", priority = -1 }`.
 
 ### 9.3 Packaging
 
-`packaging/homebrew/gitcleaner.rb`, `packaging/aur/PKGBUILD`,
-`packaging/winget/README.md`, `Formula/gitcleaner.rb` (rendu par la CI sur `main`).
+`packaging/homebrew/bondebarras.rb`, `packaging/aur/PKGBUILD`,
+`packaging/winget/README.md`, `Formula/bondebarras.rb` (rendu par la CI sur `main`).
 
 ### 9.4 Landing page
 
@@ -327,7 +329,7 @@ Site Zola dans `site/` : `config.toml`, `content/_index.md` + `_index.fr.md`
 ### 9.5 Note sur la visibilité du repo
 
 Cette matrice de CI est précisément ce qui a rempli 11,1 Go de caches sur `claudine`.
-Le repo `gitcleaner` doit rester **public** : les minutes Actions y sont gratuites et
+Le repo `bondebarras` doit rester **public** : les minutes Actions y sont gratuites et
 illimitées. En privé, cette matrice consommerait le quota que l'outil est censé
 préserver.
 
