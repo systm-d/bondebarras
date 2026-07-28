@@ -47,15 +47,21 @@ pub async fn list(client: &Client, owner: &str, repo: &str) -> Result<Vec<Resour
         .map(|items| {
             items
                 .iter()
-                .map(|item| Resource {
-                    kind: ResourceKind::Cache,
-                    id: item["id"].as_u64().unwrap_or(0),
-                    label: item["key"].as_str().unwrap_or_default().to_string(),
-                    size_bytes: item["size_in_bytes"].as_u64().unwrap_or(0),
-                    age_days: age_days(item["last_accessed_at"].as_str()),
-                    git_ref: item["ref"].as_str().map(str::to_string),
-                    // Filled in by `scan`, which knows the repo's closed PRs.
-                    stale_pr: false,
+                // An item with no addressable id is one we must not offer to
+                // delete — coercing it to id 0 would risk colliding with a
+                // real cache 0 and deleting the wrong thing.
+                .filter_map(|item| {
+                    let id = item["id"].as_u64()?;
+                    Some(Resource {
+                        kind: ResourceKind::Cache,
+                        id,
+                        label: item["key"].as_str().unwrap_or_default().to_string(),
+                        size_bytes: item["size_in_bytes"].as_u64().unwrap_or(0),
+                        age_days: age_days(item["last_accessed_at"].as_str()),
+                        git_ref: item["ref"].as_str().map(str::to_string),
+                        // Filled in by `scan`, which knows the repo's closed PRs.
+                        stale_pr: false,
+                    })
                 })
                 .collect()
         })

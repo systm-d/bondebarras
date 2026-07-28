@@ -15,22 +15,28 @@ pub async fn list(client: &Client, owner: &str, repo: &str) -> Result<Vec<Resour
         .map(|items| {
             items
                 .iter()
-                .map(|item| Resource {
-                    kind: ResourceKind::WorkflowRun,
-                    id: item["id"].as_u64().unwrap_or(0),
-                    label: format!(
-                        "{} #{}",
-                        item["name"].as_str().unwrap_or("workflow"),
-                        item["run_number"].as_u64().unwrap_or(0)
-                    ),
-                    // The API reports no size for a run. The reclaimed space
-                    // comes from the logs and artifacts deleted alongside it.
-                    size_bytes: 0,
-                    age_days: age_days(item["created_at"].as_str()),
-                    git_ref: item["head_branch"]
-                        .as_str()
-                        .map(|b| format!("refs/heads/{b}")),
-                    stale_pr: false,
+                // An item with no addressable id is one we must not offer to
+                // delete — coercing it to id 0 would risk colliding with a
+                // real run 0 and deleting the wrong thing.
+                .filter_map(|item| {
+                    let id = item["id"].as_u64()?;
+                    Some(Resource {
+                        kind: ResourceKind::WorkflowRun,
+                        id,
+                        label: format!(
+                            "{} #{}",
+                            item["name"].as_str().unwrap_or("workflow"),
+                            item["run_number"].as_u64().unwrap_or(0)
+                        ),
+                        // The API reports no size for a run. The reclaimed space
+                        // comes from the logs and artifacts deleted alongside it.
+                        size_bytes: 0,
+                        age_days: age_days(item["created_at"].as_str()),
+                        git_ref: item["head_branch"]
+                            .as_str()
+                            .map(|b| format!("refs/heads/{b}")),
+                        stale_pr: false,
+                    })
                 })
                 .collect()
         })

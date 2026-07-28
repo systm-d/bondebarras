@@ -17,12 +17,16 @@ pub async fn list(client: &Client, owner: &str, repo: &str) -> Result<Vec<Resour
         .map(|items| {
             items
                 .iter()
-                .map(|item| {
+                // An item with no addressable id is one we must not offer to
+                // delete — coercing it to id 0 would risk colliding with a
+                // real artifact 0 and deleting the wrong thing.
+                .filter_map(|item| {
+                    let id = item["id"].as_u64()?;
                     let name = item["name"].as_str().unwrap_or_default();
                     let expired = item["expired"].as_bool().unwrap_or(false);
-                    Resource {
+                    Some(Resource {
                         kind: ResourceKind::Artifact,
-                        id: item["id"].as_u64().unwrap_or(0),
+                        id,
                         // An expired artifact still occupies a row until it is
                         // deleted, so it is worth showing — and worth marking.
                         label: if expired {
@@ -34,7 +38,7 @@ pub async fn list(client: &Client, owner: &str, repo: &str) -> Result<Vec<Resour
                         age_days: age_days(item["created_at"].as_str()),
                         git_ref: None,
                         stale_pr: false,
-                    }
+                    })
                 })
                 .collect()
         })
