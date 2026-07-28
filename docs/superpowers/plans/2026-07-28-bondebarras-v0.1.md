@@ -1645,7 +1645,7 @@ pub async fn overview(client: &Client, orgs: &[String]) -> Vec<OrgSummary> {
                 });
             }
         }
-        repos_out.sort_by(|a, b| b.cache_bytes.cmp(&a.cache_bytes));
+        repos_out.sort_by_key(|r| std::cmp::Reverse(r.cache_bytes));
 
         Some(OrgSummary {
             login: org.clone(),
@@ -1660,7 +1660,7 @@ pub async fn overview(client: &Client, orgs: &[String]) -> Vec<OrgSummary> {
         .into_iter()
         .flatten()
         .collect();
-    out.sort_by(|a, b| b.cache_bytes.cmp(&a.cache_bytes));
+    out.sort_by_key(|o| std::cmp::Reverse(o.cache_bytes));
     out
 }
 
@@ -1681,7 +1681,7 @@ pub async fn repo_detail(client: &Client, owner: &str, repo: &str) -> Result<Vec
     // shows, just without the ⚑ shortcut.
     mark_stale(&mut items, &closed.unwrap_or_default());
 
-    items.sort_by(|a, b| b.size_bytes.cmp(&a.size_bytes));
+    items.sort_by_key(|i| std::cmp::Reverse(i.size_bytes));
     Ok(items)
 }
 
@@ -2234,8 +2234,8 @@ impl App {
             .collect();
 
         match self.sort {
-            SortKey::Size => out.sort_by(|a, b| b.size_bytes.cmp(&a.size_bytes)),
-            SortKey::Age => out.sort_by(|a, b| b.age_days.cmp(&a.age_days)),
+            SortKey::Size => out.sort_by_key(|r| std::cmp::Reverse(r.size_bytes)),
+            SortKey::Age => out.sort_by_key(|r| std::cmp::Reverse(r.age_days)),
             SortKey::Name => out.sort_by(|a, b| a.label.cmp(&b.label)),
         }
         out
