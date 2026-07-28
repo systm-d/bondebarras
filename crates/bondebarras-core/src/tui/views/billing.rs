@@ -3,13 +3,17 @@
 //! Minutes cannot be reclaimed retroactively, so the only useful thing this
 //! view can do is name the repository burning them.
 
-use crate::billing::FREE_MINUTES_PER_MONTH;
+use crate::billing::{FREE_MINUTES_PER_MONTH, MinuteLine, sku_multiplier};
 use crate::tui::app::App;
 use crate::tui::theme;
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
+
+/// The breakdown is the tab's reason to exist, but the area is bounded: past
+/// this many rows the tail is noise the user came here to avoid, not signal.
+const MAX_MINUTE_LINES: usize = 8;
 
 /// One line summarising allowance consumption.
 ///
@@ -43,6 +47,37 @@ fn thousands(n: u64) -> String {
         out.push(c);
     }
     out
+}
+
+/// Short runner name plus its multiplier, e.g. `"Windows ×2"`. An unknown SKU
+/// (no multiplier) is shown by its raw name rather than guessed at — it is
+/// also named separately by the ⚠ line below, but a breakdown row that
+/// dropped it silently would misreport which repository it belongs to.
+fn sku_label(sku: &str) -> String {
+    let name = if sku.starts_with("Actions macOS") {
+        "macOS"
+    } else {
+        sku.strip_prefix("Actions ").unwrap_or(sku)
+    };
+    match sku_multiplier(sku) {
+        Some(mult) if mult > 1 => format!("{name} ×{mult}"),
+        _ => name.to_string(),
+    }
+}
+
+/// One row of the per-repository breakdown, in the shape of the design
+/// mockup: repo, raw quantity, runner (with its multiplier), equivalent.
+fn minute_line_row(line: &MinuteLine) -> Line<'static> {
+    Line::from(Span::styled(
+        format!(
+            "   {:<12}{:>8} {:<12}{:>10}",
+            line.repo,
+            thousands(line.quantity),
+            sku_label(&line.sku),
+            thousands(line.equivalent),
+        ),
+        theme::muted(),
+    ))
 }
 
 pub fn render(app: &mut App, f: &mut Frame, area: Rect) {
@@ -81,6 +116,14 @@ pub fn render(app: &mut App, f: &mut Frame, area: Rect) {
                 gauge_line(report.included_minutes(&month), FREE_MINUTES_PER_MONTH),
                 theme::text_style(),
             )));
+
+            // The gauge says the quota is blown; this is the only actionable
+            // part of the tab — which repository to go and fix. Minutes
+            // cannot be reclaimed retroactively, so naming the offender is
+            // not decoration, it is the tab's reason to exist.
+            for minute_line in report.minute_lines(&month).iter().take(MAX_MINUTE_LINES) {
+                lines.push(minute_line_row(minute_line));
+            }
 
             let (gross, covered, billed) = report.cost(&month);
             lines.push(Line::from(""));

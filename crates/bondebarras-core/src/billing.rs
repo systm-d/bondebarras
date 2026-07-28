@@ -28,6 +28,16 @@ pub struct BillingReport {
     pub items: Vec<UsageItem>,
 }
 
+/// One row of the per-repository breakdown: which repo ran which runner, and
+/// what that costs against the allowance once the multiplier is applied.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MinuteLine {
+    pub repo: String,
+    pub sku: String,
+    pub quantity: u64,
+    pub equivalent: u64,
+}
+
 /// Free Actions allowance for an organization, in Linux-equivalent minutes.
 pub const FREE_MINUTES_PER_MONTH: u64 = 2_000;
 
@@ -79,6 +89,34 @@ impl BillingReport {
             .fold((0.0, 0.0, 0.0), |(g, c, b), i| {
                 (g + i.gross, c + i.discount, b + i.net)
             })
+    }
+
+    /// Billable minute usage for the month, heaviest allowance consumer first.
+    ///
+    /// This is the tab's reason to exist. Minutes are gone once burnt, so the
+    /// only useful answer is *which repository burnt them* — an aggregate says
+    /// the quota is blown without saying what to go and fix.
+    ///
+    /// Same two filters as `included_minutes`: minute-typed items only, and
+    /// fully discounted ones excluded, so a public repo never appears here.
+    pub fn minute_lines(&self, month: &str) -> Vec<MinuteLine> {
+        let mut out: Vec<MinuteLine> = self
+            .items
+            .iter()
+            .filter(|i| i.month == month && i.unit_type == "Minutes")
+            .filter(|i| i.gross > i.discount)
+            .map(|i| {
+                let mult = sku_multiplier(&i.sku).unwrap_or(1);
+                MinuteLine {
+                    repo: i.repo.clone(),
+                    sku: i.sku.clone(),
+                    quantity: i.quantity.round() as u64,
+                    equivalent: (i.quantity * mult as f64).round() as u64,
+                }
+            })
+            .collect();
+        out.sort_by_key(|l| std::cmp::Reverse(l.equivalent));
+        out
     }
 
     /// SKUs in this month that `sku_multiplier` does not know.
@@ -241,5 +279,33 @@ mod tests {
         assert_eq!(r.included_minutes("2026-07"), 0);
         assert_eq!(r.cost("2026-07"), (0.0, 0.0, 0.0));
         assert!(r.months().is_empty());
+    }
+
+    #[test]
+    fn minute_lines_name_the_repo_and_rank_by_allowance_cost() {
+        let r = BillingReport {
+            items: vec![
+                item("2026-07", "Actions Linux", 3311.0, 19.8, 0.0, "josephine"),
+                item("2026-07", "Actions Windows", 6079.0, 60.7, 0.0, "claudine"),
+                item(
+                    "2026-07",
+                    "Actions Linux",
+                    5000.0,
+                    30.0,
+                    30.0,
+                    "public-repo",
+                ),
+            ],
+        };
+        let lines = r.minute_lines("2026-07");
+
+        // Windows x2 outranks a larger raw Linux count — the ranking is by
+        // what the allowance actually pays, not by wall-clock minutes.
+        assert_eq!(lines.len(), 2, "the fully discounted repo must not appear");
+        assert_eq!(lines[0].repo, "claudine");
+        assert_eq!(lines[0].quantity, 6079);
+        assert_eq!(lines[0].equivalent, 12158);
+        assert_eq!(lines[1].repo, "josephine");
+        assert_eq!(lines[1].equivalent, 3311);
     }
 }
