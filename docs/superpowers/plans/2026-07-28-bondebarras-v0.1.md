@@ -2888,9 +2888,17 @@ async fn event_loop<B: ratatui::backend::Backend>(
                     }
                 }
             }
-            KeyCode::Char(c) => app.filter.push(c),
+            // Typing in the filter reshuffles the visible list, so the cursor
+            // has to come back to a row that still exists — `cycle_sort` resets
+            // it for the same reason. Without this, a filter that shrinks the
+            // list below the cursor makes [espace] silently do nothing.
+            KeyCode::Char(c) => {
+                app.filter.push(c);
+                app.res_cursor = 0;
+            }
             KeyCode::Backspace => {
                 app.filter.pop();
+                app.res_cursor = 0;
             }
             _ => {}
         }
