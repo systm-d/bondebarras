@@ -1258,7 +1258,7 @@ mod tests {
 
 - [ ] **Step 2: Lancer les tests pour vérifier qu'ils échouent**
 
-Run: `cargo test -p bondebarras-core "artifacts|runs"`
+Run: `cargo test -p bondebarras-core artifacts && cargo test -p bondebarras-core runs`
 Expected: FAIL — `cannot find function list`.
 
 - [ ] **Step 3: Écrire les deux implémentations**
@@ -1363,7 +1363,7 @@ pub async fn delete(client: &Client, owner: &str, repo: &str, id: u64) -> Result
 
 - [ ] **Step 4: Relancer les tests**
 
-Run: `cargo test -p bondebarras-core "artifacts|runs"`
+Run: `cargo test -p bondebarras-core artifacts && cargo test -p bondebarras-core runs`
 Expected: PASS (2 tests).
 
 - [ ] **Step 5: Commit**
@@ -1448,7 +1448,7 @@ mod tests {
 
 - [ ] **Step 2: Lancer les tests pour vérifier qu'ils échouent**
 
-Run: `cargo test -p bondebarras-core "repos|prs"`
+Run: `cargo test -p bondebarras-core repos && cargo test -p bondebarras-core prs`
 Expected: FAIL — `cannot find function list` / `closed_numbers`.
 
 - [ ] **Step 3: Écrire les deux implémentations**
@@ -1509,7 +1509,7 @@ pub async fn closed_numbers(client: &Client, owner: &str, repo: &str) -> Result<
 
 - [ ] **Step 4: Relancer les tests**
 
-Run: `cargo test -p bondebarras-core "repos|prs"`
+Run: `cargo test -p bondebarras-core repos && cargo test -p bondebarras-core prs`
 Expected: PASS (2 tests).
 
 - [ ] **Step 5: Commit**
