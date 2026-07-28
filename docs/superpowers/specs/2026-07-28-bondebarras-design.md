@@ -307,7 +307,7 @@ opération future ne puisse pas se glisser dans un cron par inadvertance.
 (`max_width = 100`), `.cargo/audit.toml`, `.github/` (CODEOWNERS, `dependabot.yml`,
 templates issue et PR).
 
-Rust **edition 2024**, MSRV **1.85**, `unsafe_code = "forbid"`,
+Rust **edition 2024**, MSRV **1.88**, `unsafe_code = "forbid"`,
 clippy `all = { level = "warn", priority = -1 }`.
 
 ### 9.2 Workflows
