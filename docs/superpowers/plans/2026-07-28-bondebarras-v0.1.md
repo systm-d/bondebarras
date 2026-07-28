@@ -109,6 +109,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
 octocrab = "0.41"
+http = "1"
 ratatui = "0.30"
 crossterm = "0.29"
 chrono = { version = "0.4", features = ["serde"] }
@@ -737,6 +738,44 @@ mod tests {
             .unwrap();
     }
 
+    #[test]
+    fn retry_after_reads_the_header_as_seconds() {
+        let mut headers = http::HeaderMap::new();
+        assert_eq!(retry_after(&headers), None);
+
+        headers.insert("retry-after", "42".parse().unwrap());
+        assert_eq!(retry_after(&headers), Some(Duration::from_secs(42)));
+
+        // GitHub only ever sends integer seconds here; an HTTP-date or any
+        // other shape must read as "no delay named", not as an error.
+        headers.insert("retry-after", "Wed, 21 Oct 2026 07:28:00 GMT".parse().unwrap());
+        assert_eq!(retry_after(&headers), None);
+    }
+
+    #[tokio::test]
+    async fn delete_retries_when_github_throttles() {
+        let server = MockServer::start().await;
+        // A 0-second Retry-After keeps the test fast while still exercising
+        // the header path; the retry loop is what is under test here.
+        Mock::given(method("DELETE"))
+            .and(path("/repos/systm-d/claudine/actions/caches/9"))
+            .respond_with(ResponseTemplate::new(429).insert_header("retry-after", "0"))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("DELETE"))
+            .and(path("/repos/systm-d/claudine/actions/caches/9"))
+            .respond_with(ResponseTemplate::new(204))
+            .mount(&server)
+            .await;
+
+        let client = Client::with_base("t0ken", &server.uri()).unwrap();
+        client
+            .delete("/repos/systm-d/claudine/actions/caches/9")
+            .await
+            .unwrap();
+    }
+
     #[tokio::test]
     async fn delete_surfaces_a_failing_status() {
         let server = MockServer::start().await;
@@ -779,10 +818,12 @@ pub mod runs;
 
 use crate::auth::Scopes;
 use anyhow::{Context, Result, bail};
+use http::StatusCode;
 use octocrab::Octocrab;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Semaphore;
+use tokio::time::sleep;
 
 /// GitHub's public API root.
 const DEFAULT_BASE: &str = "https://api.github.com";
@@ -795,6 +836,13 @@ const HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 /// binding constraint at this scale; the secondary limit on burst concurrency
 /// is.
 const READ_CONCURRENCY: usize = 8;
+
+/// How many times a throttled deletion is retried before giving up. Three
+/// covers the transient case without stalling the interface indefinitely.
+const MAX_DELETE_RETRIES: usize = 3;
+
+/// Wait used when GitHub throttles without naming a delay in `Retry-After`.
+const DEFAULT_BACKOFF: Duration = Duration::from_secs(5);
 
 pub struct Client {
     gh: Octocrab,
@@ -844,25 +892,63 @@ impl Client {
             .with_context(|| format!("GET {path}"))
     }
 
-    /// DELETE ignoring the (usually empty) body, surfacing the status code.
+    /// DELETE ignoring the (usually empty) body, retrying when GitHub throttles.
     ///
     /// `Octocrab::delete` would try to deserialise the empty 204 body, so we
     /// go through `_delete` and read the status ourselves. `BaseUriLayer`
     /// still supplies scheme and authority, so a bare path is enough.
+    ///
+    /// Retry lives here rather than on reads because deletions are what hit
+    /// the ceiling: a purge of 132 caches is a burst, and GitHub answers a
+    /// burst with its secondary rate limit. A stage-1 scan is 60 reads at a
+    /// concurrency of 8 and never gets close.
     pub async fn delete(&self, path: &str) -> Result<()> {
-        let _permit = self.sem.acquire().await.expect("semaphore never closed");
-        let response = self
-            .gh
-            ._delete(path, None::<&()>)
-            .await
-            .with_context(|| format!("DELETE {path}"))?;
+        let mut attempt = 0;
+        loop {
+            let wait = {
+                let _permit = self.sem.acquire().await.expect("semaphore never closed");
+                let response = self
+                    .gh
+                    ._delete(path, None::<&()>)
+                    .await
+                    .with_context(|| format!("DELETE {path}"))?;
 
-        let status = response.status();
-        if !status.is_success() {
-            bail!("DELETE {path} a échoué : {status}");
+                let status = response.status();
+                if status.is_success() {
+                    return Ok(());
+                }
+
+                // 429 and 403 are how GitHub signals its secondary rate limit.
+                // Any other status is a real failure that retrying cannot mend.
+                let throttled =
+                    status == StatusCode::TOO_MANY_REQUESTS || status == StatusCode::FORBIDDEN;
+                if !throttled || attempt == MAX_DELETE_RETRIES {
+                    bail!("DELETE {path} a échoué : {status}");
+                }
+                retry_after(response.headers()).unwrap_or(DEFAULT_BACKOFF)
+            };
+
+            attempt += 1;
+            // The permit has dropped here: the backoff does not hold a slot.
+            sleep(wait).await;
         }
-        Ok(())
     }
+}
+
+/// The delay GitHub asked us to wait, when it named one in `Retry-After`.
+///
+/// The header is seconds-as-integer in the throttling responses GitHub sends.
+/// An absent or unparseable value is not an error — the caller falls back to
+/// [`DEFAULT_BACKOFF`].
+fn retry_after(headers: &http::HeaderMap) -> Option<Duration> {
+    headers
+        .get("retry-after")?
+        .to_str()
+        .ok()?
+        .trim()
+        .parse::<u64>()
+        .ok()
+        .map(Duration::from_secs)
 }
 ```
 
