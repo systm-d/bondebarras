@@ -140,6 +140,21 @@ pub async fn execute(client: &Client, plan: Plan, tx: UnboundedSender<Progress>)
             ResourceKind::PackageVersion => {
                 packages::delete_version(client, &plan.owner, &plan.repo, item.id).await
             }
+            // Task 4 wires these three to `api::refs::delete_branch`,
+            // `api::refs::delete_tag` and `api::releases::delete_asset`. No
+            // plan can contain any of them yet — `scan::repo_detail` does not
+            // produce them until task 4 lands — so these arms exist only to
+            // keep the match exhaustive; each fails its single item rather
+            // than panicking the whole run if reached early.
+            ResourceKind::Branch => Err(anyhow::anyhow!(
+                "suppression des branches non câblée pour l'instant (tâche 4)"
+            )),
+            ResourceKind::Tag => Err(anyhow::anyhow!(
+                "suppression des tags non câblée pour l'instant (tâche 4)"
+            )),
+            ResourceKind::ReleaseAsset => Err(anyhow::anyhow!(
+                "suppression des assets de release non câblée pour l'instant (tâche 4)"
+            )),
         };
 
         match result {

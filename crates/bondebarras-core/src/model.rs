@@ -1,27 +1,36 @@
 //! Core data model: resources, risk tiers, and display formatting.
 
 /// A deletable GitHub resource family. v0.1 covers the three regenerable ones;
-/// v0.3 adds container package versions, the first irreversible one.
+/// v0.3 adds container package versions, the first irreversible one; v0.4
+/// adds branches, tags and release assets.
 ///
 /// `Hash` matters as much as `Eq` here: GitHub numbers caches, artifacts,
 /// workflow runs and package versions in independent namespaces, so a
 /// selection set keyed on `id` alone would collide across kinds. Keying on
-/// `(ResourceKind, u64)` needs both derives.
+/// `(ResourceKind, u64)` needs both derives. Branches and tags carry no
+/// numeric id at all — `Resource.id` is a hash of the name for those two (see
+/// task 3's `api::refs`), which is exactly why the pair still needs `Hash`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ResourceKind {
     Cache,
     Artifact,
     WorkflowRun,
     PackageVersion,
+    Branch,
+    Tag,
+    ReleaseAsset,
 }
 
 impl ResourceKind {
     /// Every variant, so tests can assert the `risk_tier` match stays exhaustive.
-    pub const ALL: [ResourceKind; 4] = [
+    pub const ALL: [ResourceKind; 7] = [
         ResourceKind::Cache,
         ResourceKind::Artifact,
         ResourceKind::WorkflowRun,
         ResourceKind::PackageVersion,
+        ResourceKind::Branch,
+        ResourceKind::Tag,
+        ResourceKind::ReleaseAsset,
     ];
 }
 
@@ -44,7 +53,15 @@ pub fn risk_tier(kind: ResourceKind) -> RiskTier {
         ResourceKind::Cache | ResourceKind::Artifact | ResourceKind::WorkflowRun => RiskTier::Low,
         // Irreversible: the layer leaves the registry. A cache or an artifact
         // comes back with a re-run; this does not.
-        ResourceKind::PackageVersion => RiskTier::Medium,
+        ResourceKind::PackageVersion
+        // Irreversible for the same reason a package version is: none of the
+        // three comes back from a re-run. A branch or tag ref, once deleted,
+        // is gone from the repository outright; a release asset is gone from
+        // the release. Not nuclear — nothing here destroys the repository or
+        // the release itself, only what these three individually name.
+        | ResourceKind::Branch
+        | ResourceKind::Tag
+        | ResourceKind::ReleaseAsset => RiskTier::Medium,
     }
 }
 
@@ -199,5 +216,26 @@ mod tests {
         // nothing here destroys a repository.
         assert_eq!(risk_tier(ResourceKind::PackageVersion), RiskTier::Medium);
         assert!(RiskTier::Low < risk_tier(ResourceKind::PackageVersion));
+    }
+
+    #[test]
+    fn deleting_a_branch_is_medium_risk() {
+        // A merged branch is regenerable in principle (the commits live on
+        // in the default branch through the merge), but deleting the ref
+        // itself is not undoable by a re-run the way a cache or artifact is.
+        assert_eq!(risk_tier(ResourceKind::Branch), RiskTier::Medium);
+        assert!(RiskTier::Low < risk_tier(ResourceKind::Branch));
+    }
+
+    #[test]
+    fn deleting_a_tag_is_medium_risk() {
+        assert_eq!(risk_tier(ResourceKind::Tag), RiskTier::Medium);
+        assert!(RiskTier::Low < risk_tier(ResourceKind::Tag));
+    }
+
+    #[test]
+    fn deleting_a_release_asset_is_medium_risk() {
+        assert_eq!(risk_tier(ResourceKind::ReleaseAsset), RiskTier::Medium);
+        assert!(RiskTier::Low < risk_tier(ResourceKind::ReleaseAsset));
     }
 }

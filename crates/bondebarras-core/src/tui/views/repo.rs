@@ -18,6 +18,9 @@ pub fn row_spans(r: &Resource, checked: bool) -> Vec<Span<'static>> {
         ResourceKind::Artifact => "artif",
         ResourceKind::WorkflowRun => "run  ",
         ResourceKind::PackageVersion => "pkg  ",
+        ResourceKind::Branch => "branc",
+        ResourceKind::Tag => "tag  ",
+        ResourceKind::ReleaseAsset => "asset",
     };
 
     // `size_display` shows `—` rather than "0 o" for a package version:

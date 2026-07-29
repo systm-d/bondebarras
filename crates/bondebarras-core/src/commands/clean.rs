@@ -39,6 +39,16 @@ pub fn select(items: &[Resource], filter: &CleanFilter) -> Vec<Resource> {
             ResourceKind::Artifact => filter.artifacts,
             ResourceKind::WorkflowRun => filter.runs,
             ResourceKind::PackageVersion => filter.packages,
+            // Task 5 adds the `--branches`, `--tags` and `--assets` flags
+            // these arms would read. Until then `CleanFilter` has no fields
+            // for them, and `scan::repo_detail` (task 4) never puts any of
+            // these three kinds into `items`, so this is unreachable today —
+            // not a silent `false` standing in for flags that do not exist
+            // yet.
+            ResourceKind::Branch | ResourceKind::Tag | ResourceKind::ReleaseAsset => unreachable!(
+                "Branch/Tag/ReleaseAsset never reach select() before task 4 wires \
+                 scan::repo_detail and task 5 adds the --branches/--tags/--assets flags"
+            ),
         })
         // A protected resource is never taken in bulk. Headless has no human
         // to override that, so this is not a default — it is the rule.
