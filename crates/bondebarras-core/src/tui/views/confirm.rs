@@ -80,32 +80,59 @@ fn flatten(line: &Line<'static>) -> String {
 /// Ratatui exposes `Paragraph::line_count` for exactly this, but only
 /// behind the `unstable-rendered-line-info` cargo feature — explicitly
 /// documented upstream as liable to change even in a patch release, not
-/// worth pulling in for one call site. This modal has exactly one line long
-/// enough to actually wrap (the multi-arch caveat), so a plain greedy
-/// word-wrap — pack whole words onto a row until the next one would
-/// overflow, then start a new one — is simple enough to trust on its own.
+/// worth pulling in for one call site. A plain greedy word-wrap — pack
+/// whole words onto a row until the next one would overflow, then start a
+/// new one — is simple enough to trust on its own.
 fn wrapped_row_count(lines: &[Line<'static>], width: u16) -> u16 {
     let width = width.max(1) as usize;
     let total: usize = lines.iter().map(|l| wrap_rows(&flatten(l), width)).sum();
     total.try_into().unwrap_or(u16::MAX)
 }
 
-/// Greedy word-wrap row count for one logical line. A blank line still
-/// costs one row: it is a visible gap, not zero rows.
+/// Greedy word-wrap row count for one logical line, matching `Wrap { trim:
+/// false }`.
+///
+/// Leading whitespace is preserved by that wrap mode and counts against the
+/// width budget like any other character — an earlier version of this
+/// function used `text.split_whitespace()` directly, which silently drops
+/// leading whitespace, undercounting the two-space-indented item lines
+/// `itemised_body` builds by exactly one row whenever a label's length
+/// alone (without its indent) still just fit. A single word wider than
+/// `width` — a long cache key with no spaces in it, say — hard-wraps across
+/// several rows of its own here, the same way ratatui's own `WordWrapper`
+/// does, rather than being counted as a single row that quietly overflows.
+///
+/// Implemented as one column position (`pos`) unrolled across rows of
+/// `width`, rather than tracked per-row: a word that does not fit what is
+/// left of the current row, but does fit a fresh one, skips ahead to the
+/// next row boundary; everything else just accumulates.
 fn wrap_rows(text: &str, width: usize) -> usize {
-    let mut rows = 1usize;
-    let mut col = 0usize;
-    for word in text.split_whitespace() {
+    let width = width.max(1);
+    let stripped = text.trim_start();
+    let indent = text.chars().count() - stripped.chars().count();
+
+    let mut pos = indent;
+    let mut first = true;
+    for word in stripped.split_whitespace() {
         let len = word.chars().count();
-        let sep = if col == 0 { 0 } else { 1 };
-        if col > 0 && col + sep + len > width {
-            rows += 1;
-            col = len;
+        let sep = usize::from(!first);
+        first = false;
+
+        let col = pos % width;
+        if col != 0 && len <= width && col + sep + len > width {
+            // The whole word moves to a fresh row rather than splitting —
+            // ordinary word-wrap. A word longer than `width` skips this and
+            // falls through to the `else`, letting `pos` carry it across as
+            // many rows as it needs from wherever it already stood.
+            pos += width - col;
+            pos += len;
         } else {
-            col += sep + len;
+            pos += sep + len;
         }
     }
-    rows
+
+    // A blank line (`pos == 0`) still costs one visible row.
+    pos.div_ceil(width).max(1)
 }
 
 /// The lines every modal opens with: the recap and the target repository.
@@ -120,97 +147,167 @@ fn header(plan: &Plan) -> Vec<Line<'static>> {
     ]
 }
 
-/// Tier 1: every item is regenerable, so a re-run undoes any mistake.
-fn simple_body(plan: &Plan) -> Vec<Line<'static>> {
-    let mut lines = header(plan);
-    lines.push(Line::from(Span::styled(
+fn regen_line() -> Line<'static> {
+    Line::from(Span::styled(
         "Ces éléments sont régénérables par un re-run.",
         theme::muted(),
-    )));
-    lines.push(Line::from(Span::styled(
-        "Supprimer ?   [y/N]",
-        theme::title_style(),
-    )));
-    lines
+    ))
 }
 
-/// Tier 2: at least one item is gone for good once deleted, so the modal
-/// names what will go and says so plainly — the tier-1 "régénérable" claim
-/// would be false here.
-fn itemised_body(plan: &Plan) -> Vec<Line<'static>> {
-    let mut lines = header(plan);
+fn prompt_line() -> Line<'static> {
+    Line::from(Span::styled("Supprimer ?   [y/N]", theme::title_style()))
+}
 
-    for item in plan.items.iter().take(MAX_RECAP_ITEMS) {
-        lines.push(Line::from(Span::styled(
-            format!("  {}", item.label),
-            theme::muted(),
-        )));
-    }
-    if plan.items.len() > MAX_RECAP_ITEMS {
-        lines.push(Line::from(Span::styled(
-            format!("  … et {} autre(s)", plan.items.len() - MAX_RECAP_ITEMS),
-            theme::muted(),
-        )));
-    }
-
-    lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled(
+fn warning_line() -> Line<'static> {
+    Line::from(Span::styled(
         "Ces éléments ne reviendront pas : une fois supprimés, ils quittent le registre pour de bon.",
         theme::status_warn(),
-    )));
-    // GitHub's API gives no way to check this — the caveat has to live here,
-    // in the one place the user is guaranteed to read before confirming.
-    // Split across two `Line`s rather than one 154-character sentence: it
-    // still wraps at a realistic terminal width either way (nothing here fits
-    // unwrapped under ~225 columns), but wrapping mid-clause reads worse than
-    // a deliberate break at the sentence boundary.
-    lines.push(Line::from(Span::styled(
-        "Une version sans tag peut être une couche d'une image multi-architecture : la \
-         supprimer casserait son manifeste parent.",
-        theme::muted(),
-    )));
-    lines.push(Line::from(Span::styled(
-        "GitHub ne permet pas de le vérifier.",
-        theme::muted(),
-    )));
-    lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled(
-        "Supprimer ?   [y/N]",
-        theme::title_style(),
-    )));
-    lines
+    ))
 }
 
-/// The modal's body, chosen by the plan's tier — never decided by the caller.
-fn body(plan: &Plan) -> Vec<Line<'static>> {
-    match modal_kind(plan.tier()) {
-        ModalKind::Simple => simple_body(plan),
-        ModalKind::Itemised => itemised_body(plan),
+/// Split across two `Line`s rather than one 154-character sentence: it
+/// still wraps at a realistic terminal width either way (nothing here fits
+/// unwrapped under ~225 columns), but wrapping mid-clause reads worse than
+/// a deliberate break at the sentence boundary.
+fn caveat_lines() -> [Line<'static>; 2] {
+    [
+        Line::from(Span::styled(
+            "Une version sans tag peut être une couche d'une image multi-architecture : la \
+             supprimer casserait son manifeste parent.",
+            theme::muted(),
+        )),
+        Line::from(Span::styled(
+            "GitHub ne permet pas de le vérifier.",
+            theme::muted(),
+        )),
+    ]
+}
+
+/// The lines that must never be clipped: the confirmation prompt, and — for
+/// a tier-2 plan — the irreversibility warning and the multi-arch caveat
+/// that justify it. GitHub's API gives no way to check the multi-arch risk,
+/// so the caveat has to live here, in the one place the user is guaranteed
+/// to read it before confirming. A user who cannot see what is about to be
+/// deleted can still refuse; a user who cannot see this cannot do either —
+/// so unlike the recap, this is never truncated to fit a small frame.
+///
+/// `compact` drops the blank spacer lines — pure whitespace, no
+/// information — the one concession this footer makes, and only once
+/// `render` finds that even the full version does not fit the frame at
+/// all. Nothing past that is negotiable: if the footer still does not fit
+/// after that, the frame is simply too small for it, full stop.
+fn footer(kind: ModalKind, compact: bool) -> Vec<Line<'static>> {
+    match kind {
+        ModalKind::Simple => vec![regen_line(), prompt_line()],
+        ModalKind::Itemised => {
+            let [caveat1, caveat2] = caveat_lines();
+            if compact {
+                vec![warning_line(), caveat1, caveat2, prompt_line()]
+            } else {
+                vec![
+                    Line::from(""),
+                    warning_line(),
+                    caveat1,
+                    caveat2,
+                    Line::from(""),
+                    prompt_line(),
+                ]
+            }
+        }
     }
+}
+
+/// The recap: the plan summary, the target repository and — for a tier-2
+/// plan — as many item labels as fit in `budget_rows`, capped at
+/// [`MAX_RECAP_ITEMS`] regardless of how much room there is. This is what
+/// gives way when the frame is tight, all the way down to nothing: the
+/// footer must never lose a row to it, so the recap has to be able to give
+/// up every one of its own rows, header included, rather than the other
+/// way around.
+fn recap(plan: &Plan, kind: ModalKind, budget_rows: u16, inner_width: u16) -> Vec<Line<'static>> {
+    let hdr = header(plan);
+    if kind == ModalKind::Simple {
+        return hdr;
+    }
+
+    let hdr_rows = wrapped_row_count(&hdr, inner_width);
+    if hdr_rows > budget_rows {
+        return Vec::new();
+    }
+
+    let mut lines = hdr;
+    // Reserve one row up front for a possible "… et N autre(s)" line: only
+    // the loop below knows whether anything ends up hidden, and adding the
+    // reservation retroactively could itself overflow the budget by the
+    // row it was trying to make room for.
+    let items_budget = budget_rows.saturating_sub(hdr_rows).saturating_sub(1);
+    let mut item_rows_used = 0u16;
+    let mut shown = 0usize;
+
+    for item in plan.items.iter().take(MAX_RECAP_ITEMS) {
+        let line = Line::from(Span::styled(format!("  {}", item.label), theme::muted()));
+        let rows = wrap_rows(&flatten(&line), inner_width as usize) as u16;
+        if item_rows_used + rows > items_budget {
+            break;
+        }
+        item_rows_used += rows;
+        shown += 1;
+        lines.push(line);
+    }
+
+    if shown < plan.items.len() {
+        lines.push(Line::from(Span::styled(
+            format!("  … et {} autre(s)", plan.items.len() - shown),
+            theme::muted(),
+        )));
+    }
+
+    lines
 }
 
 pub fn render(plan: &Plan, f: &mut Frame, area: Rect) {
-    let lines = body(plan);
+    let kind = modal_kind(plan.tier());
 
     // Width: itemised carries a recap list plus the multi-arch caveat, and
     // gets more of the frame than the bare tier-1 box so that caveat wraps
     // into fewer, more readable rows.
-    let percent_x: u32 = match modal_kind(plan.tier()) {
+    let percent_x: u32 = match kind {
         ModalKind::Simple => 60,
         ModalKind::Itemised => 90,
     };
     let width = ((u32::from(area.width) * percent_x / 100).max(1) as u16).min(area.width.max(1));
     let inner_width = width.saturating_sub(2).max(1);
+    let available = area.height.max(1).saturating_sub(2);
 
-    // Height: sized from the content, not guessed as a percentage. A
-    // percentage silently clips whatever does not fit — the eight-item recap,
-    // the irreversibility warning, the multi-arch caveat and the `[y/N]`
-    // prompt itself all fell off an 80x24 terminal this way — and `Paragraph`
-    // clips rather than scrolls, so getting this number wrong is exactly as
-    // bad as the percentage it replaces. `wrapped_row_count` accounts for
-    // `Wrap { trim: false }` reflowing the caveat, still clamped to what the
-    // frame actually has in case content ever outgrows even that.
-    let height = (wrapped_row_count(&lines, inner_width) + 2).min(area.height.max(1));
+    // The footer is reserved first, and only it is allowed to claim it is
+    // never clippable — see its own doc comment. The recap gets whatever
+    // rows are left over, and truncates its item list (down to nothing, if
+    // it must) to fit rather than the other way around, which is what let
+    // an ordinary ten-cache-plus-one-package-version plan clip the warning,
+    // the caveat and the prompt off an 80x24 terminal even after the
+    // content-sized `height` fix: that fix sized the *box* from the
+    // content, but a single `Paragraph` still clips *within* the box from
+    // the bottom — exactly where the footer lives — whenever the content
+    // does not fit the box after all.
+    let mut footer_lines = footer(kind, false);
+    let mut footer_rows = wrapped_row_count(&footer_lines, inner_width);
+    if footer_rows > available {
+        footer_lines = footer(kind, true);
+        footer_rows = wrapped_row_count(&footer_lines, inner_width);
+    }
+
+    let recap_lines = recap(
+        plan,
+        kind,
+        available.saturating_sub(footer_rows),
+        inner_width,
+    );
+    let recap_rows = wrapped_row_count(&recap_lines, inner_width);
+
+    let mut lines = recap_lines;
+    lines.extend(footer_lines);
+
+    let height = (2 + recap_rows + footer_rows).min(area.height.max(1));
 
     let zone = centered(Constraint::Length(width), Constraint::Length(height), area);
     f.render_widget(Clear, zone);
@@ -260,6 +357,20 @@ mod tests {
             .map(|s| s.content.as_ref())
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    /// The modal's full, unconstrained content — every line `render` might
+    /// show, with no width or row budget applied (`u16::MAX` both ways, so
+    /// nothing here ever wraps or gets truncated for space). A seam for the
+    /// tests below that assert on content rather than on a rendered buffer:
+    /// `render` itself never calls this, since unconstrained content is
+    /// exactly what clipped the prompt off an 80x24 terminal in the first
+    /// place — the point of this whole review round.
+    fn body(plan: &Plan) -> Vec<Line<'static>> {
+        let kind = modal_kind(plan.tier());
+        let mut lines = recap(plan, kind, u16::MAX, u16::MAX);
+        lines.extend(footer(kind, false));
+        lines
     }
 
     #[test]
@@ -362,6 +473,75 @@ mod tests {
         assert!(
             rendered.contains("multi-architecture"),
             "the caveat must be on screen"
+        );
+    }
+
+    #[test]
+    fn the_prompt_survives_a_plan_whose_items_overflow_the_frame() {
+        // Ten 71-char cache keys plus a package version: an everyday tier-2
+        // plan, and the shape that clipped the prompt off an 80x24 terminal
+        // after the first fix — the content-sized box still handed the
+        // whole thing to one `Paragraph`, which clips from the bottom, and
+        // the bottom is where the warning, the caveat and the prompt live.
+        // The prompt and the warning are never clippable; items are what
+        // gets dropped.
+        let mut items: Vec<Resource> = (0..10)
+            .map(|i| {
+                item(
+                    ResourceKind::Cache,
+                    i,
+                    &format!("Linux-x64-cargo-registry-{i:0>46}"),
+                )
+            })
+            .collect();
+        items.push(item(
+            ResourceKind::PackageVersion,
+            100,
+            "sha256:9a26c7080… (sans tag)",
+        ));
+        let p = plan(items);
+
+        let backend = ratatui::backend::TestBackend::new(80, 24);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|f| render(&p, f, f.area())).unwrap();
+
+        let rendered: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+
+        assert!(
+            rendered.contains("[y/N]"),
+            "the prompt must be on screen: {rendered}"
+        );
+        assert!(
+            rendered.contains("ne reviendront pas"),
+            "the irreversibility warning must be on screen: {rendered}"
+        );
+        assert!(
+            rendered.contains("multi-architecture"),
+            "the caveat must be on screen: {rendered}"
+        );
+    }
+
+    #[test]
+    fn wrap_rows_accounts_for_an_items_two_space_indent() {
+        // The label alone is exactly `width - 1` characters — one shy of
+        // the available width — but `itemised_body`'s two-space indent,
+        // preserved by `Wrap { trim: false }`, pushes the full rendered
+        // line one character past it. `split_whitespace` alone would drop
+        // the indent and miscount this as a single row.
+        let width = 40usize;
+        let label = "x".repeat(width - 1);
+        let line = format!("  {label}");
+        assert_eq!(
+            wrap_rows(&line, width),
+            2,
+            "a {}-character line at width {width} must need two rows",
+            line.chars().count()
         );
     }
 }
