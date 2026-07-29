@@ -81,4 +81,32 @@ mod tests {
         // artifacts GitHub drops along with the run.
         assert_eq!(items[0].size_bytes, 0);
     }
+
+    #[tokio::test]
+    async fn an_item_without_a_usable_id_is_dropped() {
+        // An item we cannot address is an item we must not offer to delete.
+        // Coercing a missing id to 0 would collide every such item into one
+        // selection slot.
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/josephine/actions/runs"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "workflow_runs": [
+                    { "id": 4471, "name": "CI", "run_number": 128,
+                      "head_branch": "main", "created_at": "2026-05-01T00:00:00Z" },
+                    { "name": "CI", "run_number": 129,
+                      "head_branch": "main", "created_at": "2026-05-01T00:00:00Z" },
+                    { "id": "77", "name": "CI", "run_number": 130,
+                      "head_branch": "main", "created_at": "2026-05-01T00:00:00Z" }
+                ]
+            })))
+            .mount(&server)
+            .await;
+
+        let client = Client::with_base("t0ken", &server.uri()).unwrap();
+        let items = list(&client, "systm-d", "josephine").await.unwrap();
+
+        assert_eq!(items.len(), 1, "only the addressable item survives");
+        assert_eq!(items[0].id, 4471);
+    }
 }

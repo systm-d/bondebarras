@@ -5,6 +5,7 @@
 //! we deserialise by hand.
 
 pub mod artifacts;
+pub mod billing;
 pub mod caches;
 pub mod prs;
 pub mod repos;

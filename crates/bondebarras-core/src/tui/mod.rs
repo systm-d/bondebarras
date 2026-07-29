@@ -9,7 +9,7 @@ use crate::clean::{self, Plan, Progress};
 use crate::model::{OrgSummary, human_size};
 use crate::scan;
 use anyhow::Result;
-use app::{App, Focus};
+use app::{App, Focus, View};
 use crossterm::cursor::Show;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use crossterm::execute;
@@ -85,6 +85,11 @@ where
                     app.status = format!("Erreur : suppression de {id} — {reason}");
                 }
                 Progress::Finished { freed, failures } => {
+                    // One purge is done. `purge_finished` only disarms the
+                    // quit guard once every in-flight purge has settled — a
+                    // second purge started before this one landed must keep
+                    // `q` guarded.
+                    app.purge_finished();
                     app.status = if failures == 0 {
                         format!("Bon débarras ! {} libérés.", human_size(freed))
                     } else {
@@ -132,6 +137,7 @@ where
                 // Captured now, not read from `loaded` when `Finished` lands:
                 // the user can navigate to a different org while this runs.
                 app.purging_org = Some(plan.owner.clone());
+                app.purges_in_flight += 1;
                 // Spawned, not awaited: the loop keeps drawing and draining
                 // `rx` while the purge runs.
                 let tx = tx.clone();
@@ -160,12 +166,36 @@ where
             continue;
         }
 
+        // The Billing tab is strictly diagnostic. Everything below this
+        // point — including `d` — is `Orgs`-only, so as long as this block
+        // `continue`s, no selection and no deletion is reachable while
+        // Billing is on screen; only quitting, switching tabs back, and
+        // moving between months are.
+        if app.view == View::Billing {
+            match key.code {
+                KeyCode::Char('q') | KeyCode::Esc => request_quit(&mut app),
+                KeyCode::Char('b') => app.view = View::Orgs,
+                KeyCode::Left => app.month_cursor = app.month_cursor.saturating_sub(1),
+                KeyCode::Right => {
+                    let max = app
+                        .orgs
+                        .get(app.org_cursor)
+                        .and_then(|o| o.billing.as_ref())
+                        .map_or(0, |b| b.months().len().saturating_sub(1));
+                    app.month_cursor = (app.month_cursor + 1).min(max);
+                }
+                _ => {}
+            }
+            continue;
+        }
+
         match key.code {
             KeyCode::Esc if !app.filter.is_empty() => {
                 app.filter.clear();
                 app.res_cursor = 0;
             }
-            KeyCode::Char('q') | KeyCode::Esc => app.should_quit = true,
+            KeyCode::Char('q') | KeyCode::Esc => request_quit(&mut app),
+            KeyCode::Char('b') => app.view = View::Billing,
             KeyCode::Tab => {
                 app.focus = match app.focus {
                     Focus::Orgs => Focus::Repos,
@@ -176,7 +206,7 @@ where
             KeyCode::Down => match app.focus {
                 Focus::Orgs => {
                     app.org_cursor = (app.org_cursor + 1).min(app.orgs.len().saturating_sub(1));
-                    app.repo_cursor = 0;
+                    app.reset_scoped_cursors();
                 }
                 Focus::Repos => {
                     let max = app
@@ -193,7 +223,7 @@ where
             KeyCode::Up => match app.focus {
                 Focus::Orgs => {
                     app.org_cursor = app.org_cursor.saturating_sub(1);
-                    app.repo_cursor = 0;
+                    app.reset_scoped_cursors();
                 }
                 Focus::Repos => app.repo_cursor = app.repo_cursor.saturating_sub(1),
                 Focus::Resources => app.res_cursor = app.res_cursor.saturating_sub(1),
@@ -236,4 +266,47 @@ where
         }
     }
     Ok(())
+}
+
+/// Handle a `q`/`Esc` press, from either top-level view.
+///
+/// A purge runs on a spawned task while the event loop keeps handling keys;
+/// quitting mid-purge drops whatever is still queued and shows no summary.
+/// Say so once and let a second press through — an unattended quit must not
+/// silently cut an irreversible operation short.
+fn request_quit(app: &mut App) {
+    if app.purges_in_flight > 0 && !app.quit_armed {
+        app.quit_armed = true;
+        app.status = "Purge en cours — [q] à nouveau pour quitter sans l'achever.".into();
+    } else {
+        app.should_quit = true;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn request_quit_arms_the_guard_while_a_purge_is_in_flight_then_quits_on_a_second_press() {
+        let mut app = App::new(vec![]);
+        app.purges_in_flight = 1;
+
+        request_quit(&mut app);
+        assert!(app.quit_armed, "first press must warn, not quit");
+        assert!(!app.should_quit);
+
+        request_quit(&mut app);
+        assert!(
+            app.should_quit,
+            "a second press must go through despite the purge"
+        );
+    }
+
+    #[test]
+    fn request_quit_quits_immediately_with_no_purge_running() {
+        let mut app = App::new(vec![]);
+        request_quit(&mut app);
+        assert!(app.should_quit);
+    }
 }

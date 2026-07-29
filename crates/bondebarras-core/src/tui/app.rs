@@ -18,6 +18,13 @@ pub enum Focus {
     Resources,
 }
 
+/// Which top-level view is on screen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum View {
+    Orgs,
+    Billing,
+}
+
 /// Sort order of the resource pane.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SortKey {
@@ -58,11 +65,33 @@ pub struct App {
     pub org_state: ListState,
     /// Persistent cursor state for the right (resources) pane. Same reason.
     pub res_state: ListState,
-    /// The org a running purge belongs to. The user can navigate away while
-    /// it runs — purges execute on a spawned task while the event loop keeps
-    /// handling keys — so `loaded` is not it: it can point somewhere else by
-    /// the time the purge finishes. Captured when the purge starts.
+    /// The org a running purge belongs to, for the post-purge cache refresh.
+    /// The user can navigate away while it runs — purges execute on a
+    /// spawned task while the event loop keeps handling keys — so `loaded`
+    /// is not it: it can point somewhere else by the time the purge
+    /// finishes. Captured when a purge starts, overwritten if a second one
+    /// starts before the first's `Finished` lands — the refresh target is
+    /// best-effort under overlap, unlike the quit guard below, which must
+    /// stay correct.
     pub purging_org: Option<String>,
+    /// Which top-level tab is on screen.
+    pub view: View,
+    /// Index into `BillingReport::months()` for the org under the cursor —
+    /// which month the Billing tab shows.
+    pub month_cursor: usize,
+    /// How many purges are currently running on a spawned task. Incremented
+    /// when one starts, decremented when one's `Finished` lands. A single
+    /// `Option<String>` cannot represent this: starting a second purge before
+    /// the first finishes would let that first `Finished` clear the quit
+    /// guard while the second purge is still running, exactly when the guard
+    /// must not clear.
+    pub purges_in_flight: usize,
+    /// Set by a first quit press while a purge is running: it warns instead
+    /// of quitting outright, and only a second press goes through. A purge
+    /// runs on a spawned task, so an unattended quit would otherwise drop
+    /// whatever deletions are still queued with no summary shown. Disarmed by
+    /// `purge_finished` only once every in-flight purge has settled.
+    pub quit_armed: bool,
 }
 
 impl App {
@@ -84,6 +113,10 @@ impl App {
             org_state: ListState::default(),
             res_state: ListState::default(),
             purging_org: None,
+            view: View::Orgs,
+            month_cursor: 0,
+            purges_in_flight: 0,
+            quit_armed: false,
         }
     }
 
@@ -140,6 +173,18 @@ impl App {
             SortKey::Name => SortKey::Size,
         };
         self.res_cursor = 0;
+    }
+
+    /// Reset the cursors scoped beneath the org cursor, on every org move.
+    ///
+    /// `repo_cursor` already did this. `month_cursor` did not: paging to
+    /// month 5 on a six-month org, then switching to a two-month org, left
+    /// the cursor at 5 — the Billing tab clamps it on render, but the cursor
+    /// itself stayed stranded high, so `←` read as dead until it walked all
+    /// the way back down on its own.
+    pub fn reset_scoped_cursors(&mut self) {
+        self.repo_cursor = 0;
+        self.month_cursor = 0;
     }
 
     pub fn selection_bytes(&self) -> u64 {
@@ -203,6 +248,20 @@ impl App {
         }
         org.cache_bytes = org.repos.iter().map(|r| r.cache_bytes).sum();
         org.cache_count = org.repos.iter().map(|r| r.cache_count).sum();
+    }
+
+    /// Record that one purge's `Finished` message landed.
+    ///
+    /// Decrements `purges_in_flight` and disarms the quit guard only once it
+    /// reaches zero. Starting a second purge before the first finishes must
+    /// not let that first `Finished` clear the guard while the second purge
+    /// is still running — `q` would then quit silently, exactly the case the
+    /// guard exists to prevent.
+    pub fn purge_finished(&mut self) {
+        self.purges_in_flight = self.purges_in_flight.saturating_sub(1);
+        if self.purges_in_flight == 0 {
+            self.quit_armed = false;
+        }
     }
 }
 
@@ -343,12 +402,14 @@ mod tests {
             name: name.to_string(),
             cache_bytes: 0,
             cache_count: 0,
+            private: false,
         };
         let mut a = App::new(vec![OrgSummary {
             login: "systm-d".into(),
             cache_bytes: 0,
             cache_count: 0,
             repos: vec![repo("josephine"), repo("claudine")],
+            billing: None,
         }]);
         a.repo_cursor = 1;
 
@@ -368,6 +429,7 @@ mod tests {
             name: name.to_string(),
             cache_bytes: 0,
             cache_count: 0,
+            private: false,
         };
         let mut a = App::new(vec![
             OrgSummary {
@@ -375,12 +437,14 @@ mod tests {
                 cache_bytes: 0,
                 cache_count: 0,
                 repos: vec![repo("claudine")],
+                billing: None,
             },
             OrgSummary {
                 login: "josephine-org".into(),
                 cache_bytes: 0,
                 cache_count: 0,
                 repos: vec![repo("josephine")],
+                billing: None,
             },
         ]);
         a.resources = vec![res(1, "cache-1", 100, 1, false)];
@@ -418,6 +482,7 @@ mod tests {
             name: name.to_string(),
             cache_bytes: bytes,
             cache_count: count,
+            private: false,
         };
         let mut a = App::new(vec![OrgSummary {
             login: "systm-d".into(),
@@ -429,6 +494,7 @@ mod tests {
                 repo("claudine", 11_130_027_303, 69),
                 repo("josephine", 0, 0),
             ],
+            billing: None,
         }]);
 
         // The fresh report is exactly what usage-by-repository returns after
@@ -450,6 +516,50 @@ mod tests {
         assert_eq!(a.orgs[0].repos[1].cache_bytes, 0);
         assert_eq!(a.orgs[0].cache_bytes, 0);
         assert_eq!(a.orgs[0].cache_count, 0);
+    }
+
+    /// Locks finding 2: a second purge started before the first's `Finished`
+    /// message lands must not disarm the quit guard early. On the old
+    /// `purging_org: Option<String>` clearing `quit_armed` unconditionally on
+    /// every `Finished`, the first purge finishing would disarm the guard
+    /// while the second is still running — `q` would then quit silently,
+    /// exactly the case the guard exists to prevent.
+    #[test]
+    fn purge_finished_disarms_the_guard_only_once_every_purge_has_settled() {
+        let mut a = App::new(vec![]);
+        a.purges_in_flight = 2;
+        a.quit_armed = true;
+
+        a.purge_finished();
+        assert_eq!(a.purges_in_flight, 1);
+        assert!(
+            a.quit_armed,
+            "a second purge is still running; the guard must stay armed"
+        );
+
+        a.purge_finished();
+        assert_eq!(a.purges_in_flight, 0);
+        assert!(
+            !a.quit_armed,
+            "the last purge settled; the guard must disarm"
+        );
+    }
+
+    /// Locks finding 4: paging to month 5 on an org with six months, then
+    /// switching orgs, must not strand `month_cursor` at 5. The render
+    /// clamps it for display, but the cursor itself stayed put on the old
+    /// code, so `←` read as dead until it was pressed enough times to walk
+    /// back down on its own.
+    #[test]
+    fn reset_scoped_cursors_clears_repo_and_month_cursors() {
+        let mut a = App::new(vec![]);
+        a.repo_cursor = 3;
+        a.month_cursor = 5;
+
+        a.reset_scoped_cursors();
+
+        assert_eq!(a.repo_cursor, 0);
+        assert_eq!(a.month_cursor, 0);
     }
 
     #[test]

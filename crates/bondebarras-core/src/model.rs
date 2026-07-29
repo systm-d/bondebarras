@@ -77,6 +77,11 @@ pub struct RepoSummary {
     pub name: String,
     pub cache_bytes: u64,
     pub cache_count: u32,
+    /// Whether this repo draws on the org's Actions allowance. Repos merged
+    /// in from `repos::list` carry their real visibility; a repo that only
+    /// appears in the cache report (never in the repo listing) defaults to
+    /// `false` — see `scan::overview`.
+    pub private: bool,
 }
 
 /// Stage-1 view of one organization.
@@ -86,6 +91,10 @@ pub struct OrgSummary {
     pub cache_bytes: u64,
     pub cache_count: u32,
     pub repos: Vec<RepoSummary>,
+    /// The org's usage report, or `None` when billing is not readable —
+    /// GitHub answers 403 to anyone who is not an owner. A 403 degrades this
+    /// one column; it never drops the org.
+    pub billing: Option<crate::billing::BillingReport>,
 }
 
 #[cfg(test)]

@@ -27,6 +27,9 @@ pub async fn usage_by_repository(client: &Client, org: &str) -> Result<Vec<RepoS
                         name: full.split_once('/').map_or(full, |(_, r)| r).to_string(),
                         cache_bytes: item["active_caches_size_in_bytes"].as_u64().unwrap_or(0),
                         cache_count: item["active_caches_count"].as_u64().unwrap_or(0) as u32,
+                        // This report carries no visibility field; `scan::overview`
+                        // fills the real value in from `repos::list`.
+                        private: false,
                     }
                 })
                 .collect()
@@ -145,5 +148,33 @@ mod tests {
         assert_eq!(items[0].size_bytes, 273_678_336);
         // Staleness is decided later, once the PR list is known.
         assert!(!items[0].stale_pr);
+    }
+
+    #[tokio::test]
+    async fn an_item_without_a_usable_id_is_dropped() {
+        // An item we cannot address is an item we must not offer to delete.
+        // Coercing a missing id to 0 would collide every such item into one
+        // selection slot.
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/claudine/actions/caches"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "actions_caches": [
+                    { "id": 9, "ref": "refs/heads/main", "key": "ok",
+                      "size_in_bytes": 10, "last_accessed_at": "2026-06-01T00:00:00Z" },
+                    { "ref": "refs/heads/main", "key": "no-id",
+                      "size_in_bytes": 20, "last_accessed_at": "2026-06-01T00:00:00Z" },
+                    { "id": "12", "ref": "refs/heads/main", "key": "string-id",
+                      "size_in_bytes": 30, "last_accessed_at": "2026-06-01T00:00:00Z" }
+                ]
+            })))
+            .mount(&server)
+            .await;
+
+        let client = Client::with_base("t0ken", &server.uri()).unwrap();
+        let items = list(&client, "systm-d", "claudine").await.unwrap();
+
+        assert_eq!(items.len(), 1, "only the addressable item survives");
+        assert_eq!(items[0].id, 9);
     }
 }

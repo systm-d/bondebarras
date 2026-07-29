@@ -48,7 +48,21 @@ again by anything.
   engine, no config file, you decide every time.
 - **Tier-1 confirmation** before any deletion, followed by a background purge
   with a per-item result — the TUI stays responsive throughout.
-- **`bondebarras scan`** for a non-interactive, scriptable overview.
+- **Billing tab** — per-organization Actions-minutes usage against the free
+  allowance, month by month, with a per-repository breakdown of what is
+  burning it. The gauge counts **private repositories only**: GitHub's usage
+  report discounts a private repo still inside its allowance exactly like a
+  public one, so visibility — not the discount fields — is the only signal
+  that tells them apart, and a public repo's Actions runs are free and
+  unlimited regardless of volume. On the author's own account,
+  `SecondBrain-io`'s `monolith-back` burnt **24,632 private
+  Linux-equivalent minutes in July 2026** — exactly the kind of runaway usage
+  the tab exists to surface, since minutes cannot be reclaimed after the
+  fact. (That org is on a different plan, so no allowance percentage is
+  given here.)
+- **Headless CLI** — `bondebarras scan --json` for a machine-readable
+  overview, and `bondebarras clean` for non-interactive cleanup, e.g. from a
+  cron job.
 
 ## Safety
 
@@ -158,25 +172,52 @@ stage-1 overview: Actions cache totals and repository lists for each one.
 | `A`                  | Select every ⚑-flagged row                                 |
 | `d`                  | Delete the current selection (opens the confirmation modal) |
 | `y` / `N`            | Confirm / cancel a pending deletion                         |
+| `b`                  | Switch to the Billing tab (and back)                        |
+| `←` `→`              | Move between months, on the Billing tab                     |
 | `Esc`                | Clear an active filter, or quit if there is none            |
-| `q`                  | Quit                                                        |
+| `q`                  | Quit (twice, to confirm, while a purge is running)          |
 
-### CLI subcommand
+### CLI subcommands
+
+With no subcommand, `bondebarras` opens the TUI. Two subcommands cover the
+same ground headlessly, for scripts and cron jobs:
 
 ```sh
-# Print a non-interactive overview of every reachable org
-bondebarras scan
+# Non-interactive overview, as JSON
+bondebarras scan --org systm-d --json
 
-# Limit the scan to one organization
-bondebarras scan --org systm-d
+# Delete every cache attached to a closed PR, unattended
+bondebarras clean --org systm-d --repo josephine --caches --stale-pr --yes
 ```
+
+| Flag | Effect |
+| --- | --- |
+| `--org <name>` | Limits `scan` to one organization; absent = every one the token can see |
+| `--json` | Machine-readable output on stdout — nothing else goes to stdout |
+| `--repo <name>` | Repository targeted by `clean` |
+| `--caches` `--artifacts` `--runs` | Resource families `clean` should touch, cumulative |
+| `--stale-pr` | Restricts `clean` to resources flagged ⚑ (attached to a closed PR) |
+| `--older-than <days>` | Restricts `clean` to resources at least that old |
+| `--yes` | Confirms without a prompt |
+
+**Without `--yes`, `clean` prints the plan and deletes nothing** — the same
+dry-run-by-default rule as the TUI's confirmation modal, just without a
+keypress to drive it. Naming no resource family selects nothing either: a
+`clean` invocation that quietly meant "everything" would be the worst
+possible default for an irreversible, unattended operation. The nuclear tier
+(Tier 3) is always refused headlessly, with no flag to bypass it — nothing in
+bondebarras' current scope reaches it, but the rule is set now, while the CLI
+surface is still small, so a future destructive operation can't slip into a
+cron job by accident.
 
 ### Required token scopes
 
-`repo` and `read:org` are enough for everything v0.1 does — reading and
-deleting caches, artifacts, and workflow runs, and listing the organizations
-and repositories a token can see. Repository *deletion* is explicitly out of
-scope for this tool, so `delete_repo` is never required.
+`repo` and `read:org` are enough for everything bondebarras does — reading
+and deleting caches, artifacts, and workflow runs; listing the organizations
+and repositories a token can see; and reading the Billing tab's usage report
+(a 403 there just means the token's owner isn't an org owner — the org stays
+otherwise navigable). Repository *deletion* is explicitly and permanently
+out of scope for this tool, so `delete_repo` is never required.
 
 ---
 

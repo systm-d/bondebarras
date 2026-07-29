@@ -1,10 +1,10 @@
 //! Two-stage scanning.
 //!
-//! Stage 1 runs at launch and only touches org-level aggregates — two requests
-//! per org, so fifteen orgs land in about three seconds. Stage 2 fetches a
-//! repository's individual resources, and only when the user opens it. Paying
-//! only for what you look at is what keeps manual navigation viable across a
-//! hundred repositories.
+//! Stage 1 runs at launch and only touches org-level aggregates — three
+//! requests per org, so fifteen orgs still land in a few seconds. Stage 2
+//! fetches a repository's individual resources, and only when the user opens
+//! it. Paying only for what you look at is what keeps manual navigation
+//! viable across a hundred repositories.
 
 use crate::api::{Client, artifacts, caches, prs, repos, runs};
 use crate::model::{OrgSummary, Resource};
@@ -20,30 +20,41 @@ use std::collections::HashSet;
 pub async fn overview(client: &Client, orgs: &[String]) -> Vec<OrgSummary> {
     let futures = orgs.iter().map(|org| async move {
         let summaries = caches::usage_by_repository(client, org).await.ok()?;
-        let names = repos::list(client, org).await.ok()?;
+        let refs = repos::list(client, org).await.ok()?;
 
         let cache_bytes = summaries.iter().map(|r| r.cache_bytes).sum();
         let cache_count = summaries.iter().map(|r| r.cache_count).sum();
 
         // Repos with no cache still belong in the tree: they may hold
-        // artifacts or runs, which stage 2 will surface.
+        // artifacts or runs, which stage 2 will surface. Repos merged in
+        // here take their real visibility from `repos::list`; a repo that
+        // appears only in the cache report — never in the repo listing —
+        // keeps the `private: false` the cache report defaulted it to.
         let mut repos_out = summaries;
-        for name in names {
-            if !repos_out.iter().any(|r| r.name == name) {
+        for repo in refs {
+            if let Some(existing) = repos_out.iter_mut().find(|r| r.name == repo.name) {
+                existing.private = repo.private;
+            } else {
                 repos_out.push(crate::model::RepoSummary {
-                    name,
+                    name: repo.name,
                     cache_bytes: 0,
                     cache_count: 0,
+                    private: repo.private,
                 });
             }
         }
         repos_out.sort_by_key(|r| std::cmp::Reverse(r.cache_bytes));
+
+        // Third and last stage-1 request. Deliberately not `?`-propagated: an
+        // org whose billing is refused is still worth showing.
+        let billing = crate::api::billing::fetch(client, org).await;
 
         Some(OrgSummary {
             login: org.clone(),
             cache_bytes,
             cache_count,
             repos: repos_out,
+            billing,
         })
     });
 
@@ -167,5 +178,95 @@ mod tests {
         assert_eq!(summaries.len(), 1);
         assert_eq!(summaries[0].login, "healthy-org");
         assert!(summaries.iter().all(|s| s.login != "broken-org"));
+    }
+
+    /// Locks finding 1's plumbing: `billing::included_minutes` can only tell
+    /// a private repo from a public one if `overview` actually carries the
+    /// `private` flag from `repos::list` onto `RepoSummary` — for a repo that
+    /// has cache usage (merged into an existing row) and one that does not
+    /// (pushed as a new row). A wrong implementation that keeps the cache
+    /// report's default `false` for both would pass every other scan test
+    /// while silently reporting both repos as public.
+    #[tokio::test]
+    async fn overview_carries_repo_visibility_from_the_repo_listing() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(
+                "/orgs/SecondBrain-io/actions/cache/usage-by-repository",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "repository_cache_usages": [
+                    { "full_name": "SecondBrain-io/monolith-back",
+                      "active_caches_size_in_bytes": 1000, "active_caches_count": 2 }
+                ]
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/orgs/SecondBrain-io/repos"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                // Has cache usage above: merged into the existing row.
+                { "name": "monolith-back", "private": true },
+                // No cache usage: pushed as a new row.
+                { "name": "empty-private-repo", "private": true },
+                { "name": "public-site", "private": false }
+            ])))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/organizations/SecondBrain-io/settings/billing/usage"))
+            .respond_with(ResponseTemplate::new(403))
+            .mount(&server)
+            .await;
+
+        let client = Client::with_base("t0ken", &server.uri()).unwrap();
+        let out = overview(&client, &["SecondBrain-io".to_string()]).await;
+
+        let repos = &out[0].repos;
+        let find = |name: &str| repos.iter().find(|r| r.name == name).unwrap();
+        assert!(
+            find("monolith-back").private,
+            "merged row must stay private"
+        );
+        assert!(
+            find("empty-private-repo").private,
+            "pushed row must stay private"
+        );
+        assert!(!find("public-site").private, "public repo must stay public");
+    }
+
+    #[tokio::test]
+    async fn an_org_without_billing_access_is_still_scanned() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/orgs/systm-d/actions/cache/usage-by-repository"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "repository_cache_usages": [
+                    { "full_name": "systm-d/josephine",
+                      "active_caches_size_in_bytes": 1000, "active_caches_count": 2 }
+                ]
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/orgs/systm-d/repos"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                { "name": "josephine" }
+            ])))
+            .mount(&server)
+            .await;
+        // Billing refused: the org must survive with `billing: None`.
+        Mock::given(method("GET"))
+            .and(path("/organizations/systm-d/settings/billing/usage"))
+            .respond_with(ResponseTemplate::new(403))
+            .mount(&server)
+            .await;
+
+        let client = Client::with_base("t0ken", &server.uri()).unwrap();
+        let out = overview(&client, &["systm-d".to_string()]).await;
+
+        assert_eq!(out.len(), 1, "a billing 403 must not drop the org");
+        assert_eq!(out[0].cache_bytes, 1000);
+        assert!(out[0].billing.is_none());
     }
 }

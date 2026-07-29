@@ -83,4 +83,32 @@ mod tests {
         assert_eq!(items[1].label, "github-pages (expiré)");
         assert_eq!(items[1].size_bytes, 1_112_275);
     }
+
+    #[tokio::test]
+    async fn an_item_without_a_usable_id_is_dropped() {
+        // An item we cannot address is an item we must not offer to delete.
+        // Coercing a missing id to 0 would collide every such item into one
+        // selection slot.
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/josephine/actions/artifacts"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "artifacts": [
+                    { "id": 1, "name": "ok", "size_in_bytes": 10,
+                      "expired": false, "created_at": "2026-06-01T00:00:00Z" },
+                    { "name": "no-id", "size_in_bytes": 20,
+                      "expired": false, "created_at": "2026-06-01T00:00:00Z" },
+                    { "id": "12", "name": "string-id", "size_in_bytes": 30,
+                      "expired": false, "created_at": "2026-06-01T00:00:00Z" }
+                ]
+            })))
+            .mount(&server)
+            .await;
+
+        let client = Client::with_base("t0ken", &server.uri()).unwrap();
+        let items = list(&client, "systm-d", "josephine").await.unwrap();
+
+        assert_eq!(items.len(), 1, "only the addressable item survives");
+        assert_eq!(items[0].id, 1);
+    }
 }
