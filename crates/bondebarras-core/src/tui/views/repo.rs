@@ -131,13 +131,26 @@ mod tests {
         }
     }
 
+    /// Builds its label through the real `scan::version_label`, from a
+    /// full, unelided 71-character digest — the shape production actually
+    /// produces. A fixture that instead hand-types an already-elided string
+    /// would still read "sha256:9a26c7080… (sans tag)" even if
+    /// `version_label` regressed back to emitting the full digest: nothing
+    /// in that string flows through the function under test.
     fn package_resource() -> Resource {
+        let v = crate::packages::PackageVersion {
+            id: 9,
+            digest: "sha256:9a26c70801010123223adb5e73ff703aca86c15e19b30124ede5628a1e185826"
+                .into(),
+            tags: vec![],
+            age_days: 5,
+        };
         Resource {
             kind: ResourceKind::PackageVersion,
-            id: 9,
-            label: "sha256:9a26c7080… (sans tag)".into(),
+            id: v.id,
+            label: crate::scan::version_label(&v, crate::packages::VersionClass::Untagged),
             size_bytes: 0,
-            age_days: 5,
+            age_days: v.age_days,
             git_ref: None,
             stale_pr: false,
             protected: false,
@@ -191,6 +204,41 @@ mod tests {
         let line = text(&row_spans(&package_resource(), false));
         assert!(!line.contains("0 o"), "got: {line}");
         assert!(line.contains('—'), "got: {line}");
+    }
+
+    /// Rendered, not stringly: `row_spans` alone cannot show what actually
+    /// reaches the screen. Before `version_label` elided its digest, this
+    /// row's label alone ran to 82 characters — past column 80 before the
+    /// checkbox and kind columns even get counted — pushing the `—` size
+    /// marker and the `(sans tag)` class suffix off the visible buffer
+    /// entirely, with no assertion here able to see it, since every other
+    /// test in this module asserts on the spans, not on what a terminal
+    /// would actually show.
+    #[test]
+    fn a_package_row_survives_at_eighty_columns() {
+        let mut app = App::new(vec![]);
+        app.resources = vec![package_resource()];
+
+        let backend = ratatui::backend::TestBackend::new(80, 24);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|f| render(&mut app, f, f.area())).unwrap();
+
+        let rendered: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+
+        assert!(
+            rendered.contains('—'),
+            "the size marker must survive: {rendered}"
+        );
+        assert!(
+            rendered.contains("sans tag"),
+            "the class suffix must survive: {rendered}"
+        );
     }
 
     #[test]
