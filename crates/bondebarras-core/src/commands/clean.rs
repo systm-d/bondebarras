@@ -13,6 +13,9 @@ pub struct CleanFilter {
     pub caches: bool,
     pub artifacts: bool,
     pub runs: bool,
+    /// Container package versions. Like every other family, absent means not
+    /// selected — a `clean` that named no family must never mean "everything".
+    pub packages: bool,
     pub stale_pr: bool,
     pub older_than: Option<i64>,
 }
@@ -29,15 +32,7 @@ pub fn select(items: &[Resource], filter: &CleanFilter) -> Vec<Resource> {
             ResourceKind::Cache => filter.caches,
             ResourceKind::Artifact => filter.artifacts,
             ResourceKind::WorkflowRun => filter.runs,
-            // Task 6 adds the `--packages` flag this arm would read. Until
-            // then `CleanFilter` has no field for it, and `scan::repo_detail`
-            // (task 4) never puts a `PackageVersion` into `items`, so this is
-            // unreachable today — not a silent `false` standing in for a
-            // flag that does not exist yet.
-            ResourceKind::PackageVersion => unreachable!(
-                "PackageVersion never reaches select() before task 4 wires scan::repo_detail \
-                 and task 6 adds the --packages flag"
-            ),
+            ResourceKind::PackageVersion => filter.packages,
         })
         .filter(|r| !filter.stale_pr || r.stale_pr)
         .filter(|r| filter.older_than.is_none_or(|d| r.age_days >= d))
@@ -133,6 +128,7 @@ mod tests {
             caches: false,
             artifacts: false,
             runs: false,
+            packages: false,
             stale_pr: false,
             older_than: None,
         }
@@ -243,5 +239,22 @@ mod tests {
         };
         let picked: Vec<u64> = select(&items, &f).iter().map(|r| r.id).collect();
         assert_eq!(picked, vec![1, 2]);
+    }
+
+    #[test]
+    fn a_package_version_is_only_selected_when_its_family_is_named() {
+        // This arm was `unreachable!()` until repo_detail started producing
+        // package rows, at which point a headless clean panicked against any
+        // repo publishing an image. The fixture must contain the kind, or the
+        // arm is never exercised at all.
+        let items = vec![res(ResourceKind::PackageVersion, 1, 1, false)];
+        assert!(select(&items, &filter()).is_empty());
+
+        let f = CleanFilter {
+            packages: true,
+            ..filter()
+        };
+        let picked: Vec<u64> = select(&items, &f).iter().map(|r| r.id).collect();
+        assert_eq!(picked, vec![1]);
     }
 }

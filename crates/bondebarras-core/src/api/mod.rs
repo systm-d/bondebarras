@@ -92,12 +92,21 @@ impl Client {
     ///
     /// A repository's homonymous container package, for one, 404s far more
     /// often than it exists — most repositories publish no image at all.
-    /// `get_json`'s typed path cannot express that distinction cheaply: it
-    /// asks octocrab to parse the response as its own error body first, and
-    /// GitHub's bare `404` (no JSON body at all) fails that parse before a
-    /// status code is ever consulted. Going through the raw `_get` decides
-    /// the missing case from the status alone, before any attempt to read a
-    /// body.
+    /// `get_json` cannot be used for this: on any non-2xx status, octocrab
+    /// tries to parse the response body as its own `{message, ...}` GitHub
+    /// error shape *before* it ever looks at the status code. GitHub's bare
+    /// `404` — no JSON body at all, which is both what a repo with no image
+    /// sends and what wiremock's default `ResponseTemplate::new(404)` sends
+    /// in tests — fails that parse. The status is never reached, so
+    /// `get_json` would surface "no image published" as a JSON-parse error,
+    /// indistinguishable from a genuinely malformed response.
+    ///
+    /// This method goes through the raw `_get` instead, and decides the
+    /// missing case from the HTTP status alone, before any attempt to read a
+    /// body. Only a non-404 response goes on to `map_github_error` and JSON
+    /// parsing — so a malformed body on a real `200` still surfaces as an
+    /// error here, exactly as it would through `get_json`; only the 404 is
+    /// allowed to degrade to "nothing here".
     pub async fn get_json_or_missing(&self, path: &str) -> Result<Option<serde_json::Value>> {
         let _permit = self.sem.acquire().await.expect("semaphore never closed");
         let response = self
@@ -257,6 +266,29 @@ mod tests {
             .expect("a 200 must yield a body");
 
         assert_eq!(out[0]["id"], 1);
+    }
+
+    #[tokio::test]
+    async fn get_json_or_missing_still_errors_on_a_malformed_200_body() {
+        // Only a 404 is allowed to degrade to "nothing here". A wrong
+        // implementation that swallows every failure alike (as `billing::fetch`
+        // deliberately does, for a different reason) would turn a genuinely
+        // broken response into a silent empty list — indistinguishable from
+        // the ordinary "no image published" case this method exists for.
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/orgs/systm-d/packages/container/repolens/versions"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("not json"))
+            .mount(&server)
+            .await;
+
+        let client = Client::with_base("t0ken", &server.uri()).unwrap();
+        let err = client
+            .get_json_or_missing("/orgs/systm-d/packages/container/repolens/versions")
+            .await
+            .unwrap_err();
+
+        assert!(err.to_string().contains("réponse JSON invalide"));
     }
 
     #[tokio::test]

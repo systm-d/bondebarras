@@ -81,6 +81,11 @@ async fn run_async() -> anyhow::Result<ExitCode> {
                 caches,
                 artifacts,
                 runs,
+                // Task 6 adds the `--packages` clap flag and passes it
+                // through here. Until it exists, no invocation can name the
+                // family, so no package version is ever selected — the
+                // correct behaviour, not a stopgap.
+                packages: false,
                 stale_pr,
                 older_than,
             };
