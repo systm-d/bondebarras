@@ -79,18 +79,22 @@ pub fn render(app: &mut App, f: &mut Frame, pending: Option<&Plan>) {
 /// because the priority itself is the fix: `app.status` carries one-shot
 /// messages — per-item deletion errors (`Erreur : suppression de {id} —
 /// {reason}`) and the « Bon débarras ! » recap — that a filter left typed in
-/// must not permanently bury. The filter is shown only once there is nothing
-/// more urgent to say. The cursor mark (▏) only appears while actively
-/// typing.
+/// must not permanently bury, so it outranks a passive filter indicator.
+///
+/// But active typing outranks even that: `app.status` is only ever cleared
+/// on a successful `Enter` load, so after any purge, cancel, or error it
+/// stays set indefinitely. Giving it priority unconditionally made every
+/// keystroke into the filter invisible — no text, no cursor — the moment any
+/// status message was pending, even though the keystrokes were still
+/// filtering the list underneath. `filter_mode` is checked first so the
+/// field the user is looking at is always the one they are typing into.
 fn status_line(app: &App) -> String {
-    if !app.status.is_empty() {
+    if app.filter_mode {
+        format!(" filtre : {}▏", app.filter)
+    } else if !app.status.is_empty() {
         app.status.clone()
     } else if !app.filter.is_empty() {
-        if app.filter_mode {
-            format!(" filtre : {}▏", app.filter)
-        } else {
-            format!(" filtre : {}", app.filter)
-        }
+        format!(" filtre : {}", app.filter)
     } else {
         String::new()
     }
@@ -100,12 +104,12 @@ fn status_line(app: &App) -> String {
 mod tests {
     use super::*;
 
-    /// Locks finding 3: a filter left typed in must not hide per-item
-    /// deletion errors or the purge recap, both of which are written to
-    /// `app.status`. On the old priority (filter first, status as fallback)
-    /// this returns the filter string instead.
+    /// Locks finding 3: a filter left typed in (but no longer being typed
+    /// into) must not hide per-item deletion errors or the purge recap, both
+    /// of which are written to `app.status`. On the old priority (filter
+    /// first, status as fallback) this returns the filter string instead.
     #[test]
-    fn status_takes_priority_over_an_active_filter() {
+    fn status_takes_priority_over_a_passive_filter() {
         let mut app = App::new(vec![]);
         app.filter = "linux".into();
         app.status = "Erreur : suppression de 9 — 404".into();
@@ -121,12 +125,35 @@ mod tests {
         assert_eq!(status_line(&app), " filtre : linux");
     }
 
+    /// Locks the re-review's residual 1: `app.status` is only ever cleared on
+    /// a successful `Enter` load, so after any purge, cancel, or error it
+    /// stays set indefinitely. Giving it priority over the filter
+    /// unconditionally made every keystroke typed into the filter invisible
+    /// — no text, no cursor — while it was still filtering the list
+    /// underneath. On the priority this locks in, active typing must win
+    /// even over a pending status message.
+    #[test]
+    fn active_typing_outranks_a_pending_status() {
+        let mut app = App::new(vec![]);
+        app.status = "Bon débarras ! 3.0 Go libérés.".into();
+        app.filter_mode = true;
+        app.filter = "lin".into();
+
+        assert_eq!(status_line(&app), " filtre : lin▏");
+    }
+
+    /// Both halves of the name are asserted here — not split across sibling
+    /// tests — so an implementation that always appends the cursor mark
+    /// fails on this test alone, rather than only via a neighbour.
     #[test]
     fn the_typing_cursor_only_appears_in_filter_mode() {
         let mut app = App::new(vec![]);
         app.filter = "linux".into();
-        app.filter_mode = true;
 
+        app.filter_mode = true;
         assert_eq!(status_line(&app), " filtre : linux▏");
+
+        app.filter_mode = false;
+        assert_eq!(status_line(&app), " filtre : linux");
     }
 }
