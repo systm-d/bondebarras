@@ -71,6 +71,10 @@ pub async fn overview(client: &Client, orgs: &[String]) -> Vec<OrgSummary> {
 }
 
 /// Stage 2: every deletable resource of one repository, already flagged.
+///
+/// Every one of the seven listings this joins degrades independently on its
+/// own failure — a token missing one scope must not break a cleanup that
+/// never needed it. See the `unwrap_or_default()` calls below.
 pub async fn repo_detail(client: &Client, owner: &str, repo: &str) -> Result<Vec<Resource>> {
     let (
         caches_r,
@@ -97,9 +101,16 @@ pub async fn repo_detail(client: &Client, owner: &str, repo: &str) -> Result<Vec
         refs::default_branch(client, owner, repo),
     );
 
-    let mut items = caches_r?;
-    items.extend(artifacts_r?);
-    items.extend(runs_r?);
+    // Every one of the seven listings degrades the same way: a token
+    // missing one scope, or one family's transient outage, costs only that
+    // family's rows, never the rest of the drill-down. Caches, artifacts and
+    // workflow runs used to `?`-propagate here instead — a 403 on any one of
+    // them failed the whole function, branches/tags/release assets
+    // included, even though none of those three needed the scope that
+    // failed.
+    let mut items = caches_r.unwrap_or_default();
+    items.extend(artifacts_r.unwrap_or_default());
+    items.extend(runs_r.unwrap_or_default());
     // A failed packages listing — a token without `read:packages`, or a
     // GHCR outage — costs the package rows, not the rest of the drill-down:
     // caches, artifacts and workflow runs are a different family, and the
@@ -946,6 +957,221 @@ mod tests {
         assert_eq!(items.len(), 1, "the branch must still show");
         assert_eq!(items[0].kind, ResourceKind::Branch);
         assert!(items.iter().all(|i| i.kind != ResourceKind::Tag));
+    }
+
+    /// Finding 5 of the v0.4 final review: `caches_r`, `artifacts_r` and
+    /// `runs_r` were `?`-propagated instead of degraded like the other four
+    /// listings, so a failure in any one of them — a token missing one
+    /// scope, a transient Actions outage — failed the *entire* drill-down,
+    /// branches/tags/release assets included, even though none of those
+    /// three needed the scope that failed. Same degradation pattern as
+    /// `a_failed_tags_listing_costs_only_the_tag_rows` above, mirrored for
+    /// caches.
+    #[tokio::test]
+    async fn a_failed_caches_listing_costs_only_the_cache_rows() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/claudine/actions/caches"))
+            .respond_with(ResponseTemplate::new(403))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/claudine/actions/artifacts"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({ "artifacts": [] })),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/claudine/actions/runs"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({ "workflow_runs": [] })),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/orgs/systm-d/packages/container/claudine/versions"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/claudine/pulls"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/claudine/branches"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                { "name": "main", "protected": true }
+            ])))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/claudine/tags"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/claudine/releases"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/claudine"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "default_branch": "main"
+            })))
+            .mount(&server)
+            .await;
+
+        let client = Client::with_base("t0ken", &server.uri()).unwrap();
+        let items = repo_detail(&client, "systm-d", "claudine")
+            .await
+            .expect("a failed caches listing must not fail the whole drill-down");
+
+        assert_eq!(items.len(), 1, "the branch must still show");
+        assert_eq!(items[0].kind, ResourceKind::Branch);
+        assert!(items.iter().all(|i| i.kind != ResourceKind::Cache));
+    }
+
+    /// Same as above, for artifacts.
+    #[tokio::test]
+    async fn a_failed_artifacts_listing_costs_only_the_artifact_rows() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/claudine/actions/caches"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "actions_caches": [
+                    { "id": 1, "key": "coverage-linux", "size_in_bytes": 1000,
+                      "last_accessed_at": "2026-06-01T00:00:00Z" }
+                ]
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/claudine/actions/artifacts"))
+            .respond_with(ResponseTemplate::new(403))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/claudine/actions/runs"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({ "workflow_runs": [] })),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/orgs/systm-d/packages/container/claudine/versions"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/claudine/pulls"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/claudine/branches"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/claudine/tags"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/claudine/releases"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/claudine"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "default_branch": "main"
+            })))
+            .mount(&server)
+            .await;
+
+        let client = Client::with_base("t0ken", &server.uri()).unwrap();
+        let items = repo_detail(&client, "systm-d", "claudine")
+            .await
+            .expect("a failed artifacts listing must not fail the whole drill-down");
+
+        assert_eq!(items.len(), 1, "the cache must still show");
+        assert_eq!(items[0].kind, ResourceKind::Cache);
+        assert!(items.iter().all(|i| i.kind != ResourceKind::Artifact));
+    }
+
+    /// Same as above, for workflow runs.
+    #[tokio::test]
+    async fn a_failed_runs_listing_costs_only_the_run_rows() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/claudine/actions/caches"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "actions_caches": [
+                    { "id": 1, "key": "coverage-linux", "size_in_bytes": 1000,
+                      "last_accessed_at": "2026-06-01T00:00:00Z" }
+                ]
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/claudine/actions/artifacts"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({ "artifacts": [] })),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/claudine/actions/runs"))
+            .respond_with(ResponseTemplate::new(403))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/orgs/systm-d/packages/container/claudine/versions"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/claudine/pulls"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/claudine/branches"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/claudine/tags"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/claudine/releases"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/claudine"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "default_branch": "main"
+            })))
+            .mount(&server)
+            .await;
+
+        let client = Client::with_base("t0ken", &server.uri()).unwrap();
+        let items = repo_detail(&client, "systm-d", "claudine")
+            .await
+            .expect("a failed runs listing must not fail the whole drill-down");
+
+        assert_eq!(items.len(), 1, "the cache must still show");
+        assert_eq!(items[0].kind, ResourceKind::Cache);
+        assert!(items.iter().all(|i| i.kind != ResourceKind::WorkflowRun));
     }
 
     /// A failed release-assets listing must cost only the asset rows — the
