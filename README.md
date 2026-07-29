@@ -3,8 +3,9 @@
 *Good riddance.*
 
 **bondebarras** is a Rust TUI/CLI to audit and clean up the resources piling
-up across your GitHub organizations: Actions caches, artifacts, and workflow
-runs — the stuff CI leaves behind that nobody ever comes back to delete.
+up across your GitHub organizations: Actions caches, artifacts, workflow
+runs, and container package versions — the stuff CI leaves behind that
+nobody ever comes back to delete.
 
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)](#license)
 [![CI](https://github.com/systm-d/bondebarras/actions/workflows/ci.yml/badge.svg)](https://github.com/systm-d/bondebarras/actions/workflows/ci.yml)
