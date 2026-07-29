@@ -9,6 +9,8 @@ pub mod billing;
 pub mod caches;
 pub mod packages;
 pub mod prs;
+pub mod refs;
+pub mod releases;
 pub mod repos;
 pub mod runs;
 
