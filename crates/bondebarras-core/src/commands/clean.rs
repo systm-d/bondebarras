@@ -16,6 +16,11 @@ pub struct CleanFilter {
     /// Container package versions. Like every other family, absent means not
     /// selected — a `clean` that named no family must never mean "everything".
     pub packages: bool,
+    /// Merged branches. Like every other family, absent means not selected —
+    /// a `clean` that named no family must never mean "everything".
+    pub branches: bool,
+    pub tags: bool,
+    pub assets: bool,
     pub stale_pr: bool,
     pub older_than: Option<i64>,
 }
@@ -39,6 +44,17 @@ pub fn select(items: &[Resource], filter: &CleanFilter) -> Vec<Resource> {
             ResourceKind::Artifact => filter.artifacts,
             ResourceKind::WorkflowRun => filter.runs,
             ResourceKind::PackageVersion => filter.packages,
+            // `scan::repo_detail` (task 4) always fetches and converts these
+            // three families whenever the underlying API calls succeed —
+            // virtually every real repository has at least a default branch
+            // — so each needs its own real flag, exactly like every family
+            // above. A merged branch is not the same "safe to purge in bulk"
+            // shape as a live one or a tag: `Resource.protected` already
+            // keeps a live branch and every tag out of this selection below,
+            // regardless of these three flags.
+            ResourceKind::Branch => filter.branches,
+            ResourceKind::Tag => filter.tags,
+            ResourceKind::ReleaseAsset => filter.assets,
         })
         // A protected resource is never taken in bulk. Headless has no human
         // to override that, so this is not a default — it is the rule.
@@ -142,6 +158,7 @@ mod tests {
             git_ref: None,
             stale_pr: stale,
             protected: false,
+            branch_class: None,
         }
     }
 
@@ -151,9 +168,65 @@ mod tests {
             artifacts: false,
             runs: false,
             packages: false,
+            branches: false,
+            tags: false,
+            assets: false,
             stale_pr: false,
             older_than: None,
         }
+    }
+
+    /// The arm this test exercises was `unreachable!()` until task 4's
+    /// `scan::repo_detail` started producing `Branch`/`Tag`/`ReleaseAsset`
+    /// rows — at which point headless `clean` started panicking on almost
+    /// any real repository (see the task-4 report's concern). It has gone
+    /// unreachable-in-tests twice now, once for `PackageVersion` in v0.3 and
+    /// now again here, and both times for the same reason: every fixture
+    /// that exercised `select()` omitted at least one `ResourceKind`. This
+    /// fixture carries all **seven** — the only way a wrong mapping (e.g.
+    /// `ResourceKind::Branch | ResourceKind::Tag => filter.tags`, a
+    /// plausible copy-paste of one arm over two) has a `Branch` id sitting
+    /// right there to leak into `--tags`'s selection.
+    #[test]
+    fn every_kind_is_selected_by_its_own_flag_and_no_other() {
+        let items = vec![
+            res(ResourceKind::Cache, 1, 1, false),
+            res(ResourceKind::Artifact, 2, 1, false),
+            res(ResourceKind::WorkflowRun, 3, 1, false),
+            res(ResourceKind::PackageVersion, 4, 1, false),
+            res(ResourceKind::Branch, 5, 1, false),
+            res(ResourceKind::Tag, 6, 1, false),
+            res(ResourceKind::ReleaseAsset, 7, 1, false),
+        ];
+
+        // No family named: nothing, from any of the seven — this is also
+        // what proves the arm no longer panics on its own.
+        assert!(select(&items, &filter()).is_empty());
+
+        let ids =
+            |f: &CleanFilter| -> Vec<u64> { select(&items, f).iter().map(|r| r.id).collect() };
+
+        assert_eq!(
+            ids(&CleanFilter {
+                branches: true,
+                ..filter()
+            }),
+            vec![5]
+        );
+        assert_eq!(
+            ids(&CleanFilter {
+                tags: true,
+                ..filter()
+            }),
+            vec![6]
+        );
+        assert_eq!(
+            ids(&CleanFilter {
+                assets: true,
+                ..filter()
+            }),
+            vec![7]
+        );
     }
 
     #[test]

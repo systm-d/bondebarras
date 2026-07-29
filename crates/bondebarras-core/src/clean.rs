@@ -4,7 +4,7 @@
 //! undo — promising either would be a lie. What we offer instead is an
 //! accurate recap before, and a per-item verdict after.
 
-use crate::api::{Client, artifacts, caches, packages, runs};
+use crate::api::{Client, artifacts, caches, packages, refs, releases, runs};
 use crate::model::{Resource, ResourceKind, RiskTier, human_size, risk_tier};
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::time::{Duration, sleep};
@@ -36,19 +36,16 @@ impl Plan {
 
     /// User-facing recap shown in the confirmation modal.
     ///
-    /// A plan made up entirely of package versions always totals 0 bytes —
-    /// GitHub exposes no size for that family, `size_bytes` is hardcoded to
-    /// 0 for every one of them (see `scan::version_resources`) — but that is
-    /// not the same thing as an empty plan. Printing "0 o" would read as
-    /// "nothing was selected"; the honest recap names the count instead and
-    /// says plainly that the size is unknown.
+    /// A plan made up entirely of sizeless items (package versions,
+    /// branches, tags — see `ResourceKind::has_known_size`) always totals 0
+    /// bytes — GitHub exposes no size for any of them, `size_bytes` is
+    /// hardcoded to 0 for every one (see `scan::version_resources` and
+    /// `scan::branch_resources`/`tag_resources`) — but that is not the same
+    /// thing as an empty plan. Printing "0 o" would read as "nothing was
+    /// selected"; the honest recap names the count instead and says plainly
+    /// that the size is unknown.
     pub fn summary(&self) -> String {
-        if !self.items.is_empty()
-            && self
-                .items
-                .iter()
-                .all(|i| i.kind == ResourceKind::PackageVersion)
-        {
+        if !self.items.is_empty() && self.items.iter().all(|i| !i.kind.has_known_size()) {
             format!("{} élément(s) · taille inconnue", self.items.len())
         } else {
             format!(
@@ -64,19 +61,20 @@ impl Plan {
 /// status line and the headless `clean` command so the wording never drifts
 /// between the two.
 ///
-/// `deleted_sizeless` — how many of `deleted` were package versions, the one
-/// family GitHub exposes no size for — is what this needs to say something
-/// true: keying the decision on `freed == 0` alone, as an earlier version
-/// did, cannot tell "every deleted item's size is unknown" apart from
-/// "every deleted item was genuinely zero bytes" — two real, empty caches
-/// deleted would then read "taille inconnue," which is false, their size
-/// was known and it was zero. Only "unknown" once every deletion that
-/// happened was one where the size genuinely cannot be known.
+/// `deleted_sizeless` — how many of `deleted` were a kind GitHub exposes no
+/// size for at all (`!ResourceKind::has_known_size`: a package version, a
+/// branch or a tag) — is what this needs to say something true: keying the
+/// decision on `freed == 0` alone, as an earlier version did, cannot tell
+/// "every deleted item's size is unknown" apart from "every deleted item was
+/// genuinely zero bytes" — two real, empty caches deleted would then read
+/// "taille inconnue," which is false, their size was known and it was zero.
+/// Only "unknown" once every deletion that happened was one where the size
+/// genuinely cannot be known.
 ///
-/// A mixed purge (some package versions among sized resources) still just
+/// A mixed purge (some sizeless items among sized resources) still just
 /// reports `freed` here — accurate as far as it goes, even though it says
-/// nothing about the package versions in the mix. Making that case honest
-/// too is a separate concern, out of scope for this fix.
+/// nothing about the sizeless items in the mix. Making that case honest too
+/// is a separate concern, out of scope for this fix.
 pub fn finished_recap(freed: u64, deleted: usize, deleted_sizeless: usize) -> String {
     if deleted > 0 && deleted_sizeless == deleted {
         format!("{deleted} élément(s) supprimé(s) · taille inconnue")
@@ -140,13 +138,33 @@ pub async fn execute(client: &Client, plan: Plan, tx: UnboundedSender<Progress>)
             ResourceKind::PackageVersion => {
                 packages::delete_version(client, &plan.owner, &plan.repo, item.id).await
             }
+            // A branch and a tag have no numeric id from GitHub — `item.id`
+            // is a hash of the name (see `api::refs::resource_id`), a
+            // selection key only. Deleting by it would be deleting by an
+            // implementation detail that GitHub's API knows nothing about;
+            // `item.label` carries the real name, so the arm deletes by
+            // that instead. A hash collision — vanishingly unlikely as it
+            // is — can therefore never delete the wrong ref.
+            ResourceKind::Branch => {
+                refs::delete_branch(client, &plan.owner, &plan.repo, &item.label).await
+            }
+            ResourceKind::Tag => {
+                refs::delete_tag(client, &plan.owner, &plan.repo, &item.label).await
+            }
+            // Unlike a branch or a tag, a release asset carries a real
+            // numeric GitHub id (see `api::releases::assets`) — no name
+            // ambiguity, so it deletes by `item.id` like every v0.1-v0.3
+            // family above.
+            ResourceKind::ReleaseAsset => {
+                releases::delete_asset(client, &plan.owner, &plan.repo, item.id).await
+            }
         };
 
         match result {
             Ok(()) => {
                 freed += item.size_bytes;
                 deleted += 1;
-                if item.kind == ResourceKind::PackageVersion {
+                if !item.kind.has_known_size() {
                     deleted_sizeless += 1;
                 }
                 let _ = tx.send(Progress::Done {
@@ -191,6 +209,7 @@ mod tests {
             git_ref: None,
             stale_pr: false,
             protected: false,
+            branch_class: None,
         }
     }
 
@@ -254,6 +273,23 @@ mod tests {
         assert!(!s.to_lowercase().contains("inconnue"), "got: {s}");
     }
 
+    /// Finding 3 of the v0.4 final review: branches and tags are sizeless
+    /// too, but `summary` only checked `kind == ResourceKind::PackageVersion`
+    /// — a plan of only branches and tags totalled 0 bytes and printed a
+    /// bare "0 o", the exact "reads as empty" defect v0.3's whole fix wave
+    /// was about, recurring for two families the old check could not see.
+    #[test]
+    fn summary_says_size_is_unknown_for_an_all_branch_and_tag_plan() {
+        let p = plan(vec![
+            item(ResourceKind::Branch, 1, 0),
+            item(ResourceKind::Tag, 2, 0),
+        ]);
+        let s = p.summary();
+        assert!(!s.contains("0 o"), "got: {s}");
+        assert!(s.contains('2'), "got: {s}");
+        assert!(s.to_lowercase().contains("inconnue"), "got: {s}");
+    }
+
     #[test]
     fn finished_recap_says_the_count_when_bytes_are_meaningless() {
         // A purge of package versions frees 0 bytes by construction, even
@@ -288,6 +324,153 @@ mod tests {
         let s = finished_recap(0, 2, 0);
         assert!(s.contains("0 o"), "got: {s}");
         assert!(!s.to_lowercase().contains("inconnue"), "got: {s}");
+    }
+
+    /// A branch must be deleted by its **name** — carried in `label` — not
+    /// by the hashed `id`: the hash is a selection key only. If `execute`
+    /// were to send `item.id` to the DELETE path instead, the mock below
+    /// would never match (it only listens on the literal branch name) and
+    /// the call would 404, so this doubles as the load-bearing-label proof.
+    #[tokio::test]
+    async fn execute_deletes_a_branch_by_name_not_by_its_hashed_id() {
+        let server = MockServer::start().await;
+        Mock::given(method("DELETE"))
+            .and(path(
+                "/repos/systm-d/claudine/git/refs/heads/claude/landing-3jbqk4",
+            ))
+            .respond_with(ResponseTemplate::new(204))
+            .mount(&server)
+            .await;
+
+        let client = Client::with_base("t0ken", &server.uri()).unwrap();
+        let mut branch = item(ResourceKind::Branch, 999, 0);
+        branch.label = "claude/landing-3jbqk4".to_string();
+        let p = plan(vec![branch]);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+
+        execute(&client, p, tx).await;
+
+        let mut done = false;
+        while let Ok(msg) = rx.try_recv() {
+            match msg {
+                Progress::Done { kind, id } => {
+                    assert_eq!(kind, ResourceKind::Branch);
+                    assert_eq!(id, 999, "the reported id is still the hashed selection key");
+                    done = true;
+                }
+                Progress::Failed { reason, .. } => panic!("unexpected failure: {reason}"),
+                Progress::Finished { .. } => {}
+            }
+        }
+        assert!(done, "the branch must be reported as deleted");
+    }
+
+    /// Finding 3 of the v0.4 final review: `deleted_sizeless` only counted
+    /// `ResourceKind::PackageVersion`, so a purge of only branches (or tags)
+    /// reported `deleted_sizeless: 0` and `finished_recap` fell through to
+    /// `human_size(freed)` — "0 o libérés" for a purge that genuinely
+    /// deleted something, the false-emptiness defect stated one level up
+    /// the call stack from where `Plan::summary` has the same bug.
+    #[tokio::test]
+    async fn execute_counts_a_deleted_branch_as_sizeless_too() {
+        let server = MockServer::start().await;
+        Mock::given(method("DELETE"))
+            .and(path(
+                "/repos/systm-d/claudine/git/refs/heads/claude/landing-3jbqk4",
+            ))
+            .respond_with(ResponseTemplate::new(204))
+            .mount(&server)
+            .await;
+
+        let client = Client::with_base("t0ken", &server.uri()).unwrap();
+        let mut branch = item(ResourceKind::Branch, 999, 0);
+        branch.label = "claude/landing-3jbqk4".to_string();
+        let p = plan(vec![branch]);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+
+        execute(&client, p, tx).await;
+
+        let mut sizeless = None;
+        while let Ok(msg) = rx.try_recv() {
+            if let Progress::Finished {
+                deleted_sizeless, ..
+            } = msg
+            {
+                sizeless = Some(deleted_sizeless);
+            }
+        }
+        assert_eq!(
+            sizeless,
+            Some(1),
+            "a deleted branch must count as sizeless, same as a package version"
+        );
+    }
+
+    /// Same load-bearing-label proof as the branch arm above, for a tag.
+    #[tokio::test]
+    async fn execute_deletes_a_tag_by_name_not_by_its_hashed_id() {
+        let server = MockServer::start().await;
+        Mock::given(method("DELETE"))
+            .and(path("/repos/systm-d/claudine/git/refs/tags/v0.1.3"))
+            .respond_with(ResponseTemplate::new(204))
+            .mount(&server)
+            .await;
+
+        let client = Client::with_base("t0ken", &server.uri()).unwrap();
+        let mut tag = item(ResourceKind::Tag, 42, 0);
+        tag.label = "v0.1.3".to_string();
+        let p = plan(vec![tag]);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+
+        execute(&client, p, tx).await;
+
+        let mut done = false;
+        while let Ok(msg) = rx.try_recv() {
+            if let Progress::Done { kind, .. } = msg {
+                assert_eq!(kind, ResourceKind::Tag);
+                done = true;
+            } else if let Progress::Failed { reason, .. } = msg {
+                panic!("unexpected failure: {reason}");
+            }
+        }
+        assert!(done, "the tag must be reported as deleted");
+    }
+
+    /// A release asset, unlike a branch or a tag, deletes by its real
+    /// numeric GitHub id — never by name.
+    #[tokio::test]
+    async fn execute_deletes_a_release_asset_by_id() {
+        let server = MockServer::start().await;
+        Mock::given(method("DELETE"))
+            .and(path("/repos/systm-d/claudine/releases/assets/9"))
+            .respond_with(ResponseTemplate::new(204))
+            .mount(&server)
+            .await;
+
+        let client = Client::with_base("t0ken", &server.uri()).unwrap();
+        let p = plan(vec![item(ResourceKind::ReleaseAsset, 9, 2_400_000)]);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+
+        execute(&client, p, tx).await;
+
+        let mut done = false;
+        let mut freed = 0;
+        while let Ok(msg) = rx.try_recv() {
+            match msg {
+                Progress::Done { kind, id } => {
+                    assert_eq!(kind, ResourceKind::ReleaseAsset);
+                    assert_eq!(id, 9);
+                    done = true;
+                }
+                Progress::Failed { reason, .. } => panic!("unexpected failure: {reason}"),
+                Progress::Finished { freed: f, .. } => freed = f,
+            }
+        }
+        assert!(done, "the release asset must be reported as deleted");
+        assert_eq!(
+            freed, 2_400_000,
+            "a release asset's real size must be freed"
+        );
     }
 
     #[tokio::test]

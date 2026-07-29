@@ -38,6 +38,8 @@ pub async fn list(client: &Client, owner: &str, repo: &str) -> Result<Vec<Resour
                         stale_pr: false,
                         // No equivalent of a live reference by name for a run.
                         protected: false,
+                        // Only a `Branch` row carries a classification.
+                        branch_class: None,
                     })
                 })
                 .collect()

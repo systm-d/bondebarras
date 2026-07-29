@@ -138,14 +138,35 @@ impl App {
     }
 
     /// Toggle the row under the cursor, in the order currently displayed.
+    ///
+    /// Refuses a branch GitHub itself would refuse to delete — the default
+    /// branch (`BranchClass::Default`) or one it protects directly
+    /// (`BranchClass::Protected`) — since offering the tick is a lie the API
+    /// then contradicts. This is a narrower guard than `Resource.protected`,
+    /// which stays the bulk-selection gate it already was (see
+    /// `commands::clean::select`) and is deliberately left alone: a
+    /// `BranchClass::Live` branch, every tag and every package version stay
+    /// individually tickable, exactly the v0.3 decision that a human may
+    /// knowingly delete a `latest` tag one row at a time, applied here to a
+    /// branch a human recognises as dead even though no merged PR proves it.
     pub fn toggle_selected(&mut self) {
-        let Some(key) = self
-            .visible_resources()
-            .get(self.res_cursor)
-            .map(|r| (r.kind, r.id))
-        else {
+        use crate::refs::BranchClass;
+
+        let Some(r) = self.visible_resources().get(self.res_cursor).copied() else {
             return;
         };
+
+        if r.kind == ResourceKind::Branch
+            && matches!(
+                r.branch_class,
+                Some(BranchClass::Default) | Some(BranchClass::Protected)
+            )
+        {
+            self.status = "Cette branche est protégée par GitHub : sélection refusée.".to_string();
+            return;
+        }
+
+        let key = (r.kind, r.id);
         if !self.selected.remove(&key) {
             self.selected.insert(key);
         }
@@ -280,6 +301,7 @@ mod tests {
             git_ref: None,
             stale_pr: stale,
             protected: false,
+            branch_class: None,
         }
     }
 
@@ -321,6 +343,7 @@ mod tests {
                 git_ref: None,
                 stale_pr: false,
                 protected: false,
+                branch_class: None,
             },
             Resource {
                 kind: ResourceKind::Artifact,
@@ -331,6 +354,7 @@ mod tests {
                 git_ref: None,
                 stale_pr: false,
                 protected: false,
+                branch_class: None,
             },
         ];
         // Default sort is by size descending, so the artifact (200) is row 0
@@ -392,6 +416,124 @@ mod tests {
         assert_eq!(a.selection_bytes(), 200);
         a.toggle_selected();
         assert_eq!(a.selection_bytes(), 0);
+    }
+
+    /// `protected: class != BranchClass::Merged` and `branch_class:
+    /// Some(class)` mirror exactly what `scan::branch_resources` sets.
+    fn branch(id: u64, label: &str, class: crate::refs::BranchClass) -> Resource {
+        Resource {
+            kind: ResourceKind::Branch,
+            id,
+            label: label.to_string(),
+            size_bytes: 0,
+            age_days: 0,
+            git_ref: None,
+            stale_pr: false,
+            protected: class != crate::refs::BranchClass::Merged,
+            branch_class: Some(class),
+        }
+    }
+
+    /// Finding 2 of the v0.4 final review: `toggle_selected` had no guard at
+    /// all, so the default branch — GitHub refuses to delete it outright —
+    /// could be ticked and queued for deletion like any other row. A wrong
+    /// fix that reused `Resource.protected` for this guard would also
+    /// refuse a `Live` branch and a protected tag, which must stay tickable
+    /// (the discriminating tests below), so this asserts on `branch_class`
+    /// directly.
+    #[test]
+    fn toggle_selected_refuses_the_default_branch() {
+        use crate::refs::BranchClass;
+        let mut a = App::new(vec![]);
+        a.resources = vec![branch(1, "main", BranchClass::Default)];
+        a.res_cursor = 0;
+
+        a.toggle_selected();
+
+        assert!(
+            a.selected.is_empty(),
+            "the default branch must not be selectable"
+        );
+        assert!(
+            !a.status.is_empty(),
+            "refusing silently would look like a dead key"
+        );
+    }
+
+    #[test]
+    fn toggle_selected_refuses_a_github_protected_branch() {
+        use crate::refs::BranchClass;
+        let mut a = App::new(vec![]);
+        a.resources = vec![branch(1, "release/2.0", BranchClass::Protected)];
+        a.res_cursor = 0;
+
+        a.toggle_selected();
+
+        assert!(
+            a.selected.is_empty(),
+            "a GitHub-protected branch must not be selectable"
+        );
+    }
+
+    /// The discriminating case: a `Live` branch is merely unmerged, nothing
+    /// GitHub itself refuses, so a human may still knowingly delete it one
+    /// row at a time — the same v0.3 reasoning kept for tags below. A guard
+    /// keyed on `Resource.protected` (which is `true` for `Live` too) would
+    /// wrongly refuse this and pass the two tests above regardless.
+    #[test]
+    fn toggle_selected_still_allows_a_live_unmerged_branch() {
+        use crate::refs::BranchClass;
+        let mut a = App::new(vec![]);
+        a.resources = vec![branch(1, "feature/rejected", BranchClass::Live)];
+        a.res_cursor = 0;
+
+        a.toggle_selected();
+
+        assert!(
+            a.selected.contains(&(ResourceKind::Branch, 1)),
+            "an unmerged branch must stay individually selectable"
+        );
+    }
+
+    #[test]
+    fn toggle_selected_still_allows_a_merged_branch() {
+        use crate::refs::BranchClass;
+        let mut a = App::new(vec![]);
+        a.resources = vec![branch(1, "claude/landing-3jbqk4", BranchClass::Merged)];
+        a.res_cursor = 0;
+
+        a.toggle_selected();
+
+        assert!(a.selected.contains(&(ResourceKind::Branch, 1)));
+    }
+
+    /// The v0.3 decision this task must not disturb: a human looking at a
+    /// protected tag (or a tagged package version) may still knowingly
+    /// delete it one row at a time. The new branch guard is scoped to
+    /// `ResourceKind::Branch` only — this proves it does not leak onto a
+    /// different kind that also happens to carry `protected: true`.
+    #[test]
+    fn toggle_selected_still_allows_a_protected_tag() {
+        let mut a = App::new(vec![]);
+        a.resources = vec![Resource {
+            kind: ResourceKind::Tag,
+            id: 1,
+            label: "v0.1.3".into(),
+            size_bytes: 0,
+            age_days: 0,
+            git_ref: None,
+            stale_pr: false,
+            protected: true,
+            branch_class: None,
+        }];
+        a.res_cursor = 0;
+
+        a.toggle_selected();
+
+        assert!(
+            a.selected.contains(&(ResourceKind::Tag, 1)),
+            "a protected tag must stay individually selectable, per the v0.3 decision"
+        );
     }
 
     #[test]

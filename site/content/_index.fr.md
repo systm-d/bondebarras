@@ -70,6 +70,8 @@ cta2 = "Installer"
 <li>Caches croisés avec les pull requests fermées</li>
 <li>Le cache d'une PR fermée ou mergée ne sera plus jamais relu</li>
 <li>Versions de packages vérifiées : sans tag, ou attestation orpheline</li>
+<li>Branches proposées mortes dès qu'une pull request les merge — zéro requête en plus, une PR fermée sans merge laisse sa branche tranquille</li>
+<li>Assets de releases mesurés en octets : <strong>7,3 Go</strong> sur quatre orgs, la release elle-même jamais supprimée, seulement ses binaires</li>
 <li>Une touche sélectionne toutes les lignes marquées</li>
 </ul>
 </div>
@@ -163,6 +165,9 @@ cta2 = "Installer"
 <div class="comment"># les versions de packages n'ont pas de taille — l'API GitHub n'en expose aucune</div>
 <div class="line"><span class="prompt">$</span>bondebarras clean <span class="flag">--org</span> systm-d <span class="flag">--repo</span> repolens <span class="flag">--packages</span> <span class="flag">--yes</span></div>
 <div class="out">Bon débarras ! 0 o libérés.</div>
+<div class="comment"># la release reste — seuls ses assets partent</div>
+<div class="line"><span class="prompt">$</span>bondebarras clean <span class="flag">--org</span> exec-d <span class="flag">--repo</span> terminus <span class="flag">--assets</span> <span class="flag">--older-than</span> 180 <span class="flag">--yes</span></div>
+<div class="out">Bon débarras ! 1.4 Go libérés.</div>
 </div>
 </div>
 </section>

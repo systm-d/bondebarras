@@ -147,7 +147,7 @@ mod tests {
     /// cosmetic gap — a private repo beyond page 1 would be absent from the
     /// private set the Billing tab builds, so its minutes would vanish from
     /// the gauge unannounced. Modeled directly on
-    /// `prs::closed_numbers_follows_pagination`.
+    /// `prs::closed_prs_follows_pagination`.
     #[tokio::test]
     async fn list_follows_pagination() {
         let server = MockServer::start().await;
