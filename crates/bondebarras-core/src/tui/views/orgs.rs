@@ -20,8 +20,9 @@ use ratatui::widgets::{Block, Borders, List, ListItem};
 /// border. Finding 2: the row used to be squeezed to fit a bare 26 columns
 /// by dropping the cache-byte column outright, in a tool whose entire point
 /// is volume; this widens the pane instead, past what the checkbox, the
-/// widest status (`déjà archivé`, 12 characters) and the cache column
-/// together actually need.
+/// widest status (a leading separator space plus `déjà archivé`, 12
+/// characters) and the cache column together actually need — one column of
+/// slack past that spends on the separator itself, one stays unused.
 pub(crate) const PANE_WIDTH: u16 = 38;
 
 /// Widest a repository name renders as before this truncates it with a
@@ -79,13 +80,19 @@ pub fn repo_row_spans(repo: &RepoSummary, checked: bool) -> Vec<Span<'static>> {
         RepoClass::AlreadyArchived => "déjà archivé".to_string(),
         RepoClass::NoAdminRights => "sans droits".to_string(),
     };
-    // Padded to a fixed width, unlike every other status this pane or the
-    // resource pane shows: it sits mid-row here, with the cache column
-    // after it, rather than trailing the line the way every other
-    // classification does — without the padding a short status (an age
-    // like "5 j") would butt straight up against the cache figure with no
-    // visual gap between them.
-    let status_col = format!("{status:<12}");
+    // A leading space, then padded to a fixed width — unlike every other
+    // status this pane or the resource pane shows: it sits mid-row here,
+    // between the name and the cache column, rather than trailing the line
+    // the way every other classification does. The trailing padding keeps a
+    // short status (an age like "5 j") from butting straight up against the
+    // cache figure; the leading space does the same job on the other side —
+    // `display_repo_name` pads a short name but has nothing left to give a
+    // truncated one (at or over `REPO_NAME_WIDTH`), so without it a name
+    // like this project's own "bondebarras" (11 characters, truncated) ran
+    // straight into its status: "bondebarr…5 j". Both spend from the two
+    // columns `PANE_WIDTH` leaves unused past what the four columns
+    // themselves need; one is spent here, one stays spare.
+    let status_col = format!(" {status:<12}");
 
     vec![
         Span::styled(checkbox.to_string(), theme::text_style()),
@@ -243,6 +250,21 @@ mod tests {
         }
     }
 
+    /// A name at or over `REPO_NAME_WIDTH` leaves `display_repo_name` no
+    /// room to pad it with a separating space of its own (the truncated
+    /// form fills the column exactly: head chars plus the ellipsis). This
+    /// project's own name is the concrete case: "bondebarras" is 11
+    /// characters, one over the width, so it always truncates.
+    #[test]
+    fn a_truncated_repo_name_does_not_butt_against_its_status() {
+        let line = text(&repo_row_spans(
+            &repo("bondebarras", RepoClass::Archivable, 5),
+            false,
+        ));
+        assert!(line.contains('…'), "got: {line}");
+        assert!(line.contains("… 5 j"), "got: {line}");
+    }
+
     #[test]
     fn a_long_repo_name_is_truncated_with_an_ellipsis() {
         let line = text(&repo_row_spans(
@@ -279,6 +301,15 @@ mod tests {
     /// age, an `AlreadyArchived` one's class name, and a `NoAdminRights`
     /// one's — `déjà archivé` (12 characters) is the widest of the three and
     /// the one that actually determines whether the row fits.
+    ///
+    /// The `Archivable` repo also carries a real, non-zero `cache_bytes`
+    /// (`11.1 Go`) rather than the `0`-filled fixtures every other test in
+    /// this module uses. Before this, nothing in the suite asserted on the
+    /// rendered cache figure at all: a reviewer's scratch deletion of the
+    /// cache span from `repo_row_spans` left the full suite green, the
+    /// tenth test on this project to name the right property and be unable
+    /// to fail on it. This closes that: the loop below asserts the figure
+    /// survives every swept width, not just the three status strings.
     #[test]
     fn a_repository_row_stays_legible_across_swept_widths() {
         let mut app = App::new(vec![crate::model::OrgSummary {
@@ -286,7 +317,10 @@ mod tests {
             cache_bytes: 0,
             cache_count: 0,
             repos: vec![
-                repo("lokiprint", RepoClass::Archivable, 685),
+                RepoSummary {
+                    cache_bytes: 11_100_000_000,
+                    ..repo("lokiprint", RepoClass::Archivable, 685)
+                },
                 repo(".github", RepoClass::AlreadyArchived, 775),
                 repo("private-thing", RepoClass::NoAdminRights, 42),
             ],
@@ -336,6 +370,10 @@ mod tests {
             assert!(
                 rendered.contains("sans droits"),
                 "the no-admin-rights class clipped at width {width}: {rendered}"
+            );
+            assert!(
+                rendered.contains("11.1 Go"),
+                "the archivable repo's cache size clipped at width {width}: {rendered}"
             );
         }
     }
