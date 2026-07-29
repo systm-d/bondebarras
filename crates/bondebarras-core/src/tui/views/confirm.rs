@@ -17,7 +17,7 @@ use crate::tui::theme;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 
 /// How much a confirmation modal must show before asking `[y/N]`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,24 +51,61 @@ pub fn modal_kind(tier: RiskTier) -> ModalKind {
 /// past the terminal instead of informing.
 const MAX_RECAP_ITEMS: usize = 8;
 
-/// A centred box, sized as a percentage of the frame.
-fn centered(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
+/// A centred box within `area`, sized by `width`/`height` constraints.
+///
+/// Takes `Constraint` rather than a raw percentage so a caller can centre a
+/// box sized from its content (`Constraint::Length`) just as easily as one
+/// sized as a fraction of the frame (`Constraint::Percentage`) — the
+/// centring itself does not care which.
+fn centered(width: Constraint, height: Constraint, area: Rect) -> Rect {
     let v = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Percentage((100 - percent_y) / 2),
-            Constraint::Percentage(percent_y),
-            Constraint::Percentage((100 - percent_y) / 2),
-        ])
+        .constraints([Constraint::Fill(1), height, Constraint::Fill(1)])
         .split(area);
     Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage((100 - percent_x) / 2),
-            Constraint::Percentage(percent_x),
-            Constraint::Percentage((100 - percent_x) / 2),
-        ])
+        .constraints([Constraint::Fill(1), width, Constraint::Fill(1)])
         .split(v[1])[1]
+}
+
+/// Flattened text of a line, ignoring styling — used only to estimate how
+/// many terminal rows `Wrap { trim: false }` will need for it.
+fn flatten(line: &Line<'static>) -> String {
+    line.spans.iter().map(|s| s.content.as_ref()).collect()
+}
+
+/// How many rows a `Paragraph` wrapped with `Wrap { trim: false }` needs to
+/// render `lines` at `width` columns.
+///
+/// Ratatui exposes `Paragraph::line_count` for exactly this, but only
+/// behind the `unstable-rendered-line-info` cargo feature — explicitly
+/// documented upstream as liable to change even in a patch release, not
+/// worth pulling in for one call site. This modal has exactly one line long
+/// enough to actually wrap (the multi-arch caveat), so a plain greedy
+/// word-wrap — pack whole words onto a row until the next one would
+/// overflow, then start a new one — is simple enough to trust on its own.
+fn wrapped_row_count(lines: &[Line<'static>], width: u16) -> u16 {
+    let width = width.max(1) as usize;
+    let total: usize = lines.iter().map(|l| wrap_rows(&flatten(l), width)).sum();
+    total.try_into().unwrap_or(u16::MAX)
+}
+
+/// Greedy word-wrap row count for one logical line. A blank line still
+/// costs one row: it is a visible gap, not zero rows.
+fn wrap_rows(text: &str, width: usize) -> usize {
+    let mut rows = 1usize;
+    let mut col = 0usize;
+    for word in text.split_whitespace() {
+        let len = word.chars().count();
+        let sep = if col == 0 { 0 } else { 1 };
+        if col > 0 && col + sep + len > width {
+            rows += 1;
+            col = len;
+        } else {
+            col += sep + len;
+        }
+    }
+    rows
 }
 
 /// The lines every modal opens with: the recap and the target repository.
@@ -123,9 +160,17 @@ fn itemised_body(plan: &Plan) -> Vec<Line<'static>> {
     )));
     // GitHub's API gives no way to check this — the caveat has to live here,
     // in the one place the user is guaranteed to read before confirming.
+    // Split across two `Line`s rather than one 154-character sentence: it
+    // still wraps at a realistic terminal width either way (nothing here fits
+    // unwrapped under ~225 columns), but wrapping mid-clause reads worse than
+    // a deliberate break at the sentence boundary.
     lines.push(Line::from(Span::styled(
         "Une version sans tag peut être une couche d'une image multi-architecture : la \
-         supprimer casserait son manifeste parent. GitHub ne permet pas de le vérifier.",
+         supprimer casserait son manifeste parent.",
+        theme::muted(),
+    )));
+    lines.push(Line::from(Span::styled(
+        "GitHub ne permet pas de le vérifier.",
         theme::muted(),
     )));
     lines.push(Line::from(""));
@@ -145,17 +190,33 @@ fn body(plan: &Plan) -> Vec<Line<'static>> {
 }
 
 pub fn render(plan: &Plan, f: &mut Frame, area: Rect) {
-    // The itemised body carries a recap list plus two extra warning lines:
-    // it needs more room than the bare tier-1 box.
-    let (percent_x, percent_y) = match modal_kind(plan.tier()) {
-        ModalKind::Simple => (60, 22),
-        ModalKind::Itemised => (70, 55),
+    let lines = body(plan);
+
+    // Width: itemised carries a recap list plus the multi-arch caveat, and
+    // gets more of the frame than the bare tier-1 box so that caveat wraps
+    // into fewer, more readable rows.
+    let percent_x: u32 = match modal_kind(plan.tier()) {
+        ModalKind::Simple => 60,
+        ModalKind::Itemised => 90,
     };
-    let zone = centered(percent_x, percent_y, area);
+    let width = ((u32::from(area.width) * percent_x / 100).max(1) as u16).min(area.width.max(1));
+    let inner_width = width.saturating_sub(2).max(1);
+
+    // Height: sized from the content, not guessed as a percentage. A
+    // percentage silently clips whatever does not fit — the eight-item recap,
+    // the irreversibility warning, the multi-arch caveat and the `[y/N]`
+    // prompt itself all fell off an 80x24 terminal this way — and `Paragraph`
+    // clips rather than scrolls, so getting this number wrong is exactly as
+    // bad as the percentage it replaces. `wrapped_row_count` accounts for
+    // `Wrap { trim: false }` reflowing the caveat, still clamped to what the
+    // frame actually has in case content ever outgrows even that.
+    let height = (wrapped_row_count(&lines, inner_width) + 2).min(area.height.max(1));
+
+    let zone = centered(Constraint::Length(width), Constraint::Length(height), area);
     f.render_widget(Clear, zone);
 
     f.render_widget(
-        Paragraph::new(body(plan)).block(
+        Paragraph::new(lines).wrap(Wrap { trim: false }).block(
             Block::default()
                 .title(" Confirmation ")
                 .borders(Borders::ALL)
@@ -273,5 +334,34 @@ mod tests {
         assert!(t.contains("v0"), "got: {t}");
         assert!(!t.contains("v11"), "got: {t}");
         assert!(t.contains("autre"), "got: {t}");
+    }
+
+    #[test]
+    fn the_tier_two_modal_shows_its_prompt_and_caveat_at_eighty_columns() {
+        // Rendered, not stringly: every other test here asserts on the lines
+        // this modal is built from, which is why a version of it that clipped
+        // both the caveat and the [y/N] prompt off an 80x24 terminal passed
+        // eleven reviews.
+        let backend = ratatui::backend::TestBackend::new(80, 24);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let items: Vec<Resource> = (0..20)
+            .map(|i| item(ResourceKind::PackageVersion, i, &format!("v{i}")))
+            .collect();
+        let p = plan(items);
+        terminal.draw(|f| render(&p, f, f.area())).unwrap();
+
+        let rendered: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+
+        assert!(rendered.contains("[y/N]"), "the prompt must be on screen");
+        assert!(
+            rendered.contains("multi-architecture"),
+            "the caveat must be on screen"
+        );
     }
 }
