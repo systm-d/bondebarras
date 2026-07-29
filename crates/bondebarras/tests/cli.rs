@@ -30,3 +30,14 @@ fn scan_json_is_documented_in_help() {
         .success()
         .stdout(contains("--json"));
 }
+
+#[test]
+fn clean_requires_yes_to_delete() {
+    Command::cargo_bin("bondebarras")
+        .unwrap()
+        .args(["clean", "--help"])
+        .assert()
+        .success()
+        .stdout(contains("--yes"))
+        .stdout(contains("--stale-pr"));
+}

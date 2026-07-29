@@ -19,7 +19,7 @@ use std::sync::Arc;
 pub fn run() -> ExitCode {
     match tokio::runtime::Runtime::new() {
         Ok(rt) => match rt.block_on(run_async()) {
-            Ok(()) => ExitCode::SUCCESS,
+            Ok(code) => code,
             Err(e) => {
                 eprintln!("Erreur : {e}");
                 ExitCode::FAILURE
@@ -32,7 +32,7 @@ pub fn run() -> ExitCode {
     }
 }
 
-async fn run_async() -> anyhow::Result<()> {
+async fn run_async() -> anyhow::Result<ExitCode> {
     let cli = cli::Cli::parse();
     let token = auth::resolve_token()?;
     // Shared: the TUI hands clones to the spawned deletion tasks.
@@ -57,11 +57,31 @@ async fn run_async() -> anyhow::Result<()> {
                 None => orgs,
             };
             commands::scan::run(&client, &targets, json).await?;
+            Ok(ExitCode::SUCCESS)
+        }
+        Some(cli::Command::Clean {
+            org,
+            repo,
+            caches,
+            artifacts,
+            runs,
+            stale_pr,
+            older_than,
+            yes,
+        }) => {
+            let filter = commands::clean::CleanFilter {
+                caches,
+                artifacts,
+                runs,
+                stale_pr,
+                older_than,
+            };
+            commands::clean::run(&client, &org, &repo, &filter, yes).await
         }
         None => {
             let summaries = scan::overview(&client, &orgs).await;
             tui::run_tui(client, summaries).await?;
+            Ok(ExitCode::SUCCESS)
         }
     }
-    Ok(())
 }
