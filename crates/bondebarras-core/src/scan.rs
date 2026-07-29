@@ -78,7 +78,7 @@ pub async fn repo_detail(client: &Client, owner: &str, repo: &str) -> Result<Vec
         // is named after the repo. A repo with no image 404s — `versions`
         // already turns that into an empty list, not an error.
         packages::versions(client, owner, repo),
-        prs::closed_numbers(client, owner, repo),
+        prs::closed_prs(client, owner, repo),
     );
 
     let mut items = caches_r?;
@@ -93,7 +93,7 @@ pub async fn repo_detail(client: &Client, owner: &str, repo: &str) -> Result<Vec
 
     // A failed PR listing costs the flag, not the listing: everything still
     // shows, just without the ⚑ shortcut.
-    mark_stale(&mut items, &closed.unwrap_or_default());
+    mark_stale(&mut items, &closed.unwrap_or_default().numbers);
 
     items.sort_by_key(|i| std::cmp::Reverse(i.size_bytes));
     Ok(items)
