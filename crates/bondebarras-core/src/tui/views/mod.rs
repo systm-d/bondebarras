@@ -7,18 +7,42 @@ pub mod orgs;
 pub mod repo;
 
 use crate::clean::Plan;
-use crate::tui::app::{App, View};
+use crate::tui::app::{App, Focus, View};
 use crate::tui::theme;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::text::Span;
 use ratatui::widgets::Paragraph;
 
-const FOOTER_ORGS: &str =
+/// `[d]`'s footer label while focus is on the repo tree: that is the one
+/// focus `App::take_focused_plan` can archive from (see its own doc
+/// comment), never delete.
+const FOOTER_ORGS_ARCHIVE: &str =
+    " [espace] cocher  [s] trier  [f] filtrer  [A] tout ⚑  [d] archiver  [b] billing  [q] quitter";
+/// `[d]`'s footer label everywhere else in `View::Orgs`: the org level and
+/// the resource pane both fall back to `App::take_plan`, an ordinary
+/// resource deletion, exactly as before archiving existed.
+const FOOTER_ORGS_DELETE: &str =
     " [espace] cocher  [s] trier  [f] filtrer  [A] tout ⚑  [d] supprimer  [b] billing  [q] quitter";
 /// No selection, no `d`, nothing destructive: the Billing tab is strictly
 /// diagnostic, and its footer must not advertise a key it does not act on.
 const FOOTER_BILLING: &str = " [←/→] mois  [b] orgs  [q] quitter";
+
+/// Which `[d]` label `View::Orgs`'s footer shows.
+///
+/// Finding 8 of the final review: archiving and deletion share the one key
+/// (`App::take_focused_plan`), so a footer fixed to "supprimer" was simply
+/// wrong once `Focus::Repos` made `d` archive instead — advertising an
+/// action the key will not take. `Focus::Repos` is the only focus
+/// `take_focused_plan` archives from (see its own doc comment); the org
+/// level and the resource pane both fall back to an ordinary resource
+/// deletion, so they keep the old wording.
+fn footer_orgs(focus: Focus) -> &'static str {
+    match focus {
+        Focus::Repos => FOOTER_ORGS_ARCHIVE,
+        Focus::Orgs | Focus::Resources => FOOTER_ORGS_DELETE,
+    }
+}
 
 pub fn render(app: &mut App, f: &mut Frame, pending: Option<&Plan>) {
     let rows = Layout::default()
@@ -60,7 +84,7 @@ pub fn render(app: &mut App, f: &mut Frame, pending: Option<&Plan>) {
         rows[2],
     );
     let footer = match app.view {
-        View::Orgs => FOOTER_ORGS,
+        View::Orgs => footer_orgs(app.focus),
         View::Billing => FOOTER_BILLING,
     };
     f.render_widget(
@@ -155,5 +179,28 @@ mod tests {
 
         app.filter_mode = false;
         assert_eq!(status_line(&app), " filtre : linux");
+    }
+
+    /// Finding 8 of the final review: `d` archives while focus is on the
+    /// repo tree (`App::take_focused_plan`'s own doc comment) — the footer
+    /// must say "archiver" there, not the "supprimer" every other focus
+    /// still gets right.
+    #[test]
+    fn footer_orgs_says_archiver_while_focus_is_on_the_repo_tree() {
+        let f = footer_orgs(Focus::Repos);
+        assert!(f.contains("archiver"), "got: {f}");
+        assert!(!f.contains("supprimer"), "got: {f}");
+    }
+
+    /// The negative case, for both other foci: `take_focused_plan` falls
+    /// back to an ordinary resource deletion everywhere `d` cannot archive
+    /// from, so the footer must keep the old wording there, not the new one.
+    #[test]
+    fn footer_orgs_says_supprimer_everywhere_d_cannot_archive_from() {
+        for focus in [Focus::Orgs, Focus::Resources] {
+            let f = footer_orgs(focus);
+            assert!(f.contains("supprimer"), "got: {f} for {focus:?}");
+            assert!(!f.contains("archiver"), "got: {f} for {focus:?}");
+        }
     }
 }
