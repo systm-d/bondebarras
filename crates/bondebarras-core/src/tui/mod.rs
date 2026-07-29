@@ -206,7 +206,7 @@ where
             KeyCode::Down => match app.focus {
                 Focus::Orgs => {
                     app.org_cursor = (app.org_cursor + 1).min(app.orgs.len().saturating_sub(1));
-                    app.repo_cursor = 0;
+                    app.reset_scoped_cursors();
                 }
                 Focus::Repos => {
                     let max = app
@@ -223,7 +223,7 @@ where
             KeyCode::Up => match app.focus {
                 Focus::Orgs => {
                     app.org_cursor = app.org_cursor.saturating_sub(1);
-                    app.repo_cursor = 0;
+                    app.reset_scoped_cursors();
                 }
                 Focus::Repos => app.repo_cursor = app.repo_cursor.saturating_sub(1),
                 Focus::Resources => app.res_cursor = app.res_cursor.saturating_sub(1),

@@ -175,6 +175,18 @@ impl App {
         self.res_cursor = 0;
     }
 
+    /// Reset the cursors scoped beneath the org cursor, on every org move.
+    ///
+    /// `repo_cursor` already did this. `month_cursor` did not: paging to
+    /// month 5 on a six-month org, then switching to a two-month org, left
+    /// the cursor at 5 — the Billing tab clamps it on render, but the cursor
+    /// itself stayed stranded high, so `←` read as dead until it walked all
+    /// the way back down on its own.
+    pub fn reset_scoped_cursors(&mut self) {
+        self.repo_cursor = 0;
+        self.month_cursor = 0;
+    }
+
     pub fn selection_bytes(&self) -> u64 {
         self.resources
             .iter()
@@ -531,6 +543,23 @@ mod tests {
             !a.quit_armed,
             "the last purge settled; the guard must disarm"
         );
+    }
+
+    /// Locks finding 4: paging to month 5 on an org with six months, then
+    /// switching orgs, must not strand `month_cursor` at 5. The render
+    /// clamps it for display, but the cursor itself stayed put on the old
+    /// code, so `←` read as dead until it was pressed enough times to walk
+    /// back down on its own.
+    #[test]
+    fn reset_scoped_cursors_clears_repo_and_month_cursors() {
+        let mut a = App::new(vec![]);
+        a.repo_cursor = 3;
+        a.month_cursor = 5;
+
+        a.reset_scoped_cursors();
+
+        assert_eq!(a.repo_cursor, 0);
+        assert_eq!(a.month_cursor, 0);
     }
 
     #[test]
