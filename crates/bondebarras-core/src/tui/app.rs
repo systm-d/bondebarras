@@ -92,6 +92,17 @@ pub struct App {
     /// whatever deletions are still queued with no summary shown. Disarmed by
     /// `purge_finished` only once every in-flight purge has settled.
     pub quit_armed: bool,
+    /// The repository ticked for archiving, from the left tree — `(org,
+    /// repo)`. A repository lives one level above `resources`, not inside
+    /// it, so it cannot share `selected`'s `(ResourceKind, u64)` set the way
+    /// every other kind does; this is its own, deliberately single-slot
+    /// state instead of a `HashSet`, because `clean::Plan` can only ever
+    /// target one repository at a time — there is no "select several repos,
+    /// archive them together" shape to build towards. Only ever written by
+    /// `toggle_repo_selected`, which refuses anything but
+    /// `repos::RepoClass::Archivable` — never by any bulk operation; see
+    /// `select_all_stale`'s own guard for why that matters.
+    pub selected_repo: Option<(String, String)>,
 }
 
 impl App {
@@ -117,6 +128,7 @@ impl App {
             month_cursor: 0,
             purges_in_flight: 0,
             quit_armed: false,
+            selected_repo: None,
         }
     }
 
@@ -172,16 +184,106 @@ impl App {
         }
     }
 
+    /// Tick or untick the repository row under the cursor, in the left tree —
+    /// the repository's own equivalent of `toggle_selected`, since it lives
+    /// one level above `resources` and cannot share that method's cursor or
+    /// storage.
+    ///
+    /// Refuses anything but `repos::RepoClass::Archivable`: an
+    /// already-archived repository, or one this token cannot administer, is
+    /// not tickable at all — GitHub answers 403 to the second, and offering a
+    /// tick the API will refuse is a lie the API then contradicts, in front
+    /// of the user. The repository-tree analogue of `toggle_selected`'s own
+    /// default-branch guard.
+    ///
+    /// Ticking a different repository replaces whichever one was ticked
+    /// before: there is no multi-repository selection to build towards,
+    /// since `clean::Plan` — and the archive endpoint itself — can only ever
+    /// target one repository at a time.
+    pub fn toggle_repo_selected(&mut self) {
+        use crate::repos::RepoClass;
+
+        let Some(org) = self.orgs.get(self.org_cursor) else {
+            return;
+        };
+        let Some(repo) = org.repos.get(self.repo_cursor) else {
+            return;
+        };
+
+        match repo.class {
+            RepoClass::AlreadyArchived => {
+                self.status = "Ce dépôt est déjà archivé : rien à faire.".to_string();
+                return;
+            }
+            RepoClass::NoAdminRights => {
+                self.status = "Droits d'admin requis sur ce dépôt : sélection refusée.".to_string();
+                return;
+            }
+            RepoClass::Archivable => {}
+        }
+
+        let key = (org.login.clone(), repo.name.clone());
+        if self.selected_repo.as_ref() == Some(&key) {
+            self.selected_repo = None;
+        } else {
+            self.selected_repo = Some(key);
+        }
+    }
+
+    /// Freeze the ticked repository into an archiving plan.
+    ///
+    /// Cannot reuse `take_plan`: a repository lives in the tree, not
+    /// `resources` (see `App::selected_repo`'s own doc comment), so its
+    /// single `Resource` is synthesised here rather than filtered out of a
+    /// list it was never a part of. `None` when nothing is ticked, or the
+    /// ticked repository has since left the tree — either way, there is
+    /// nothing to build a plan from.
+    pub fn take_repo_plan(&self) -> Option<Plan> {
+        let (owner, repo) = self.selected_repo.clone()?;
+        let summary = self
+            .orgs
+            .iter()
+            .find(|o| o.login == owner)?
+            .repos
+            .iter()
+            .find(|r| r.name == repo)?;
+
+        Some(Plan {
+            items: vec![Resource {
+                kind: ResourceKind::Repository,
+                id: crate::api::refs::resource_id(&repo),
+                label: repo.clone(),
+                size_bytes: 0,
+                age_days: summary.age_days,
+                git_ref: None,
+                stale_pr: false,
+                protected: false,
+                branch_class: None,
+            }],
+            owner,
+            repo,
+        })
+    }
+
     /// Select every ⚑ row: the whole point of the flag is this one keystroke.
     ///
     /// Iterates `visible_resources()`, not `self.resources` — the pane shows
     /// the filtered list, and a bulk select feeding an irreversible delete
     /// must act on what is actually on screen.
+    ///
+    /// Excludes `ResourceKind::Repository` explicitly, defensively — not
+    /// because one can reach `self.resources` today (it can't: a repository
+    /// lives in the tree, see `App::selected_repo`), but because nothing
+    /// else here would stop it if one ever did. `[A]` must never take a
+    /// repository, at any age: `pushed_at` alone is not proof of
+    /// abandonment, and archiving is the only family in this product with no
+    /// preselection path whatsoever — see `bulk_selection_never_takes_a_repository`.
     pub fn select_all_stale(&mut self) {
         let keys: Vec<(ResourceKind, u64)> = self
             .visible_resources()
             .into_iter()
             .filter(|r| r.stale_pr)
+            .filter(|r| r.kind != ResourceKind::Repository)
             .map(|r| (r.kind, r.id))
             .collect();
         self.selected.extend(keys);
@@ -323,6 +425,73 @@ mod tests {
         assert!(a.selected.contains(&(ResourceKind::Cache, 1)));
         assert!(a.selected.contains(&(ResourceKind::Cache, 3)));
         assert!(!a.selected.contains(&(ResourceKind::Cache, 2)));
+    }
+
+    /// THE test of this whole version, per the task-4 brief's own
+    /// self-review: without this, a future extension of `[A]` would flip a
+    /// whole organisation to read-only on one keystroke. `[A]` must never
+    /// take a repository, at any age — `pushed_at` alone is not proof of
+    /// abandonment, and this is the only family in the entire product with
+    /// no preselection path whatsoever.
+    ///
+    /// A `Repository` resource can never actually reach `self.resources` in
+    /// production today — a repository lives in the tree, not the right-hand
+    /// list (see `App::selected_repo`) — which is exactly why this guard has
+    /// to be asserted defensively rather than trusted as an emergent
+    /// property of "nothing puts one there": `select_all_stale` filters
+    /// purely on `r.stale_pr`, with no kind exclusion of its own, so a
+    /// future refactor that ever did merge a repository row into
+    /// `resources` would silently start bulk-selecting it the moment that
+    /// row also happened to carry `stale_pr: true`. The fixture below
+    /// carries a `Repository` item of every age precisely to prove the
+    /// exclusion holds regardless of how old — not just that today's
+    /// plumbing happens not to produce one.
+    #[test]
+    fn bulk_selection_never_takes_a_repository() {
+        let mut a = App::new(vec![]);
+        a.resources = vec![
+            Resource {
+                kind: ResourceKind::Repository,
+                id: 1,
+                label: "young-repo".into(),
+                size_bytes: 0,
+                age_days: 10,
+                git_ref: None,
+                stale_pr: true,
+                protected: false,
+                branch_class: None,
+            },
+            Resource {
+                kind: ResourceKind::Repository,
+                id: 2,
+                label: "lokiprint".into(),
+                size_bytes: 0,
+                age_days: 685,
+                git_ref: None,
+                stale_pr: true,
+                protected: false,
+                branch_class: None,
+            },
+            Resource {
+                kind: ResourceKind::Repository,
+                id: 3,
+                label: ".github".into(),
+                size_bytes: 0,
+                age_days: 775,
+                git_ref: None,
+                stale_pr: true,
+                protected: false,
+                branch_class: None,
+            },
+        ];
+
+        a.select_all_stale();
+
+        assert!(
+            a.selected.is_empty(),
+            "a Repository must never be bulk-selected, at any age: got {:?}",
+            a.selected
+        );
     }
 
     /// Locks the fix for the cross-cutting review's most severe finding:
@@ -548,6 +717,8 @@ mod tests {
             cache_bytes: 0,
             cache_count: 0,
             private: false,
+            age_days: 0,
+            class: crate::repos::RepoClass::Archivable,
         };
         let mut a = App::new(vec![OrgSummary {
             login: "systm-d".into(),
@@ -575,6 +746,8 @@ mod tests {
             cache_bytes: 0,
             cache_count: 0,
             private: false,
+            age_days: 0,
+            class: crate::repos::RepoClass::Archivable,
         };
         let mut a = App::new(vec![
             OrgSummary {
@@ -615,6 +788,103 @@ mod tests {
         assert!(app().take_plan().is_none());
     }
 
+    /// `RepoSummary` fixture with an explicit class and age — every repo-tree
+    /// test below needs to control both, unlike `current_target`'s helper
+    /// closures which hardcode a benign `Archivable`/`0`.
+    fn repo_summary(name: &str, class: crate::repos::RepoClass, age_days: i64) -> RepoSummary {
+        RepoSummary {
+            name: name.to_string(),
+            cache_bytes: 0,
+            cache_count: 0,
+            private: false,
+            age_days,
+            class,
+        }
+    }
+
+    fn app_with_one_repo(class: crate::repos::RepoClass) -> App {
+        let mut a = App::new(vec![OrgSummary {
+            login: "maxds-lyon".into(),
+            cache_bytes: 0,
+            cache_count: 0,
+            repos: vec![repo_summary("lokiprint", class, 685)],
+            billing: None,
+        }]);
+        a.focus = Focus::Repos;
+        a
+    }
+
+    #[test]
+    fn toggle_repo_selected_ticks_an_archivable_repo() {
+        let mut a = app_with_one_repo(crate::repos::RepoClass::Archivable);
+        a.toggle_repo_selected();
+        assert_eq!(
+            a.selected_repo,
+            Some(("maxds-lyon".to_string(), "lokiprint".to_string()))
+        );
+    }
+
+    #[test]
+    fn toggle_repo_selected_untick_by_toggling_twice() {
+        let mut a = app_with_one_repo(crate::repos::RepoClass::Archivable);
+        a.toggle_repo_selected();
+        a.toggle_repo_selected();
+        assert_eq!(a.selected_repo, None);
+    }
+
+    /// Rule 2: an already-archived repo is not tickable at all — this is a
+    /// harder refusal than `toggle_selected`'s branch guard, which still
+    /// allows an individual tick on plenty of "protected" rows (a live
+    /// branch, any tag). Here there is no override.
+    #[test]
+    fn toggle_repo_selected_refuses_an_already_archived_repo() {
+        let mut a = app_with_one_repo(crate::repos::RepoClass::AlreadyArchived);
+        a.toggle_repo_selected();
+        assert_eq!(
+            a.selected_repo, None,
+            "an already-archived repo must never become tickable"
+        );
+        assert!(
+            !a.status.is_empty(),
+            "refusing silently would look like a dead key"
+        );
+    }
+
+    /// Rule 2's other half: GitHub would answer 403 to an archive request
+    /// this token cannot administer. Offering the tick anyway is a lie the
+    /// API then contradicts, in front of the user.
+    #[test]
+    fn toggle_repo_selected_refuses_a_repo_without_admin_rights() {
+        let mut a = app_with_one_repo(crate::repos::RepoClass::NoAdminRights);
+        a.toggle_repo_selected();
+        assert_eq!(a.selected_repo, None);
+        assert!(!a.status.is_empty());
+    }
+
+    #[test]
+    fn take_repo_plan_is_none_when_nothing_is_ticked() {
+        let a = app_with_one_repo(crate::repos::RepoClass::Archivable);
+        assert!(a.take_repo_plan().is_none());
+    }
+
+    /// The plan `clean::execute`'s `Repository` arm needs: one `Resource` of
+    /// that kind, scoped to the ticked repository, carrying its real age —
+    /// not the resource-list plumbing `take_plan` builds, which this
+    /// repository was never a part of.
+    #[test]
+    fn take_repo_plan_targets_the_ticked_repo() {
+        let mut a = app_with_one_repo(crate::repos::RepoClass::Archivable);
+        a.toggle_repo_selected();
+
+        let plan = a.take_repo_plan().expect("a repo was ticked");
+        assert_eq!(plan.owner, "maxds-lyon");
+        assert_eq!(plan.repo, "lokiprint");
+        assert_eq!(plan.items.len(), 1);
+        assert_eq!(plan.items[0].kind, ResourceKind::Repository);
+        assert_eq!(plan.items[0].label, "lokiprint");
+        assert_eq!(plan.items[0].age_days, 685);
+    }
+
     /// Locks the re-review's first regression: `scan::overview` deliberately
     /// keeps cache-free repos in the tree (they may still hold artifacts or
     /// runs), so a post-purge refresh must not replace `org.repos` wholesale
@@ -628,6 +898,8 @@ mod tests {
             cache_bytes: bytes,
             cache_count: count,
             private: false,
+            age_days: 0,
+            class: crate::repos::RepoClass::Archivable,
         };
         let mut a = App::new(vec![OrgSummary {
             login: "systm-d".into(),

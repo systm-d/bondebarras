@@ -1,6 +1,7 @@
 //! Organization repository listing.
 
 use super::Client;
+use super::caches::age_days;
 use anyhow::Result;
 
 /// GitHub's maximum page size for this endpoint.
@@ -18,6 +19,21 @@ pub struct RepoRef {
     /// free and unlimited. GitHub's usage report discounts both identically,
     /// so visibility is the only way to tell them apart.
     pub private: bool,
+    /// Already read-only on GitHub's side. A missing field defaults to
+    /// `false` — see `repos::classify_repo`'s own doc comment for why
+    /// under-reporting archivability is the safe direction.
+    pub archived: bool,
+    /// Whether this token can administer the repository — `permissions.admin`
+    /// on the repository object. A missing field (an unexpected API shape,
+    /// or a token whose permissions GitHub declined to report) defaults to
+    /// `false`: the archive endpoint answers 403 to a token that cannot
+    /// administer, so assuming rights that were never confirmed is the wrong
+    /// direction to guess in.
+    pub admin: bool,
+    /// Whole days since `pushed_at`. Unparseable or missing reads as `0` —
+    /// see `api::caches::age_days`, shared with every other timestamp this
+    /// crate reads.
+    pub age_days: i64,
 }
 
 /// Every repository of an org, across as many pages as it takes.
@@ -46,7 +62,16 @@ pub async fn list(client: &Client, org: &str) -> Result<Vec<RepoRef>> {
             // act on, unlike inventing consumption that never
             // happened.
             let private = item["private"].as_bool().unwrap_or(false);
-            Some(RepoRef { name, private })
+            let archived = item["archived"].as_bool().unwrap_or(false);
+            let admin = item["permissions"]["admin"].as_bool().unwrap_or(false);
+            let age_days = age_days(item["pushed_at"].as_str());
+            Some(RepoRef {
+                name,
+                private,
+                archived,
+                admin,
+                age_days,
+            })
         }));
 
         // A short page is the last one.
@@ -112,13 +137,107 @@ mod tests {
             vec![
                 RepoRef {
                     name: "monolith-back".to_string(),
-                    private: true
+                    private: true,
+                    archived: false,
+                    admin: false,
+                    age_days: 0,
                 },
                 RepoRef {
                     name: "public-site".to_string(),
-                    private: false
+                    private: false,
+                    archived: false,
+                    admin: false,
+                    age_days: 0,
                 },
             ]
+        );
+    }
+
+    /// Locks task 3's rule 2: an already-archived repository, or one this
+    /// token cannot administer, must never be offered as a tick — the API
+    /// would answer 403 to the second, and offering the first again is
+    /// pointless. `classify_repo` decides the row's fate from these two
+    /// fields, so `list` must carry them faithfully.
+    #[tokio::test]
+    async fn list_carries_archived_status_and_admin_rights() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/orgs/maxds-lyon/repos"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                { "name": ".github", "private": false, "archived": true,
+                  "permissions": { "admin": true, "push": true, "pull": true } },
+                { "name": "lokiprint", "private": false, "archived": false,
+                  "permissions": { "admin": false, "push": true, "pull": true } },
+                { "name": "repolens", "private": false, "archived": false,
+                  "permissions": { "admin": true, "push": true, "pull": true } }
+            ])))
+            .mount(&server)
+            .await;
+
+        let client = Client::with_base("t0ken", &server.uri()).unwrap();
+        let repos = list(&client, "maxds-lyon").await.unwrap();
+        let find = |name: &str| repos.iter().find(|r| r.name == name).unwrap();
+
+        assert!(
+            find(".github").archived,
+            "already-archived must carry through"
+        );
+        assert!(
+            !find("lokiprint").admin,
+            "missing admin rights must carry through"
+        );
+        assert!(
+            find("repolens").admin,
+            "a genuine admin repo must read true"
+        );
+        assert!(!find("repolens").archived);
+    }
+
+    /// A repo listing that omits `archived` or `permissions` entirely (an
+    /// unexpected API shape) must default to the safer reading in each
+    /// direction: `archived: false` under-reports archivability the same way
+    /// a missing `private` under-reports visibility, and `admin: false`
+    /// never invites a tick the API would refuse with a 403.
+    #[tokio::test]
+    async fn list_defaults_archived_and_admin_when_fields_are_missing() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/orgs/systm-d/repos"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                { "name": "no-status-fields" }
+            ])))
+            .mount(&server)
+            .await;
+
+        let client = Client::with_base("t0ken", &server.uri()).unwrap();
+        let repos = list(&client, "systm-d").await.unwrap();
+
+        assert!(!repos[0].archived);
+        assert!(!repos[0].admin);
+    }
+
+    /// `age_days` must actually be computed from `pushed_at`, not hardcoded —
+    /// a repository with no push in over two years is exactly the shape the
+    /// tree's own age column exists to surface. A fixed, far-past date avoids
+    /// asserting an exact day count against the live clock.
+    #[tokio::test]
+    async fn list_computes_age_from_pushed_at() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/orgs/maxds-lyon/repos"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                { "name": "lokiprint", "private": false, "pushed_at": "2024-01-01T00:00:00Z" }
+            ])))
+            .mount(&server)
+            .await;
+
+        let client = Client::with_base("t0ken", &server.uri()).unwrap();
+        let repos = list(&client, "maxds-lyon").await.unwrap();
+
+        assert!(
+            repos[0].age_days > 300,
+            "got {} — pushed_at must feed a real age, not a hardcoded 0",
+            repos[0].age_days
         );
     }
 

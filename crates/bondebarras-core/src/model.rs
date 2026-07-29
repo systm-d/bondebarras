@@ -191,6 +191,20 @@ pub struct RepoSummary {
     /// appears in the cache report (never in the repo listing) defaults to
     /// `false` — see `scan::overview`.
     pub private: bool,
+    /// Days since the last push. Not proof of abandonment on its own — a
+    /// finished, stable library does not move for two years without being
+    /// dead — which is exactly why nothing in this crate ever preselects a
+    /// repository from it (see `tui::app::App::select_all_stale`'s own guard
+    /// and `commands::clean::select`'s permanent refusal). Shown to the human
+    /// who decides, on the repository's own row in the tree.
+    pub age_days: i64,
+    /// Whether this repository is a genuine archiving candidate, already
+    /// archived, or off-limits to this token — see `repos::classify_repo`.
+    /// A repo that only appears in the cache report (never in the repo
+    /// listing) defaults to `RepoClass::NoAdminRights`: the safe direction
+    /// when this token's real rights are unknown is to offer nothing, not to
+    /// invite a tick the API might refuse.
+    pub class: crate::repos::RepoClass,
 }
 
 /// Stage-1 view of one organization.

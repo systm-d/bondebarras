@@ -30,6 +30,18 @@ pub async fn usage_by_repository(client: &Client, org: &str) -> Result<Vec<RepoS
                         // This report carries no visibility field; `scan::overview`
                         // fills the real value in from `repos::list`.
                         private: false,
+                        // Same story for age and archiving class: this report
+                        // knows nothing about `pushed_at`, `archived` or
+                        // `permissions.admin`. `scan::overview` fills both in
+                        // from `repos::list` for every repo it also names —
+                        // this default only survives for the rare repo that
+                        // shows up in the cache report but never in the repo
+                        // listing. `NoAdminRights` is the safe direction when
+                        // this token's real rights are unknown: it offers
+                        // nothing, rather than inviting a tick the API might
+                        // refuse.
+                        age_days: 0,
+                        class: crate::repos::RepoClass::NoAdminRights,
                     }
                 })
                 .collect()

@@ -4,7 +4,7 @@
 //! undo — promising either would be a lie. What we offer instead is an
 //! accurate recap before, and a per-item verdict after.
 
-use crate::api::{Client, artifacts, caches, packages, refs, releases, runs};
+use crate::api::{Client, archive, artifacts, caches, packages, refs, releases, runs};
 use crate::model::{Resource, ResourceKind, RiskTier, human_size, risk_tier};
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::time::{Duration, sleep};
@@ -32,6 +32,22 @@ impl Plan {
 
     pub fn total_bytes(&self) -> u64 {
         self.items.iter().map(|i| i.size_bytes).sum()
+    }
+
+    /// Whether this plan archives a repository rather than deleting
+    /// anything. Such a plan is always exactly one `Repository` item — it is
+    /// built directly from a single tick on the tree's own row (see
+    /// `tui::app::App::take_repo_plan`), never a bulk selection, since
+    /// `[A]` and headless `clean` both permanently refuse the kind. Used
+    /// wherever the wording must not call archiving a deletion: it does not
+    /// come back the way v0.3's package versions do, but it is reversible on
+    /// GitHub's side, unlike everything else this crate touches.
+    pub fn is_archive(&self) -> bool {
+        !self.items.is_empty()
+            && self
+                .items
+                .iter()
+                .all(|i| i.kind == ResourceKind::Repository)
     }
 
     /// User-facing recap shown in the confirmation modal.
@@ -158,15 +174,13 @@ pub async fn execute(client: &Client, plan: Plan, tx: UnboundedSender<Progress>)
             ResourceKind::ReleaseAsset => {
                 releases::delete_asset(client, &plan.owner, &plan.repo, item.id).await
             }
-            // Task 3 wires this to `api::archive::archive`. No plan can
-            // contain a `Repository` yet — nothing produces one — so this arm
-            // exists only to keep the match exhaustive; it fails the single
-            // item rather than panicking the whole run if it is ever reached
-            // early. Not a deletion, so the message says "archivage", not
-            // "suppression", unlike every stub before it.
-            ResourceKind::Repository => Err(anyhow::anyhow!(
-                "archivage non câblé pour l'instant (tâche 3)"
-            )),
+            // Not a deletion — the repository stays, only its Actions turn
+            // off — but it goes through the same execute/Progress plumbing
+            // as every other kind: one confirmed plan, one outcome per item.
+            // `plan.owner`/`plan.repo` already name the target repository
+            // directly, unlike every arm above: the item itself carries no
+            // id `archive` needs to address anything by.
+            ResourceKind::Repository => archive::archive(client, &plan.owner, &plan.repo).await,
         };
 
         match result {
@@ -512,5 +526,104 @@ mod tests {
             }
         }
         assert!(done, "the package version must be reported as deleted");
+    }
+
+    /// `execute`'s `Repository` arm must call the real archive endpoint, not
+    /// stand in as a stub — the wiring this task exists to finish.
+    /// `PATCH /repos/{owner}/{repo}` targets `plan.owner`/`plan.repo`
+    /// directly: unlike every arm above, the item itself carries no id the
+    /// call needs, so a mock listening only on the exact owner/repo path
+    /// (not on any item id) is what proves this, not a coincidence of a
+    /// shared URL shape.
+    #[tokio::test]
+    async fn execute_archives_a_repository_via_the_archive_endpoint() {
+        let server = MockServer::start().await;
+        Mock::given(method("PATCH"))
+            .and(path("/repos/systm-d/claudine"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({})))
+            .mount(&server)
+            .await;
+
+        let client = Client::with_base("t0ken", &server.uri()).unwrap();
+        let p = plan(vec![item(ResourceKind::Repository, 1, 0)]);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+
+        execute(&client, p, tx).await;
+
+        let mut done = false;
+        while let Ok(msg) = rx.try_recv() {
+            match msg {
+                Progress::Done { kind, .. } => {
+                    assert_eq!(kind, ResourceKind::Repository);
+                    done = true;
+                }
+                Progress::Failed { reason, .. } => panic!("unexpected failure: {reason}"),
+                Progress::Finished { .. } => {}
+            }
+        }
+        assert!(done, "the repository must be reported as archived");
+    }
+
+    /// A 403 (not an admin) must surface as a failure, not a silent success —
+    /// the same guarantee `api::archive`'s own test locks at the endpoint
+    /// level, proven again here through the full `execute` plumbing.
+    #[tokio::test]
+    async fn execute_reports_a_refused_archive_as_a_failure_not_a_success() {
+        let server = MockServer::start().await;
+        Mock::given(method("PATCH"))
+            .and(path("/repos/systm-d/claudine"))
+            .respond_with(ResponseTemplate::new(403))
+            .mount(&server)
+            .await;
+
+        let client = Client::with_base("t0ken", &server.uri()).unwrap();
+        let p = plan(vec![item(ResourceKind::Repository, 1, 0)]);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+
+        execute(&client, p, tx).await;
+
+        let mut failed = false;
+        while let Ok(msg) = rx.try_recv() {
+            match msg {
+                Progress::Done { .. } => panic!("a 403 must not be reported as success"),
+                Progress::Failed { kind, .. } => {
+                    assert_eq!(kind, ResourceKind::Repository);
+                    failed = true;
+                }
+                Progress::Finished { .. } => {}
+            }
+        }
+        assert!(failed, "the refused archive must be reported as a failure");
+    }
+
+    #[test]
+    fn a_single_repository_item_plan_is_an_archive_plan() {
+        let p = plan(vec![item(ResourceKind::Repository, 1, 0)]);
+        assert!(p.is_archive());
+    }
+
+    #[test]
+    fn an_empty_plan_is_not_an_archive_plan() {
+        assert!(!plan(vec![]).is_archive());
+    }
+
+    /// A wrong implementation keyed on `items.len() == 1` alone, rather than
+    /// the kind, would call a lone cache an archive plan too — this is the
+    /// fixture that tells the two apart.
+    #[test]
+    fn a_single_non_repository_item_is_not_an_archive_plan() {
+        assert!(!plan(vec![item(ResourceKind::Cache, 1, 100)]).is_archive());
+    }
+
+    /// A plan mixing a repository with anything else must not read as an
+    /// archive plan — `take_repo_plan` never builds one this way, but
+    /// `is_archive` itself should not assume that invariant silently.
+    #[test]
+    fn a_mixed_plan_is_not_an_archive_plan() {
+        let p = plan(vec![
+            item(ResourceKind::Repository, 1, 0),
+            item(ResourceKind::Cache, 2, 100),
+        ]);
+        assert!(!p.is_archive());
     }
 }

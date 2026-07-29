@@ -30,19 +30,28 @@ pub async fn overview(client: &Client, orgs: &[String]) -> Vec<OrgSummary> {
 
         // Repos with no cache still belong in the tree: they may hold
         // artifacts or runs, which stage 2 will surface. Repos merged in
-        // here take their real visibility from `repos::list`; a repo that
-        // appears only in the cache report — never in the repo listing —
-        // keeps the `private: false` the cache report defaulted it to.
+        // here take their real visibility, age and archiving class from
+        // `repos::list`; a repo that appears only in the cache report — never
+        // in the repo listing — keeps the defaults the cache report gave it
+        // (`private: false`, `age_days: 0`, `class: NoAdminRights`).
         let mut repos_out = summaries;
         for repo in refs {
+            // `repos` here is `api::repos` (this file's own `use` alias);
+            // `classify_repo` lives in the top-level `crate::repos` module —
+            // same name, different module, hence the full path.
+            let class = crate::repos::classify_repo(repo.archived, repo.admin);
             if let Some(existing) = repos_out.iter_mut().find(|r| r.name == repo.name) {
                 existing.private = repo.private;
+                existing.age_days = repo.age_days;
+                existing.class = class;
             } else {
                 repos_out.push(crate::model::RepoSummary {
                     name: repo.name,
                     cache_bytes: 0,
                     cache_count: 0,
                     private: repo.private,
+                    age_days: repo.age_days,
+                    class,
                 });
             }
         }
@@ -1503,6 +1512,72 @@ mod tests {
             "pushed row must stay private"
         );
         assert!(!find("public-site").private, "public repo must stay public");
+    }
+
+    /// The repository is the first candidate that lives in the tree: its row
+    /// needs its class and age, for both a repo merged into an existing
+    /// cache-report row and one pushed as a new row (`overview` builds
+    /// `RepoSummary` two different ways depending on which case a repo falls
+    /// into, and both must carry the same real data — the exact split
+    /// `overview_carries_repo_visibility_from_the_repo_listing` above locks
+    /// for `private`).
+    #[tokio::test]
+    async fn overview_carries_repo_class_and_age_from_the_repo_listing() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/orgs/maxds-lyon/actions/cache/usage-by-repository"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "repository_cache_usages": [
+                    { "full_name": "maxds-lyon/lokiprint",
+                      "active_caches_size_in_bytes": 1000, "active_caches_count": 2 }
+                ]
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/orgs/maxds-lyon/repos"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                // Has cache usage above: merged into the existing row.
+                // Archived, so it must classify AlreadyArchived even though
+                // admin is true.
+                { "name": "lokiprint", "private": false, "archived": true,
+                  "permissions": { "admin": true },
+                  "pushed_at": "2024-06-15T00:00:00Z" },
+                // No cache usage: pushed as a new row. Not archived, no
+                // admin rights, so it must classify NoAdminRights.
+                { "name": ".github", "private": false, "archived": false,
+                  "permissions": { "admin": false },
+                  "pushed_at": "2024-06-15T00:00:00Z" }
+            ])))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/organizations/maxds-lyon/settings/billing/usage"))
+            .respond_with(ResponseTemplate::new(403))
+            .mount(&server)
+            .await;
+
+        let client = Client::with_base("t0ken", &server.uri()).unwrap();
+        let out = overview(&client, &["maxds-lyon".to_string()]).await;
+
+        let repos = &out[0].repos;
+        let find = |name: &str| repos.iter().find(|r| r.name == name).unwrap();
+
+        let merged = find("lokiprint");
+        assert_eq!(
+            merged.class,
+            crate::repos::RepoClass::AlreadyArchived,
+            "a merged row must classify from the repo listing's own archived flag"
+        );
+        assert!(merged.age_days > 300, "got {}", merged.age_days);
+
+        let pushed = find(".github");
+        assert_eq!(
+            pushed.class,
+            crate::repos::RepoClass::NoAdminRights,
+            "a pushed row must classify from the repo listing's own permissions"
+        );
+        assert!(pushed.age_days > 300, "got {}", pushed.age_days);
     }
 
     #[tokio::test]
