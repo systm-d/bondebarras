@@ -265,6 +265,123 @@ impl App {
         })
     }
 
+    /// Apply a `Progress::Done` for a repository archive: mark that
+    /// repository's own row read-only, and clear the tree's tick — but only
+    /// when it still points at *this* repository.
+    ///
+    /// Findings 3 and 4 of the final review: an earlier version read
+    /// `app.selected_repo` unconditionally to find both which row to update
+    /// and whether to clear the tick, so a second archive ticked (and so
+    /// overwriting `selected_repo`) before this one's `Done` landed made the
+    /// update land on the wrong row and dropped a still-in-flight archive's
+    /// own tick. `owner`/`repo` come from the `Progress` message itself —
+    /// carried since `clean::execute`, the operation's own identity — never
+    /// from whatever the tree currently has ticked.
+    pub fn archive_done(&mut self, owner: &str, repo: &str) {
+        if let Some(r) = self
+            .orgs
+            .iter_mut()
+            .find(|o| o.login == owner)
+            .and_then(|org| org.repos.iter_mut().find(|r| r.name == repo))
+        {
+            r.class = crate::repos::RepoClass::AlreadyArchived;
+        }
+        if self
+            .selected_repo
+            .as_ref()
+            .is_some_and(|(o, r)| o == owner && r == repo)
+        {
+            self.selected_repo = None;
+        }
+    }
+
+    /// Apply a `Progress::Failed` for a repository archive: clear the
+    /// tree's tick, but only when it still points at *this* repository —
+    /// same reasoning as `archive_done`. A refused archive for one
+    /// repository must not drop a different, still in-flight archive's own
+    /// tick.
+    pub fn archive_failed(&mut self, owner: &str, repo: &str) {
+        if self
+            .selected_repo
+            .as_ref()
+            .is_some_and(|(o, r)| o == owner && r == repo)
+        {
+            self.selected_repo = None;
+        }
+    }
+
+    /// The plan `[d]` builds — keyed on which pane currently has focus,
+    /// never on whichever of `take_repo_plan`/`take_plan` happens to return
+    /// `Some`.
+    ///
+    /// Finding 1 of the final review: the old dispatch was
+    /// `take_repo_plan().or_else(|| take_plan())`, so a repository ticked
+    /// earlier outranked a resource selection made afterward, as long as
+    /// `selected_repo` had not happened to get cleared in between.
+    /// `Focus::Repos` is the only focus `toggle_repo_selected` can even be
+    /// reached from (see `[espace]`'s own dispatch in `tui::event_loop`), so
+    /// it is also the only focus this may archive from; everywhere else it
+    /// falls back to the ordinary resource-scoped plan, exactly as if no
+    /// repository had ever been ticked. This closes the gap `finish_loading`
+    /// and `reset_scoped_cursors`'s own clearing cannot: a repository ticked
+    /// and then left alone while the user merely `Tab`s over to
+    /// `Focus::Resources` — no `Enter`, no org move — reaches neither of
+    /// those two clears, so the dispatch itself has to be the thing that
+    /// stops preferring it.
+    pub fn take_focused_plan(&self) -> Option<Plan> {
+        match self.focus {
+            Focus::Repos => self.take_repo_plan(),
+            _ => self.take_plan(),
+        }
+    }
+
+    /// Apply a successful `Enter` load to `app`: swap in the freshly fetched
+    /// resources, reset every cursor and filter scoped to the previous
+    /// repository, and report which families' listings — if any — failed.
+    ///
+    /// Extracted from `event_loop`'s `Enter` arm so the state transition —
+    /// the actual bug surface of Findings 1 and 5 of the final review — can
+    /// be asserted on directly, without spinning up a terminal and a mock
+    /// server to drive the async key-handling loop end to end.
+    ///
+    /// Clears `selected_repo`: Finding 1's other half, alongside
+    /// `reset_scoped_cursors`'s own clearing on every org move. `Enter` is
+    /// the moment `resources` — and so `take_plan`'s target — actually
+    /// changes; a repository ticked before this must not silently keep
+    /// outranking whatever the user goes on to select in the freshly loaded
+    /// pane.
+    ///
+    /// `failed` — the family names `scan::repo_detail_with_warnings` could
+    /// not list — become `app.status` instead of being discarded: Finding 5
+    /// of the final review. `scan::repo_detail`'s stderr wrapper, which the
+    /// caller used to route this through, writes to a stream the alternate
+    /// screen hides, so a refused listing read exactly like an empty one —
+    /// "nothing here" instead of "the listing was refused".
+    pub fn finish_loading(
+        &mut self,
+        org: String,
+        repo: String,
+        items: Vec<Resource>,
+        failed: Vec<&'static str>,
+    ) {
+        self.resources = items;
+        self.res_cursor = 0;
+        self.selected.clear();
+        self.filter.clear();
+        self.filter_mode = false;
+        self.loaded = Some((org, repo));
+        self.selected_repo = None;
+        self.focus = Focus::Resources;
+        self.status = if failed.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "Avertissement : le listing de {} a échoué et est ignoré.",
+                failed.join(", ")
+            )
+        };
+    }
+
     /// Select every ⚑ row: the whole point of the flag is this one keystroke.
     ///
     /// Iterates `visible_resources()`, not `self.resources` — the pane shows
@@ -298,16 +415,24 @@ impl App {
         self.res_cursor = 0;
     }
 
-    /// Reset the cursors scoped beneath the org cursor, on every org move.
+    /// Reset the cursors — and the repository tick — scoped beneath the org
+    /// cursor, on every org move.
     ///
     /// `repo_cursor` already did this. `month_cursor` did not: paging to
     /// month 5 on a six-month org, then switching to a two-month org, left
     /// the cursor at 5 — the Billing tab clamps it on render, but the cursor
     /// itself stayed stranded high, so `←` read as dead until it walked all
     /// the way back down on its own.
+    ///
+    /// `selected_repo` joins them for Finding 1 of the final review: without
+    /// this, ticking a repository in one org and then moving to a different
+    /// org — still at `Focus::Repos` — left the old tick in place, so `d`
+    /// would archive a repository the screen no longer shows any trace of
+    /// having selected.
     pub fn reset_scoped_cursors(&mut self) {
         self.repo_cursor = 0;
         self.month_cursor = 0;
+        self.selected_repo = None;
     }
 
     pub fn selection_bytes(&self) -> u64 {
@@ -885,6 +1010,96 @@ mod tests {
         assert_eq!(plan.items[0].age_days, 685);
     }
 
+    /// Findings 3 and 4 of the final review: two archives in flight at once
+    /// must each resolve against their own target, not against whatever the
+    /// tree currently has ticked. `"second"` is what the tree is showing
+    /// ticked (its own archive is still running); `"first"` is the one that
+    /// actually just finished. On the old `self.selected_repo.take()`
+    /// reading, this would wrongly mark `"second"` archived — the repo still
+    /// mid-flight — and leave `"first"`, which genuinely finished, untouched.
+    #[test]
+    fn archive_done_updates_the_finished_repos_own_row_not_whatever_is_currently_ticked() {
+        let repo = |name: &str| RepoSummary {
+            name: name.to_string(),
+            cache_bytes: 0,
+            cache_count: 0,
+            private: false,
+            age_days: 1,
+            class: crate::repos::RepoClass::Archivable,
+        };
+        let mut a = App::new(vec![OrgSummary {
+            login: "org".into(),
+            cache_bytes: 0,
+            cache_count: 0,
+            repos: vec![repo("first"), repo("second")],
+            billing: None,
+        }]);
+        a.selected_repo = Some(("org".to_string(), "second".to_string()));
+
+        a.archive_done("org", "first");
+
+        assert_eq!(
+            a.orgs[0].repos[0].class,
+            crate::repos::RepoClass::AlreadyArchived,
+            "the repo that actually finished must be marked archived"
+        );
+        assert_eq!(
+            a.orgs[0].repos[1].class,
+            crate::repos::RepoClass::Archivable,
+            "the still in-flight repo must not be marked archived early"
+        );
+        assert_eq!(
+            a.selected_repo,
+            Some(("org".to_string(), "second".to_string())),
+            "the still-ticked, still in-flight repo's own tick must survive"
+        );
+    }
+
+    /// The tick is only cleared when it actually still points at the repo
+    /// that just finished — clearing it unconditionally, as `archive_done`
+    /// used to, would drop a second, still-running archive's own tick the
+    /// instant an unrelated first one completed.
+    #[test]
+    fn archive_done_clears_the_tick_when_it_matches_the_finished_repo() {
+        let mut a = app_with_one_repo(crate::repos::RepoClass::Archivable);
+        a.toggle_repo_selected();
+        assert_eq!(
+            a.selected_repo,
+            Some(("maxds-lyon".to_string(), "lokiprint".to_string()))
+        );
+
+        a.archive_done("maxds-lyon", "lokiprint");
+
+        assert_eq!(a.selected_repo, None);
+    }
+
+    /// Same reasoning as `archive_done`'s own tests, for a refused archive:
+    /// a failure belonging to one repo must not clear a different repo's
+    /// still-valid, still in-flight tick.
+    #[test]
+    fn archive_failed_only_clears_the_tick_if_it_still_points_at_the_failed_repo() {
+        let mut a = App::new(vec![]);
+        a.selected_repo = Some(("org".to_string(), "second".to_string()));
+
+        a.archive_failed("org", "first");
+
+        assert_eq!(
+            a.selected_repo,
+            Some(("org".to_string(), "second".to_string())),
+            "a still in-flight, still-ticked repo's tick must survive an unrelated failure"
+        );
+    }
+
+    #[test]
+    fn archive_failed_clears_the_tick_when_it_matches_the_failed_repo() {
+        let mut a = App::new(vec![]);
+        a.selected_repo = Some(("org".to_string(), "first".to_string()));
+
+        a.archive_failed("org", "first");
+
+        assert_eq!(a.selected_repo, None);
+    }
+
     /// Locks the re-review's first regression: `scan::overview` deliberately
     /// keeps cache-free repos in the tree (they may still hold artifacts or
     /// runs), so a post-purge refresh must not replace `org.repos` wholesale
@@ -977,6 +1192,139 @@ mod tests {
 
         assert_eq!(a.repo_cursor, 0);
         assert_eq!(a.month_cursor, 0);
+    }
+
+    /// Finding 1 of the final review: moving the org cursor while a
+    /// repository from a *different* org is still ticked must drop that
+    /// tick. `reset_scoped_cursors` already runs on every org move (see
+    /// `tui::event_loop`'s `Up`/`Down` handlers for `Focus::Orgs`); without
+    /// this, `d` back at `Focus::Repos` in the new org would still prefer
+    /// archiving a repository the screen has moved entirely away from.
+    #[test]
+    fn reset_scoped_cursors_also_drops_a_stale_repo_tick() {
+        let mut a = App::new(vec![]);
+        a.selected_repo = Some(("old-org".to_string(), "old-repo".to_string()));
+
+        a.reset_scoped_cursors();
+
+        assert_eq!(
+            a.selected_repo, None,
+            "an org move must drop a tick left over from a different org"
+        );
+    }
+
+    /// Finding 1 of the final review, the scenario the report itself
+    /// describes: a repository ticked earlier must not outrank a resource
+    /// selection made after focus has actually moved to the resource pane.
+    /// On the old `take_repo_plan().or_else(|| take_plan())` preference
+    /// order, this plan targets `lokiprint` — the repo ticked first — even
+    /// though the cursor, `loaded` and the pending selection have all since
+    /// moved to `claudine`.
+    #[test]
+    fn take_focused_plan_prefers_the_resource_plan_once_focus_leaves_the_repo_tree() {
+        let repo = |name: &str| RepoSummary {
+            name: name.to_string(),
+            cache_bytes: 0,
+            cache_count: 0,
+            private: false,
+            age_days: 685,
+            class: crate::repos::RepoClass::Archivable,
+        };
+        let mut a = App::new(vec![OrgSummary {
+            login: "maxds-lyon".into(),
+            cache_bytes: 0,
+            cache_count: 0,
+            repos: vec![repo("lokiprint"), repo("claudine")],
+            billing: None,
+        }]);
+        a.focus = Focus::Repos;
+        a.repo_cursor = 0;
+        a.toggle_repo_selected();
+        assert_eq!(
+            a.selected_repo,
+            Some(("maxds-lyon".to_string(), "lokiprint".to_string())),
+            "fixture must actually tick lokiprint first"
+        );
+
+        // The user drills into a different repository's resources and ticks
+        // one there — nothing here touches `selected_repo` on its own.
+        a.loaded = Some(("maxds-lyon".to_string(), "claudine".to_string()));
+        a.resources = vec![res(1, "cache-1", 100, 1, false)];
+        a.selected.insert((ResourceKind::Cache, 1));
+        a.focus = Focus::Resources;
+
+        let plan = a.take_focused_plan().expect("a resource is selected");
+        assert_eq!(
+            plan.repo, "claudine",
+            "must target what focus is actually on, not the stale tick"
+        );
+        assert_eq!(plan.items.len(), 1);
+        assert_eq!(plan.items[0].kind, ResourceKind::Cache);
+    }
+
+    /// The positive counterpart: with focus still on the repo tree, a ticked
+    /// repository must still be what `d` builds.
+    #[test]
+    fn take_focused_plan_returns_the_repo_plan_while_focus_is_on_the_repo_tree() {
+        let mut a = app_with_one_repo(crate::repos::RepoClass::Archivable);
+        a.toggle_repo_selected();
+
+        let plan = a.take_focused_plan().expect("a repo was ticked");
+        assert_eq!(plan.repo, "lokiprint");
+        assert_eq!(plan.items[0].kind, ResourceKind::Repository);
+    }
+
+    /// Finding 1's other half: `Enter` is the moment `resources` — and so
+    /// `take_plan`'s target — actually changes, so a repository ticked
+    /// before it must not silently keep outranking whatever the user goes on
+    /// to select in the freshly loaded pane.
+    #[test]
+    fn finish_loading_clears_a_stale_repo_tick() {
+        let mut a = App::new(vec![]);
+        a.selected_repo = Some(("org".to_string(), "old-repo".to_string()));
+
+        a.finish_loading("org".to_string(), "new-repo".to_string(), vec![], vec![]);
+
+        assert_eq!(
+            a.selected_repo, None,
+            "loading a repository must drop any repository still ticked in the tree"
+        );
+    }
+
+    /// Finding 5 of the final review: `repo_detail`'s stderr wrapper is
+    /// invisible behind the TUI's alternate screen, so a refused listing
+    /// used to read exactly like an empty one — "nothing here" instead of
+    /// "the listing was refused". The failed family names must reach
+    /// `app.status`, the one place the user is actually looking.
+    #[test]
+    fn finish_loading_surfaces_failed_families_in_status() {
+        let mut a = App::new(vec![]);
+
+        a.finish_loading(
+            "org".to_string(),
+            "repo".to_string(),
+            vec![],
+            vec!["caches", "tags"],
+        );
+
+        assert!(
+            !a.status.is_empty(),
+            "a refused listing must not read the same as an empty one"
+        );
+        assert!(a.status.contains("caches"), "got: {}", a.status);
+        assert!(a.status.contains("tags"), "got: {}", a.status);
+    }
+
+    /// The other side of finding 5: nothing failed, so the status must not
+    /// carry a leftover warning from a previous load.
+    #[test]
+    fn finish_loading_clears_status_when_nothing_failed() {
+        let mut a = App::new(vec![]);
+        a.status = "Chargement de org/repo …".to_string();
+
+        a.finish_loading("org".to_string(), "repo".to_string(), vec![], vec![]);
+
+        assert!(a.status.is_empty(), "got: {}", a.status);
     }
 
     #[test]

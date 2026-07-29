@@ -105,16 +105,34 @@ pub fn finished_recap(freed: u64, deleted: usize, deleted_sizeless: usize) -> St
 /// unique within one resource kind: without it, the event loop cannot tell
 /// which row to remove from `app.resources` when a cache and an artifact
 /// happen to share an id.
+///
+/// `Done` and `Failed` also carry `owner`/`repo` — Findings 3 and 4 of the
+/// final review. A `Repository` archive shares this same one channel with
+/// every other kind (see `execute`'s own `Repository` arm), so the event
+/// loop's `Done`/`Failed` handler for it used to identify *which* repository
+/// just archived by reading `app.selected_repo` — whatever the tree
+/// currently ticked, not necessarily the repository this specific message
+/// was about. Starting a second archive before the first's `Done`/`Failed`
+/// landed then let the second tick silently steal the first one's
+/// attribution, or vice versa. Carrying the plan's own `owner`/`repo`
+/// directly on the message — `execute` already has both in scope for every
+/// item it sends — makes each message self-describing: two concurrent
+/// `execute` calls each report against their own target, with no shared
+/// slot for one to stomp on the other's.
 #[derive(Debug, Clone)]
 pub enum Progress {
     Done {
         kind: ResourceKind,
         id: u64,
+        owner: String,
+        repo: String,
     },
     Failed {
         kind: ResourceKind,
         id: u64,
         reason: String,
+        owner: String,
+        repo: String,
     },
     Finished {
         freed: u64,
@@ -129,6 +147,18 @@ pub enum Progress {
         /// `deleted` alone, to tell "every deletion's size is unknown" apart
         /// from "every deletion was a real, empty resource."
         deleted_sizeless: usize,
+        /// `Some(repo)` when the plan that just finished was an archive plan
+        /// (`Plan::is_archive`) — the repository it archived. Computed once,
+        /// by `execute`, from its own `Plan`, rather than tracked as a
+        /// shared `archiving_target` slot in the event loop (Findings 3 and
+        /// 4 of the final review): a second archive confirmed before the
+        /// first's `Finished` landed used to overwrite that slot, so the
+        /// first `Finished` — arriving after — read back the *second*
+        /// plan's repository, or `None` if the slot had already been
+        /// consumed once. Each `execute` call now derives this from the one
+        /// `Plan` it alone owns, so there is nothing left for a second call
+        /// to desynchronise.
+        archived_repo: Option<String>,
     },
 }
 
@@ -138,6 +168,10 @@ pub async fn execute(client: &Client, plan: Plan, tx: UnboundedSender<Progress>)
     let mut failures = 0_usize;
     let mut deleted = 0_usize;
     let mut deleted_sizeless = 0_usize;
+    // Computed once, from this call's own `Plan`, before `plan.items` is
+    // even walked — see `Progress::Finished`'s own doc comment for why this
+    // must not be tracked as shared state anywhere else.
+    let archived_repo = plan.is_archive().then(|| plan.repo.clone());
 
     for item in &plan.items {
         let result = match item.kind {
@@ -193,6 +227,8 @@ pub async fn execute(client: &Client, plan: Plan, tx: UnboundedSender<Progress>)
                 let _ = tx.send(Progress::Done {
                     kind: item.kind,
                     id: item.id,
+                    owner: plan.owner.clone(),
+                    repo: plan.repo.clone(),
                 });
             }
             Err(e) => {
@@ -201,6 +237,8 @@ pub async fn execute(client: &Client, plan: Plan, tx: UnboundedSender<Progress>)
                     kind: item.kind,
                     id: item.id,
                     reason: e.to_string(),
+                    owner: plan.owner.clone(),
+                    repo: plan.repo.clone(),
                 });
             }
         }
@@ -213,6 +251,7 @@ pub async fn execute(client: &Client, plan: Plan, tx: UnboundedSender<Progress>)
         failures,
         deleted,
         deleted_sizeless,
+        archived_repo,
     });
 }
 
@@ -376,7 +415,7 @@ mod tests {
         let mut done = false;
         while let Ok(msg) = rx.try_recv() {
             match msg {
-                Progress::Done { kind, id } => {
+                Progress::Done { kind, id, .. } => {
                     assert_eq!(kind, ResourceKind::Branch);
                     assert_eq!(id, 999, "the reported id is still the hashed selection key");
                     done = true;
@@ -480,7 +519,7 @@ mod tests {
         let mut freed = 0;
         while let Ok(msg) = rx.try_recv() {
             match msg {
-                Progress::Done { kind, id } => {
+                Progress::Done { kind, id, .. } => {
                     assert_eq!(kind, ResourceKind::ReleaseAsset);
                     assert_eq!(id, 9);
                     done = true;
@@ -516,7 +555,7 @@ mod tests {
         let mut done = false;
         while let Ok(msg) = rx.try_recv() {
             match msg {
-                Progress::Done { kind, id } => {
+                Progress::Done { kind, id, .. } => {
                     assert_eq!(kind, ResourceKind::PackageVersion);
                     assert_eq!(id, 9);
                     done = true;

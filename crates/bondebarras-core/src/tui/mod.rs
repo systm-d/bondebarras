@@ -68,12 +68,6 @@ where
     B::Error: std::error::Error + Send + Sync + 'static,
 {
     let mut pending: Option<Plan> = None;
-    // The repository name a confirmed plan is archiving, captured at the
-    // moment `y` is pressed — `pending`'s own `Plan` is moved into the
-    // spawned task right after, so `Progress::Finished` cannot read it back
-    // off `pending` the way it reads `purging_org` off `app`. `None` for an
-    // ordinary deletion plan; see `purge_finished_status`.
-    let mut archiving_target: Option<String> = None;
     let (tx, mut rx) = mpsc::unbounded_channel::<Progress>();
 
     while !app.should_quit {
@@ -82,28 +76,37 @@ where
         // Drain deletion progress without blocking the draw.
         while let Ok(msg) = rx.try_recv() {
             match msg {
-                Progress::Done { kind, id } => {
+                Progress::Done {
+                    kind,
+                    id,
+                    owner,
+                    repo,
+                } => {
                     if kind == ResourceKind::Repository {
                         // Not a deletion: the repository stays in the tree,
-                        // now read-only. Mark its row as such instead of
-                        // removing it, and clear the tick so it doesn't
-                        // linger on a row that can no longer be archived
-                        // again.
-                        if let Some((owner, repo)) = app.selected_repo.take()
-                            && let Some(org) = app.orgs.iter_mut().find(|o| o.login == owner)
-                            && let Some(r) = org.repos.iter_mut().find(|r| r.name == repo)
-                        {
-                            r.class = crate::repos::RepoClass::AlreadyArchived;
-                        }
+                        // now read-only. `owner`/`repo` name the archive
+                        // this message is actually about — Findings 3 and 4
+                        // of the final review: reading `app.selected_repo`
+                        // here instead, as an earlier version did, updated
+                        // whatever the tree currently had ticked, which a
+                        // second archive started before this one landed
+                        // could easily have replaced.
+                        app.archive_done(&owner, &repo);
                     } else {
                         app.resources.retain(|r| !(r.kind == kind && r.id == id));
                         app.selected.remove(&(kind, id));
                     }
                 }
-                Progress::Failed { kind, id, reason } => {
+                Progress::Failed {
+                    kind,
+                    id,
+                    reason,
+                    owner,
+                    repo,
+                } => {
                     if kind == ResourceKind::Repository {
-                        app.selected_repo = None;
-                        app.status = format!("Erreur : archivage — {reason}");
+                        app.archive_failed(&owner, &repo);
+                        app.status = format!("Erreur : archivage de {repo} refusé — {reason}");
                     } else {
                         app.selected.remove(&(kind, id));
                         app.status = format!("Erreur : suppression de {id} — {reason}");
@@ -114,14 +117,23 @@ where
                     failures,
                     deleted,
                     deleted_sizeless,
+                    archived_repo,
                 } => {
                     // One purge is done. `purge_finished` only disarms the
                     // quit guard once every in-flight purge has settled — a
                     // second purge started before this one landed must keep
                     // `q` guarded.
                     app.purge_finished();
+                    // `archived_repo` comes straight off this message —
+                    // `clean::execute` computed it from its own `Plan` — not
+                    // from a shared `archiving_target` local the way an
+                    // earlier version of this loop did: a second archive
+                    // confirmed before this `Finished` landed could
+                    // overwrite that local before this one ever read it. See
+                    // `Progress::Finished`'s own doc comment (Findings 3 and
+                    // 4 of the final review).
                     app.status = purge_finished_status(
-                        archiving_target.take().as_deref(),
+                        archived_repo.as_deref(),
                         freed,
                         failures,
                         deleted,
@@ -169,7 +181,6 @@ where
                     // comment), so there is nothing an itemised summary
                     // would add.
                     app.status = format!("Archivage de {} …", plan.repo);
-                    archiving_target = Some(plan.repo.clone());
                 } else {
                     app.status = format!("Suppression de {} …", plan.summary());
                 }
@@ -271,21 +282,17 @@ where
                 // Stage 2: load the selected repository on demand. The target
                 // is cloned out first — holding a borrow on `app.orgs` while
                 // assigning `app.status` would not compile.
+                //
+                // Calls `repo_detail_with_warnings` directly, not the
+                // `repo_detail` stderr wrapper: Finding 5 of the final
+                // review needs the failed family names as data so
+                // `App::finish_loading` can put them where the user is
+                // actually looking, `app.status` — the wrapper's `eprintln!`
+                // writes to a stream the alternate screen hides.
                 if let Some((org, repo)) = app.current_target() {
                     app.status = format!("Chargement de {org}/{repo} …");
-                    match scan::repo_detail(&client, &org, &repo).await {
-                        Ok(items) => {
-                            app.resources = items;
-                            app.res_cursor = 0;
-                            app.selected.clear();
-                            // A filter typed for the previous repository must
-                            // not silently keep hiding rows in this one.
-                            app.filter.clear();
-                            app.filter_mode = false;
-                            app.loaded = Some((org, repo));
-                            app.focus = Focus::Resources;
-                            app.status.clear();
-                        }
+                    match scan::repo_detail_with_warnings(&client, &org, &repo).await {
+                        Ok((items, failed)) => app.finish_loading(org, repo, items, failed),
                         Err(e) => app.status = format!("Erreur : {e}"),
                     }
                 }
@@ -301,13 +308,12 @@ where
             },
             KeyCode::Char('s') => app.cycle_sort(),
             KeyCode::Char('A') => app.select_all_stale(),
-            // A ticked repository takes priority: `take_repo_plan` is `Some`
-            // only right after `toggle_repo_selected` ticked one, and there
-            // is nothing left to prefer it over — a repository never joins
-            // `take_plan`'s resource-scoped plan.
+            // Dispatches on focus, not on preferring a ticked repository
+            // unconditionally — see `App::take_focused_plan`'s own doc
+            // comment for Finding 1 of the final review, which this used to
+            // get wrong.
             KeyCode::Char('d') => {
-                let plan = app.take_repo_plan().or_else(|| app.take_plan());
-                if let Some(plan) = plan
+                if let Some(plan) = app.take_focused_plan()
                     && !plan.items.is_empty()
                 {
                     pending = Some(plan);

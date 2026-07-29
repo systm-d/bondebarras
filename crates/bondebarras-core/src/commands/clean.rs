@@ -153,6 +153,7 @@ pub async fn run(
                 failures: f,
                 deleted,
                 deleted_sizeless,
+                ..
             } => {
                 failures = f;
                 eprintln!(
