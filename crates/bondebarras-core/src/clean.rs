@@ -52,16 +52,28 @@ impl Plan {
 
     /// User-facing recap shown in the confirmation modal.
     ///
-    /// A plan made up entirely of sizeless items (package versions,
-    /// branches, tags — see `ResourceKind::has_known_size`) always totals 0
-    /// bytes — GitHub exposes no size for any of them, `size_bytes` is
-    /// hardcoded to 0 for every one (see `scan::version_resources` and
-    /// `scan::branch_resources`/`tag_resources`) — but that is not the same
-    /// thing as an empty plan. Printing "0 o" would read as "nothing was
-    /// selected"; the honest recap names the count instead and says plainly
-    /// that the size is unknown.
+    /// An archive plan is checked first, and separately from the sizeless
+    /// branch: `Repository` also has no known size (see
+    /// `ResourceKind::has_known_size`), so it would otherwise fall into the
+    /// same "taille inconnue" wording a sizeless deletion gets — Finding 6 of
+    /// the final review. That phrasing implies the size question merely
+    /// cannot be answered; for archiving it is answered, and the answer is
+    /// zero, by design — un-archiving aside, nothing about the repository's
+    /// own content changes, so no byte is ever freed (see `Plan::is_archive`'s
+    /// own doc comment). The summary says what the plan actually does
+    /// instead of borrowing a deletion's uncertainty.
+    ///
+    /// A plan made up entirely of sizeless deletions (package versions,
+    /// branches, tags) always totals 0 bytes — GitHub exposes no size for
+    /// any of them, `size_bytes` is hardcoded to 0 for every one (see
+    /// `scan::version_resources` and `scan::branch_resources`/`tag_resources`)
+    /// — but that is not the same thing as an empty plan. Printing "0 o"
+    /// would read as "nothing was selected"; the honest recap names the
+    /// count instead and says plainly that the size is unknown.
     pub fn summary(&self) -> String {
-        if !self.items.is_empty() && self.items.iter().all(|i| !i.kind.has_known_size()) {
+        if self.is_archive() {
+            "Archivage · 0 o libéré, par nature".to_string()
+        } else if !self.items.is_empty() && self.items.iter().all(|i| !i.kind.has_known_size()) {
             format!("{} élément(s) · taille inconnue", self.items.len())
         } else {
             format!(
@@ -321,6 +333,31 @@ mod tests {
         assert!(!s.contains("0 o"), "got: {s}");
         assert!(s.contains('2'), "got: {s}");
         assert!(s.to_lowercase().contains("inconnue"), "got: {s}");
+    }
+
+    /// Finding 6 of the final review: `summary` reused "taille inconnue" for
+    /// an archive plan too, since `Repository` has no known size — but
+    /// archiving is not an unanswerable size question, it never frees a
+    /// byte, by design (see `Plan::is_archive`'s own doc comment:
+    /// reversible, unlike everything else this crate touches). The summary
+    /// must say what the plan actually does, not lump it in with a package
+    /// version's genuinely unknown size.
+    #[test]
+    fn summary_names_the_archive_and_says_plainly_it_frees_nothing() {
+        let p = Plan {
+            items: vec![item(ResourceKind::Repository, 1, 0)],
+            owner: "maxds-lyon".into(),
+            repo: "lokiprint".into(),
+        };
+        assert!(p.is_archive(), "fixture must actually be an archive plan");
+
+        let s = p.summary();
+        assert!(!s.to_lowercase().contains("inconnue"), "got: {s}");
+        assert!(s.to_lowercase().contains("archiv"), "got: {s}");
+        assert!(
+            s.contains("0 o"),
+            "must say plainly that it frees nothing: got: {s}"
+        );
     }
 
     #[test]
