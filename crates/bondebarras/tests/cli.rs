@@ -41,3 +41,13 @@ fn clean_requires_yes_to_delete() {
         .stdout(contains("--yes"))
         .stdout(contains("--stale-pr"));
 }
+
+#[test]
+fn clean_help_documents_the_packages_flag() {
+    Command::cargo_bin("bondebarras")
+        .unwrap()
+        .args(["clean", "--help"])
+        .assert()
+        .success()
+        .stdout(contains("--packages"));
+}

@@ -42,6 +42,10 @@ pub enum Command {
         /// Inclut les workflow runs.
         #[arg(long)]
         runs: bool,
+        /// Inclut les versions de packages (conteneurs). GitHub n'en expose
+        /// pas la taille : aucun octet n'est promis pour cette famille.
+        #[arg(long)]
+        packages: bool,
         /// Restreint aux ressources rattachées à une PR fermée.
         #[arg(long = "stale-pr")]
         stale_pr: bool,
@@ -52,4 +56,30 @@ pub enum Command {
         #[arg(long)]
         yes: bool,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn clean_packages_flag(args: &[&str]) -> bool {
+        let mut full = vec!["bondebarras", "clean", "--org", "o", "--repo", "r"];
+        full.extend_from_slice(args);
+        match Cli::try_parse_from(full).unwrap().command {
+            Some(Command::Clean { packages, .. }) => packages,
+            other => panic!("expected Command::Clean, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn packages_joins_the_family_flags() {
+        assert!(clean_packages_flag(&["--packages"]));
+    }
+
+    #[test]
+    fn packages_absent_defaults_to_false() {
+        // Like every other family flag, naming no family must select
+        // nothing — `--packages` is not an exception that defaults to true.
+        assert!(!clean_packages_flag(&[]));
+    }
 }

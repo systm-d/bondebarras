@@ -257,4 +257,34 @@ mod tests {
         let picked: Vec<u64> = select(&items, &f).iter().map(|r| r.id).collect();
         assert_eq!(picked, vec![1]);
     }
+
+    // The test above uses a fixture holding only `PackageVersion` items, so
+    // it cannot tell a correctly wired arm from one accidentally shared with
+    // another kind — e.g. `ResourceKind::WorkflowRun | ResourceKind::PackageVersion
+    // => filter.packages` (a plausible copy/paste of the match arm above it)
+    // still passes that test by accident: there is no `WorkflowRun` item in
+    // its fixture to leak into the selection. Verified by injecting exactly
+    // that mutation: the single-kind test above stayed green, and only this
+    // fixture — which carries all four kinds at once — caught it, with a
+    // `WorkflowRun` id showing up in `picked` alongside the package version.
+    #[test]
+    fn packages_alone_isolates_the_package_version_from_the_other_three_families() {
+        let items = vec![
+            res(ResourceKind::Cache, 1, 1, false),
+            res(ResourceKind::Artifact, 2, 1, false),
+            res(ResourceKind::WorkflowRun, 3, 1, false),
+            res(ResourceKind::PackageVersion, 4, 1, false),
+        ];
+
+        // No family named: nothing, from any of the four.
+        assert!(select(&items, &filter()).is_empty());
+
+        // --packages alone: only the PackageVersion item.
+        let f = CleanFilter {
+            packages: true,
+            ..filter()
+        };
+        let picked: Vec<u64> = select(&items, &f).iter().map(|r| r.id).collect();
+        assert_eq!(picked, vec![4]);
+    }
 }
