@@ -5,6 +5,48 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-07-29
+
+### Added
+
+- Merged branches, tags, and release assets: three new resource families,
+  offered for deletion the same way v0.1's caches and v0.3's package
+  versions are.
+  - **A branch is offered dead the moment a pull request merges it** —
+    detected at zero extra requests, by reading `head.ref`/`merged_at` off
+    the same closed-PR listing the caches' ⚑ flag already fetches, rather
+    than a `compare` call per branch (a hundred requests on a single busy
+    repository). A PR closed *without* merging leaves its branch alone: the
+    work may still be resumed. The default branch, any GitHub-protected
+    branch, and every tag are shown but never bulk-selectable — a tag is
+    what a release, a `go get`, or a `Cargo.toml` points at by name.
+  - **Release assets are the volume story of this release**: unlike a
+    package version, GitHub does expose an asset's size. Measured across
+    four of the author's organizations before writing a line of code:
+    **7.3 GB**, led by `exec-d/terminus` (1,453 MB across 25 releases) and
+    `delfour-co/githero` (1,371 MB across 27).
+  - **The release itself is never deletable — only its assets are.** A
+    release is a point in the repository's history (a tag, notes, a date);
+    its weight is entirely in whatever binaries are attached to it, and
+    deleting those frees the space without erasing the trace. There is no
+    flag, at any tier, that removes a release.
+  - All three join Tier 2: an itemised recap plus an explicit
+    irreversibility warning, since none of them come back once deleted.
+- `--branches`, `--tags`, and `--assets` join `clean`'s family flags; like
+  every other family, naming none of them still selects nothing. A live
+  branch and every tag are refused headlessly regardless of the flag —
+  `Resource.protected` handles it, the same guard that already protects a
+  tagged package version.
+- The resource list now shows each branch and tag's classification: a dead
+  branch reads `mergée ⚑`, painted the same way a stale cache is; a live one
+  reads `protégée`; a tag always reads `protégé`. A release asset's row
+  already carries its release's tag in the label.
+
+### Note on scopes
+
+No new token scope: `repo`, already required since v0.1, covers listing and
+deleting branches, tags, and release assets.
+
 ## [0.3.0] - 2026-07-29
 
 ### Added

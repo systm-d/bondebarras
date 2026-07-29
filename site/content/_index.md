@@ -70,6 +70,8 @@ cta2 = "Install"
 <li>Caches cross-checked against closed pull requests</li>
 <li>A closed or merged PR's cache can never be read again</li>
 <li>Package versions checked for missing tags and orphaned attestations</li>
+<li>Branches offered dead the moment a pull request merges them — zero extra requests, a PR closed without merging leaves its branch alone</li>
+<li>Release assets measured in bytes: <strong>7.3 GB</strong> across four orgs, the release itself never deleted, only its binaries</li>
 <li>One keystroke selects every flagged row</li>
 </ul>
 </div>
@@ -163,6 +165,9 @@ cta2 = "Install"
 <div class="comment"># package versions carry no size — GitHub's API exposes none</div>
 <div class="line"><span class="prompt">$</span>bondebarras clean <span class="flag">--org</span> systm-d <span class="flag">--repo</span> repolens <span class="flag">--packages</span> <span class="flag">--yes</span></div>
 <div class="out">Bon débarras ! 0 o libérés.</div>
+<div class="comment"># the release stays — only its assets go</div>
+<div class="line"><span class="prompt">$</span>bondebarras clean <span class="flag">--org</span> exec-d <span class="flag">--repo</span> terminus <span class="flag">--assets</span> <span class="flag">--older-than</span> 180 <span class="flag">--yes</span></div>
+<div class="out">Bon débarras ! 1.4 Go libérés.</div>
 </div>
 </div>
 </section>

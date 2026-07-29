@@ -48,6 +48,20 @@ again by anything.
   author's own account, the real footprint across fifteen organizations is
   **7 packages, 45 versions, 23 of them untagged** — one organization alone
   (`maxds-lyon`) carries 20 of its 28 versions with no tag at all.
+- **Merged branches, tags, and release assets** — a branch is offered dead
+  the moment a pull request merges it, at zero extra requests: the same
+  closed-PR listing the ⚑ flag already fetches carries `head.ref` and
+  `merged_at`. A closed-but-unmerged PR leaves its branch alone — the work
+  may still be resumed. The default branch and any GitHub-protected one are
+  shown but never bulk-selectable, and neither is a tag: it's what a
+  release, a `go get`, or a `Cargo.toml` points at by name. **Release assets
+  are the volume story of this family** — GitHub does expose their size,
+  unlike a package version — and the release itself is never deletable,
+  only its binaries: a release is a point in the repository's history, and
+  its weight is entirely in what's attached to it. Measured across four of
+  the author's organizations: **7.3 GB in release assets alone**, led by
+  `exec-d/terminus` (1,453 MB across 25 releases) and `delfour-co/githero`
+  (1,371 MB across 27).
 - **⚑ Stale-PR flag** — every cache is checked against the repository's
   closed pull requests; a cache attached to a closed or merged PR is flagged
   as safe to delete in one keystroke.
@@ -57,8 +71,9 @@ again by anything.
 - **Tiered confirmation** before any deletion — a bare `[y/N]` for the
   regenerable Tier 1 (caches, artifacts, workflow runs), an itemised recap
   plus an explicit irreversibility warning for Tier 2 (package versions,
-  which do not come back once deleted) — followed by a background purge with
-  a per-item result. The TUI stays responsive throughout.
+  merged branches, tags, and release assets — none of them come back once
+  deleted) — followed by a background purge with a per-item result. The TUI
+  stays responsive throughout.
 - **Billing tab** — per-organization Actions-minutes usage against the free
   allowance, month by month, with a per-repository breakdown of what is
   burning it. The gauge counts **private repositories only**: GitHub's usage
@@ -203,6 +218,10 @@ bondebarras clean --org systm-d --repo josephine --caches --stale-pr --yes
 # Delete every untagged/orphaned package version in a repo, unattended —
 # a tagged version (latest, 2.0.2, …) is never touched, headless or not
 bondebarras clean --org systm-d --repo repolens --packages --yes
+
+# Free up release-asset space, unattended — the releases themselves stay;
+# only their binaries go
+bondebarras clean --org exec-d --repo terminus --assets --older-than 180 --yes
 ```
 
 | Flag | Effect |
@@ -210,7 +229,7 @@ bondebarras clean --org systm-d --repo repolens --packages --yes
 | `--org <name>` | Limits `scan` to one organization; absent = every one the token can see |
 | `--json` | Machine-readable output on stdout — nothing else goes to stdout |
 | `--repo <name>` | Repository targeted by `clean` |
-| `--caches` `--artifacts` `--runs` `--packages` | Resource families `clean` should touch, cumulative |
+| `--caches` `--artifacts` `--runs` `--packages` `--branches` `--tags` `--assets` | Resource families `clean` should touch, cumulative |
 | `--stale-pr` | Restricts `clean` to resources flagged ⚑ (attached to a closed PR) |
 | `--older-than <days>` | Restricts `clean` to resources at least that old |
 | `--yes` | Confirms without a prompt |
@@ -234,6 +253,14 @@ is still possible, but only one row at a time, from the interactive TUI
 (`espace`) — a human looking at that specific row is the case the tool
 allows it in.
 
+**`--branches` and `--tags` follow the same rule.** A live branch — the
+default one, a GitHub-protected one, or simply one with no merged pull
+request behind it — is *protected*, and so is every tag: `--branches --yes`
+from a crontab only ever takes a branch a merged PR made dead weight, never
+one still in use. `--assets` never touches the release itself, only its
+binaries — there is no flag that deletes a release, on any tier, because
+bondebarras never offers to.
+
 ### Required token scopes
 
 `repo`, `read:org`, `read:packages`, and `delete:packages` are enough for
@@ -241,8 +268,10 @@ everything bondebarras does — reading and deleting caches, artifacts,
 workflow runs, and container package versions; listing the organizations and
 repositories a token can see; and reading the Billing tab's usage report (a
 403 there just means the token's owner isn't an org owner — the org stays
-otherwise navigable). Repository *deletion* is explicitly and permanently
-out of scope for this tool, so `delete_repo` is never required.
+otherwise navigable). Branches, tags, and release assets need no scope
+beyond `repo`, already in that list — nothing new to grant for them.
+Repository *deletion* is explicitly and permanently out of scope for this
+tool, so `delete_repo` is never required.
 
 ---
 

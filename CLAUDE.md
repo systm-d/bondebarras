@@ -1,10 +1,10 @@
 # bondebarras — project guide for AI agents & contributors
 
 TUI/CLI to audit and clean up GitHub organization resources: Actions caches,
-artifacts, workflow runs, and container package versions, across every org a
-token can see. Rust workspace: `bondebarras-core` (library: pure logic, the
-`api/` boundary, the CLI parser and the TUI) + `bondebarras` (binary, thin
-shim).
+artifacts, workflow runs, container package versions, merged branches, tags,
+and release assets, across every org a token can see. Rust workspace:
+`bondebarras-core` (library: pure logic, the `api/` boundary, the CLI parser
+and the TUI) + `bondebarras` (binary, thin shim).
 
 ## Read first
 
@@ -29,8 +29,16 @@ shim).
 - **No trash, no undo.** Nothing GitHub lets us delete is reversible, so the
   tool never promises otherwise. Tier 1 (caches, artifacts, workflow runs) is
   regenerable by a re-run and gets a bare confirmation; Tier 2 (package
-  versions, since v0.3) does not come back, so its modal lists the items and
-  says so plainly — see `tui::views::confirm::modal_kind`.
+  versions since v0.3; merged branches, tags, and release assets since v0.4)
+  does not come back, so its modal lists the items and says so plainly — see
+  `tui::views::confirm::modal_kind`.
+- **A release is never deletable — only its assets are, permanently out of
+  scope beyond that.** `ResourceKind` has no `Release` variant and never
+  will: a release is a point in the repository's history (a tag, notes, a
+  date), and its weight is entirely in whatever binaries are attached to it.
+  `api::releases::assets` flattens every release's `assets[]` into rows,
+  carrying the release's tag along in the label since the release itself
+  never becomes a row of its own.
 - **Package versions carry no size, ever.** GitHub's API exposes no size
   field for a package version, under any name, and no billing SKU covers
   package storage either. `Resource.size_bytes` is hardcoded to `0` for
@@ -38,17 +46,28 @@ shim).
   shows `—` instead of formatting that zero, with a header line spelling out
   why — see `tui::views::repo::list_title`.
 - **`Resource.protected` is refused in bulk, unconditionally.** A tagged
-  package version (`latest`, and any other real tag) sets it; every other
-  family always sets `false`. `commands::clean::select` filters it out
-  before any other rule, headless or not — the guard lives on the resource,
-  not in a caller's discipline, because a cron has no human to notice a
-  broken deployment. Individual selection (`espace`, in the TUI) is
-  unaffected: the spec only ever asked for a human looking at that one row.
+  package version (`latest`, and any other real tag), a live branch (the
+  default one, GitHub-protected, or simply with no merged PR behind it), and
+  every tag all set it; every other family always sets `false`.
+  `commands::clean::select` filters it out before any other rule, headless
+  or not — the guard lives on the resource, not in a caller's discipline,
+  because a cron has no human to notice a broken deployment. Individual
+  selection (`espace`, in the TUI) is unaffected: the spec only ever asked
+  for a human looking at that one row.
+- **A branch is only ever offered dead because a pull request merged it —
+  never from a per-branch `compare` call.** `refs::branch_is_dead` reads
+  `head.ref`/`merged_at` off the same closed-PR listing `api::prs::
+  closed_prs` already fetches for the caches' ⚑ flag (one call, two uses —
+  zero marginal requests). A PR closed *without* merging leaves its branch
+  alone: `a_branch_with_no_merged_pr_is_alive` is the test that guards this,
+  and the negative case is the one that matters — a classifier keying on
+  "closed" alone would offer to delete work someone meant to resume.
 - Required token scopes: `repo`, `read:org`, `read:packages`, and
   `delete:packages` cover everything bondebarras does, including the Billing
   tab's usage report (a 403 there just means the token's owner isn't an org
-  owner). Repository *deletion* is permanently out of scope, so
-  `delete_repo` is never needed.
+  owner). Branches, tags, and release assets (v0.4) need no scope beyond
+  `repo`, already in that list. Repository *deletion* is permanently out of
+  scope, so `delete_repo` is never needed.
 - User-facing strings (CLI/TUI output) may be in **French** (e.g.
   `Erreur : …`); code identifiers and documentation stay in English.
 
@@ -64,11 +83,14 @@ shim).
 | Actions cache endpoints | `crates/bondebarras-core/src/api/caches.rs` |
 | Artifact endpoints | `crates/bondebarras-core/src/api/artifacts.rs` |
 | Workflow run endpoints | `crates/bondebarras-core/src/api/runs.rs` |
-| Closed pull request listing | `crates/bondebarras-core/src/api/prs.rs` |
+| Closed pull request listing (also carries merged `head.ref`s, for dead branches) | `crates/bondebarras-core/src/api/prs.rs` |
 | Repository listing | `crates/bondebarras-core/src/api/repos.rs` |
 | Billing usage-report fetch (403 degrades to `None`, not an error) | `crates/bondebarras-core/src/api/billing.rs` |
 | Package version endpoints (list, delete) | `crates/bondebarras-core/src/api/packages.rs` |
 | Package version classification: untagged, orphaned attestation, tagged (pure) | `crates/bondebarras-core/src/packages.rs` |
+| Branch/tag endpoints (list, delete), default-branch lookup | `crates/bondebarras-core/src/api/refs.rs` |
+| Release-asset endpoints (list, delete) — no endpoint for deleting a release itself | `crates/bondebarras-core/src/api/releases.rs` |
+| Dead-branch classification (pure): default/protected/no-merged-PR exclusions | `crates/bondebarras-core/src/refs.rs` |
 | Two-stage scan orchestration | `crates/bondebarras-core/src/scan.rs` |
 | Deletion planning & execution, progress events | `crates/bondebarras-core/src/clean.rs` |
 | TUI event loop, terminal setup/teardown | `crates/bondebarras-core/src/tui/mod.rs` |
