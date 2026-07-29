@@ -55,20 +55,8 @@ pub fn render(app: &mut App, f: &mut Frame, pending: Option<&Plan>) {
         View::Billing => billing::render(app, f, rows[1]),
     }
 
-    // A filter left in place must stay visible even once the user stops
-    // typing — otherwise it silently keeps hiding rows with no indication
-    // why. The cursor mark (▏) only appears while actively typing.
-    let status = if !app.filter.is_empty() {
-        if app.filter_mode {
-            format!(" filtre : {}▏", app.filter)
-        } else {
-            format!(" filtre : {}", app.filter)
-        }
-    } else {
-        app.status.clone()
-    };
     f.render_widget(
-        Paragraph::new(Span::styled(status, theme::muted())),
+        Paragraph::new(Span::styled(status_line(app), theme::muted())),
         rows[2],
     );
     let footer = match app.view {
@@ -82,5 +70,63 @@ pub fn render(app: &mut App, f: &mut Frame, pending: Option<&Plan>) {
 
     if let Some(plan) = pending {
         confirm::render(plan, f, f.area());
+    }
+}
+
+/// What the status row shows.
+///
+/// Split out from `render` so it can be asserted on without a terminal, and
+/// because the priority itself is the fix: `app.status` carries one-shot
+/// messages — per-item deletion errors (`Erreur : suppression de {id} —
+/// {reason}`) and the « Bon débarras ! » recap — that a filter left typed in
+/// must not permanently bury. The filter is shown only once there is nothing
+/// more urgent to say. The cursor mark (▏) only appears while actively
+/// typing.
+fn status_line(app: &App) -> String {
+    if !app.status.is_empty() {
+        app.status.clone()
+    } else if !app.filter.is_empty() {
+        if app.filter_mode {
+            format!(" filtre : {}▏", app.filter)
+        } else {
+            format!(" filtre : {}", app.filter)
+        }
+    } else {
+        String::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Locks finding 3: a filter left typed in must not hide per-item
+    /// deletion errors or the purge recap, both of which are written to
+    /// `app.status`. On the old priority (filter first, status as fallback)
+    /// this returns the filter string instead.
+    #[test]
+    fn status_takes_priority_over_an_active_filter() {
+        let mut app = App::new(vec![]);
+        app.filter = "linux".into();
+        app.status = "Erreur : suppression de 9 — 404".into();
+
+        assert_eq!(status_line(&app), "Erreur : suppression de 9 — 404");
+    }
+
+    #[test]
+    fn the_filter_shows_once_status_is_empty() {
+        let mut app = App::new(vec![]);
+        app.filter = "linux".into();
+
+        assert_eq!(status_line(&app), " filtre : linux");
+    }
+
+    #[test]
+    fn the_typing_cursor_only_appears_in_filter_mode() {
+        let mut app = App::new(vec![]);
+        app.filter = "linux".into();
+        app.filter_mode = true;
+
+        assert_eq!(status_line(&app), " filtre : linux▏");
     }
 }
