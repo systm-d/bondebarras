@@ -279,6 +279,7 @@ mod tests {
             age_days: age,
             git_ref: None,
             stale_pr: stale,
+            protected: false,
         }
     }
 
@@ -319,6 +320,7 @@ mod tests {
                 age_days: 1,
                 git_ref: None,
                 stale_pr: false,
+                protected: false,
             },
             Resource {
                 kind: ResourceKind::Artifact,
@@ -328,6 +330,7 @@ mod tests {
                 age_days: 1,
                 git_ref: None,
                 stale_pr: false,
+                protected: false,
             },
         ];
         // Default sort is by size descending, so the artifact (200) is row 0

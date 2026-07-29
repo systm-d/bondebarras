@@ -199,8 +199,8 @@ bondebarras scan --org systm-d --json
 # Delete every cache attached to a closed PR, unattended
 bondebarras clean --org systm-d --repo josephine --caches --stale-pr --yes
 
-# Delete every package version in a repo, tagged ones included — there is
-# no tag-aware flag yet, unlike --stale-pr for caches; scope this with care
+# Delete every untagged/orphaned package version in a repo, unattended —
+# a tagged version (latest, 2.0.2, …) is never touched, headless or not
 bondebarras clean --org systm-d --repo repolens --packages --yes
 ```
 
@@ -224,12 +224,14 @@ bondebarras' current scope reaches it, but the rule is set now, while the CLI
 surface is still small, so a future destructive operation can't slip into a
 cron job by accident.
 
-**`--packages` has no tag-aware equivalent of `--stale-pr` yet**: it selects
-every version of the repo's package, tagged ones (`latest`, `2.0.2`, …)
-included. The interactive TUI never preselects a tagged version, but that
-protection is TUI-only — a headless `clean --packages --yes` deletes them
-just the same as an untagged one. Narrow it with `--older-than`, or run it
-interactively when the target repo publishes anything still in use.
+**`--packages` cannot delete a tagged package version, headless or not.**
+`latest`, `2.0.2`, and any other real tag are *protected*: the rule lives on
+the resource itself, not in the TUI's selection step, so it applies just the
+same to a `clean --packages --yes` run from a crontab. Only untagged layers
+and orphaned attestations are ever taken in bulk. Deleting a tagged version
+is still possible, but only one row at a time, from the interactive TUI
+(`espace`) — a human looking at that specific row is the case the tool
+allows it in.
 
 ### Required token scopes
 

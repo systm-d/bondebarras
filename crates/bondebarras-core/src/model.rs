@@ -75,6 +75,11 @@ pub struct Resource {
     pub git_ref: Option<String>,
     /// True when `git_ref` points at a closed or merged pull request.
     pub stale_pr: bool,
+    /// Something live still references this resource by name — a container tag
+    /// like `latest`, today. Bulk selection must never take it: the TUI does
+    /// not preselect it, and a headless run refuses it outright, because there
+    /// is no human at the other end of a cron to notice.
+    pub protected: bool,
 }
 
 /// Per-repository cache aggregate, from the org-level endpoint.

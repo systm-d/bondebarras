@@ -128,6 +128,7 @@ mod tests {
             age_days: 30,
             git_ref: None,
             stale_pr: false,
+            protected: false,
         }
     }
 

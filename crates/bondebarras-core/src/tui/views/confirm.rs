@@ -176,6 +176,7 @@ mod tests {
             age_days: 10,
             git_ref: None,
             stale_pr: false,
+            protected: false,
         }
     }
 

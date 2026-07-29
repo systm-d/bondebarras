@@ -25,6 +25,12 @@ pub struct CleanFilter {
 /// Naming no family selects **nothing**. A `clean` that quietly meant
 /// "everything" would be the worst possible default for an irreversible
 /// operation running unattended.
+///
+/// A `protected` resource is never returned, regardless of the filter: it is
+/// still live-referenced by name (a tag like `latest`, today), and headless
+/// has no human at the other end of a cron to notice a broken deployment.
+/// The TUI's individual `espace` selection is the only path left to it — see
+/// `tui::app::App::toggle_selected`.
 pub fn select(items: &[Resource], filter: &CleanFilter) -> Vec<Resource> {
     items
         .iter()
@@ -34,6 +40,9 @@ pub fn select(items: &[Resource], filter: &CleanFilter) -> Vec<Resource> {
             ResourceKind::WorkflowRun => filter.runs,
             ResourceKind::PackageVersion => filter.packages,
         })
+        // A protected resource is never taken in bulk. Headless has no human
+        // to override that, so this is not a default — it is the rule.
+        .filter(|r| !r.protected)
         .filter(|r| !filter.stale_pr || r.stale_pr)
         .filter(|r| filter.older_than.is_none_or(|d| r.age_days >= d))
         .cloned()
@@ -120,6 +129,7 @@ mod tests {
             age_days: age,
             git_ref: None,
             stale_pr: stale,
+            protected: false,
         }
     }
 
@@ -286,5 +296,28 @@ mod tests {
         };
         let picked: Vec<u64> = select(&items, &f).iter().map(|r| r.id).collect();
         assert_eq!(picked, vec![4]);
+    }
+
+    #[test]
+    fn a_protected_resource_is_never_taken_in_bulk() {
+        // `latest` in a cron is the scenario: no human, no confirmation, and a
+        // broken deployment for everyone pulling that tag.
+        let mut tagged = res(ResourceKind::PackageVersion, 1, 90, false);
+        tagged.protected = true;
+        let untagged = res(ResourceKind::PackageVersion, 2, 90, false);
+
+        let f = CleanFilter {
+            packages: true,
+            ..filter()
+        };
+        let picked: Vec<u64> = select(&[tagged, untagged], &f)
+            .iter()
+            .map(|r| r.id)
+            .collect();
+        assert_eq!(
+            picked,
+            vec![2],
+            "a tagged version must never be selected headlessly"
+        );
     }
 }

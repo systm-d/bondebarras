@@ -114,6 +114,10 @@ fn version_resources(versions: Vec<PackageVersion>) -> Vec<Resource> {
             // Packages carry no git ref: the ⚑ stale-PR flag does not apply.
             git_ref: None,
             stale_pr: false,
+            // Only a tagged version is live-referenced by name — deleting
+            // `latest` breaks whatever pulls it. Untagged and orphaned
+            // attestations are exactly the two classes nothing depends on.
+            protected: class == VersionClass::Tagged,
         })
         .collect()
 }
@@ -157,6 +161,7 @@ mod tests {
             age_days: 12,
             git_ref: Some(git_ref.to_string()),
             stale_pr: false,
+            protected: false,
         }
     }
 
@@ -174,6 +179,58 @@ mod tests {
         assert!(items[0].stale_pr);
         assert!(!items[1].stale_pr);
         assert!(!items[2].stale_pr);
+    }
+
+    /// A tagged version arriving as `protected: false` would make
+    /// `commands::clean::select`'s bulk-selection guard useless — the whole
+    /// point of the flag is that it is set from the classification, not left
+    /// at its default. `Untagged` and `OrphanedAttestation` are exactly the
+    /// two classes real deployments do not depend on by name, so both must
+    /// come through unprotected.
+    #[test]
+    fn only_a_tagged_version_is_protected() {
+        // The digest #1's attestation tag signs — deliberately absent from
+        // this fixture's own digests, which is what makes #1 an orphaned
+        // attestation rather than a live one (see
+        // `packages::an_attestation_whose_subject_is_gone_is_orphaned`: the
+        // signed image must be gone, not merely a sibling in the list).
+        const SIGNED_DIGEST: &str =
+            "sha256-1a65eb30f0e36fc41bb07724b11e53ada5e810382f39143698b00c470f019b80";
+        let versions = vec![
+            PackageVersion {
+                id: 1,
+                digest: "sha256:1d7018e5672547cced06883706367832e5f1be5fa90bc2038ad308e19958e80e"
+                    .into(),
+                tags: vec![SIGNED_DIGEST.into()],
+                age_days: 30,
+            },
+            PackageVersion {
+                id: 2,
+                digest: "sha256:9a26c70801010123223adb5e73ff703aca86c15e19b30124ede5628a1e185826"
+                    .into(),
+                tags: vec![],
+                age_days: 30,
+            },
+            PackageVersion {
+                id: 3,
+                digest: "sha256:deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+                    .into(),
+                tags: vec!["latest".into()],
+                age_days: 30,
+            },
+        ];
+        // classify(): #1's tag signs a digest none of these three carry, so
+        // #1 is OrphanedAttestation; #2 has no tags, so Untagged; #3 carries
+        // a real tag, so Tagged.
+        let items = version_resources(versions);
+
+        let protected = |id: u64| items.iter().find(|r| r.id == id).unwrap().protected;
+        assert!(
+            !protected(1),
+            "an orphaned attestation must not be protected"
+        );
+        assert!(!protected(2), "an untagged version must not be protected");
+        assert!(protected(3), "a tagged version must be protected");
     }
 
     #[tokio::test]

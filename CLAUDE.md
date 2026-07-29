@@ -37,6 +37,13 @@ shim).
   `ResourceKind::PackageVersion`; never estimate or extrapolate one. The TUI
   shows `—` instead of formatting that zero, with a header line spelling out
   why — see `tui::views::repo::list_title`.
+- **`Resource.protected` is refused in bulk, unconditionally.** A tagged
+  package version (`latest`, and any other real tag) sets it; every other
+  family always sets `false`. `commands::clean::select` filters it out
+  before any other rule, headless or not — the guard lives on the resource,
+  not in a caller's discipline, because a cron has no human to notice a
+  broken deployment. Individual selection (`espace`, in the TUI) is
+  unaffected: the spec only ever asked for a human looking at that one row.
 - Required token scopes: `repo`, `read:org`, `read:packages`, and
   `delete:packages` cover everything bondebarras does, including the Billing
   tab's usage report (a 403 there just means the token's owner isn't an org

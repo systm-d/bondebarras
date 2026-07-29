@@ -127,6 +127,7 @@ mod tests {
             age_days: 40,
             git_ref: Some("refs/pull/32/merge".into()),
             stale_pr: stale,
+            protected: false,
         }
     }
 
@@ -139,6 +140,7 @@ mod tests {
             age_days: 5,
             git_ref: None,
             stale_pr: false,
+            protected: false,
         }
     }
 

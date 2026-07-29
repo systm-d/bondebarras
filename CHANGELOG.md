@@ -12,8 +12,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Container package versions (GHCR): untagged layers and orphaned
   attestations (a signature tagged `sha256-<digest>` whose signed image is
   gone) are detected and offered for deletion, the same way a cache attached
-  to a closed PR is. Tagged versions are shown but never preselected —
-  deleting `latest` breaks deployments.
+  to a closed PR is. A tagged version is `protected`: bulk selection refuses
+  it outright — headless `clean --packages --yes` included, not just the
+  TUI's preselection — since deleting `latest` breaks every deployment
+  pulling it and there is no human at the other end of a cron to notice.
+  Deleting one is still possible, one row at a time, from the interactive
+  TUI.
 - `--packages` joins `clean`'s family flags; like the others, naming no
   family still selects nothing.
 - Tier-2 confirmation modal: an itemised recap plus an explicit warning that
