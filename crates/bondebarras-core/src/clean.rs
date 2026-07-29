@@ -36,19 +36,16 @@ impl Plan {
 
     /// User-facing recap shown in the confirmation modal.
     ///
-    /// A plan made up entirely of package versions always totals 0 bytes —
-    /// GitHub exposes no size for that family, `size_bytes` is hardcoded to
-    /// 0 for every one of them (see `scan::version_resources`) — but that is
-    /// not the same thing as an empty plan. Printing "0 o" would read as
-    /// "nothing was selected"; the honest recap names the count instead and
-    /// says plainly that the size is unknown.
+    /// A plan made up entirely of sizeless items (package versions,
+    /// branches, tags — see `ResourceKind::has_known_size`) always totals 0
+    /// bytes — GitHub exposes no size for any of them, `size_bytes` is
+    /// hardcoded to 0 for every one (see `scan::version_resources` and
+    /// `scan::branch_resources`/`tag_resources`) — but that is not the same
+    /// thing as an empty plan. Printing "0 o" would read as "nothing was
+    /// selected"; the honest recap names the count instead and says plainly
+    /// that the size is unknown.
     pub fn summary(&self) -> String {
-        if !self.items.is_empty()
-            && self
-                .items
-                .iter()
-                .all(|i| i.kind == ResourceKind::PackageVersion)
-        {
+        if !self.items.is_empty() && self.items.iter().all(|i| !i.kind.has_known_size()) {
             format!("{} élément(s) · taille inconnue", self.items.len())
         } else {
             format!(
@@ -64,19 +61,20 @@ impl Plan {
 /// status line and the headless `clean` command so the wording never drifts
 /// between the two.
 ///
-/// `deleted_sizeless` — how many of `deleted` were package versions, the one
-/// family GitHub exposes no size for — is what this needs to say something
-/// true: keying the decision on `freed == 0` alone, as an earlier version
-/// did, cannot tell "every deleted item's size is unknown" apart from
-/// "every deleted item was genuinely zero bytes" — two real, empty caches
-/// deleted would then read "taille inconnue," which is false, their size
-/// was known and it was zero. Only "unknown" once every deletion that
-/// happened was one where the size genuinely cannot be known.
+/// `deleted_sizeless` — how many of `deleted` were a kind GitHub exposes no
+/// size for at all (`!ResourceKind::has_known_size`: a package version, a
+/// branch or a tag) — is what this needs to say something true: keying the
+/// decision on `freed == 0` alone, as an earlier version did, cannot tell
+/// "every deleted item's size is unknown" apart from "every deleted item was
+/// genuinely zero bytes" — two real, empty caches deleted would then read
+/// "taille inconnue," which is false, their size was known and it was zero.
+/// Only "unknown" once every deletion that happened was one where the size
+/// genuinely cannot be known.
 ///
-/// A mixed purge (some package versions among sized resources) still just
+/// A mixed purge (some sizeless items among sized resources) still just
 /// reports `freed` here — accurate as far as it goes, even though it says
-/// nothing about the package versions in the mix. Making that case honest
-/// too is a separate concern, out of scope for this fix.
+/// nothing about the sizeless items in the mix. Making that case honest too
+/// is a separate concern, out of scope for this fix.
 pub fn finished_recap(freed: u64, deleted: usize, deleted_sizeless: usize) -> String {
     if deleted > 0 && deleted_sizeless == deleted {
         format!("{deleted} élément(s) supprimé(s) · taille inconnue")
@@ -166,7 +164,7 @@ pub async fn execute(client: &Client, plan: Plan, tx: UnboundedSender<Progress>)
             Ok(()) => {
                 freed += item.size_bytes;
                 deleted += 1;
-                if item.kind == ResourceKind::PackageVersion {
+                if !item.kind.has_known_size() {
                     deleted_sizeless += 1;
                 }
                 let _ = tx.send(Progress::Done {
@@ -211,6 +209,7 @@ mod tests {
             git_ref: None,
             stale_pr: false,
             protected: false,
+            branch_class: None,
         }
     }
 
@@ -272,6 +271,23 @@ mod tests {
         let s = p.summary();
         assert!(s.contains("0 o"), "got: {s}");
         assert!(!s.to_lowercase().contains("inconnue"), "got: {s}");
+    }
+
+    /// Finding 3 of the v0.4 final review: branches and tags are sizeless
+    /// too, but `summary` only checked `kind == ResourceKind::PackageVersion`
+    /// — a plan of only branches and tags totalled 0 bytes and printed a
+    /// bare "0 o", the exact "reads as empty" defect v0.3's whole fix wave
+    /// was about, recurring for two families the old check could not see.
+    #[test]
+    fn summary_says_size_is_unknown_for_an_all_branch_and_tag_plan() {
+        let p = plan(vec![
+            item(ResourceKind::Branch, 1, 0),
+            item(ResourceKind::Tag, 2, 0),
+        ]);
+        let s = p.summary();
+        assert!(!s.contains("0 o"), "got: {s}");
+        assert!(s.contains('2'), "got: {s}");
+        assert!(s.to_lowercase().contains("inconnue"), "got: {s}");
     }
 
     #[test]
@@ -347,6 +363,47 @@ mod tests {
             }
         }
         assert!(done, "the branch must be reported as deleted");
+    }
+
+    /// Finding 3 of the v0.4 final review: `deleted_sizeless` only counted
+    /// `ResourceKind::PackageVersion`, so a purge of only branches (or tags)
+    /// reported `deleted_sizeless: 0` and `finished_recap` fell through to
+    /// `human_size(freed)` — "0 o libérés" for a purge that genuinely
+    /// deleted something, the false-emptiness defect stated one level up
+    /// the call stack from where `Plan::summary` has the same bug.
+    #[tokio::test]
+    async fn execute_counts_a_deleted_branch_as_sizeless_too() {
+        let server = MockServer::start().await;
+        Mock::given(method("DELETE"))
+            .and(path(
+                "/repos/systm-d/claudine/git/refs/heads/claude/landing-3jbqk4",
+            ))
+            .respond_with(ResponseTemplate::new(204))
+            .mount(&server)
+            .await;
+
+        let client = Client::with_base("t0ken", &server.uri()).unwrap();
+        let mut branch = item(ResourceKind::Branch, 999, 0);
+        branch.label = "claude/landing-3jbqk4".to_string();
+        let p = plan(vec![branch]);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+
+        execute(&client, p, tx).await;
+
+        let mut sizeless = None;
+        while let Ok(msg) = rx.try_recv() {
+            if let Progress::Finished {
+                deleted_sizeless, ..
+            } = msg
+            {
+                sizeless = Some(deleted_sizeless);
+            }
+        }
+        assert_eq!(
+            sizeless,
+            Some(1),
+            "a deleted branch must count as sizeless, same as a package version"
+        );
     }
 
     /// Same load-bearing-label proof as the branch arm above, for a tag.

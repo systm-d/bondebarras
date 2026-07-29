@@ -360,6 +360,7 @@ mod tests {
             git_ref: None,
             stale_pr: false,
             protected: false,
+            branch_class: None,
         }
     }
 

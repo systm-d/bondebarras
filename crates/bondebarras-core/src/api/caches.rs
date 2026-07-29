@@ -67,6 +67,8 @@ pub async fn list(client: &Client, owner: &str, repo: &str) -> Result<Vec<Resour
                         // A cache carries no equivalent of a live reference by
                         // name; only a tagged package version does, today.
                         protected: false,
+                        // Only a `Branch` row carries a classification.
+                        branch_class: None,
                     })
                 })
                 .collect()

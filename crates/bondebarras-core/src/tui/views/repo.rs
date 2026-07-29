@@ -1,6 +1,7 @@
 //! Right pane: the resources of the selected repository.
 
 use crate::model::{Resource, ResourceKind, human_size, size_display};
+use crate::refs::BranchClass;
 use crate::stale::pr_number_from_ref;
 use crate::tui::app::App;
 use crate::tui::theme;
@@ -69,19 +70,29 @@ pub fn row_spans(r: &Resource, checked: bool) -> Vec<Span<'static>> {
     // Branches and tags carry no PR ref (`mark_stale` leaves `stale_pr`
     // false for both, on purpose — see `scan::branch_resources`), so the
     // stale-PR arm below never fires for them. They earn their own
-    // classification instead: a dead branch is only ever offered because a
-    // PR merged it, so it is named and flagged exactly like a stale cache
-    // is; a live one — default, GitHub-protected, or simply with no merged
-    // PR behind it, three cases `Resource` cannot tell apart once built (see
-    // `scan::branch_resources`'s conversion table) — reads "protégée", the
-    // same word `Resource.protected`'s own doc comment uses for what the
-    // field means everywhere else in the codebase. A tag is always
-    // `protected: true`, unconditionally, so it always reads "protégé".
+    // classification instead. A branch reads its real `BranchClass` (Finding
+    // 2 of the v0.4 final review): `mergée ⚑` only for one a merged PR
+    // proved dead, `par défaut`/`protégée` only for the two GitHub itself
+    // refuses to let go, and `vivante` for one that is merely unmerged —
+    // `protégée` used to cover all three of the latter, which claimed a
+    // protection GitHub does not provide for a branch nobody has decided
+    // anything about. A tag is always `protected: true`, unconditionally,
+    // so it always reads "protégé".
     match r.kind {
-        ResourceKind::Branch if !r.protected => {
-            spans.push(Span::styled("mergée ⚑".to_string(), theme::stale_style()))
+        ResourceKind::Branch => {
+            let (text, style) = match r.branch_class {
+                Some(BranchClass::Merged) => ("mergée ⚑".to_string(), theme::stale_style()),
+                Some(BranchClass::Default) => ("par défaut".to_string(), theme::muted()),
+                Some(BranchClass::Protected) => ("protégée".to_string(), theme::muted()),
+                // `None` should not happen in production — `scan::
+                // branch_resources` always sets it for a `Branch` row — but
+                // falls back to the least alarming, least presumptuous
+                // label rather than panicking or claiming a protection
+                // nothing has confirmed.
+                Some(BranchClass::Live) | None => ("vivante".to_string(), theme::muted()),
+            };
+            spans.push(Span::styled(text, style));
         }
-        ResourceKind::Branch => spans.push(Span::styled("protégée".to_string(), theme::muted())),
         ResourceKind::Tag => spans.push(Span::styled("protégé".to_string(), theme::muted())),
         // A stale row earns its own colour and the PR that made it dead weight.
         _ => match r.git_ref.as_deref().and_then(pr_number_from_ref) {
@@ -161,6 +172,7 @@ pub fn render(app: &mut App, f: &mut Frame, area: Rect) {
 mod tests {
     use super::*;
     use crate::model::ResourceKind;
+    use crate::refs::BranchClass;
 
     fn res(stale: bool) -> Resource {
         Resource {
@@ -172,6 +184,7 @@ mod tests {
             git_ref: Some("refs/pull/32/merge".into()),
             stale_pr: stale,
             protected: false,
+            branch_class: None,
         }
     }
 
@@ -198,13 +211,14 @@ mod tests {
             git_ref: None,
             stale_pr: false,
             protected: false,
+            branch_class: None,
         }
     }
 
-    /// `protected: !dead` is exactly what `scan::branch_resources` (task 4)
-    /// sets — this fixture mirrors production rather than inventing its own
-    /// shape.
-    fn branch(label: &str, protected: bool) -> Resource {
+    /// `protected: class != BranchClass::Merged` and `branch_class:
+    /// Some(class)` are exactly what `scan::branch_resources` sets — this
+    /// fixture mirrors production rather than inventing its own shape.
+    fn branch(label: &str, class: BranchClass) -> Resource {
         Resource {
             kind: ResourceKind::Branch,
             id: 1,
@@ -213,7 +227,8 @@ mod tests {
             age_days: 0,
             git_ref: None,
             stale_pr: false,
-            protected,
+            protected: class != BranchClass::Merged,
+            branch_class: Some(class),
         }
     }
 
@@ -229,6 +244,7 @@ mod tests {
             git_ref: None,
             stale_pr: false,
             protected: true,
+            branch_class: None,
         }
     }
 
@@ -247,6 +263,7 @@ mod tests {
             git_ref: None,
             stale_pr: false,
             protected: false,
+            branch_class: None,
         }
     }
 
@@ -336,33 +353,70 @@ mod tests {
 
     /// The dead-branch classification the design doc's mockup (§5) calls
     /// `mergée #31 ⚑` — no PR number is carried this far (`branch_resources`
-    /// discards it once `branch_is_dead` has used it, and `Resource` has
+    /// discards it once `classify_branch` has used it, and `Resource` has
     /// nowhere to keep it), so the row names what it can prove: that the
     /// branch is dead because a PR merged it, and flags it the same way a
     /// stale cache is.
     #[test]
     fn a_dead_branch_is_labelled_merged_and_flagged() {
-        let line = text(&row_spans(&branch("claude/landing-3jbqk4", false), true));
+        let line = text(&row_spans(
+            &branch("claude/landing-3jbqk4", BranchClass::Merged),
+            true,
+        ));
         assert!(line.contains("mergée"), "got: {line}");
         assert!(line.contains('⚑'), "got: {line}");
     }
 
-    /// The negative case `a_dead_branch_is_labelled_merged_and_flagged`
-    /// needs to mean anything: a row_spans that always printed "mergée ⚑"
-    /// regardless of `protected` would still pass that test alone (a live
-    /// branch was never fed through it there). Feeding one here, and
-    /// asserting `mergée`/`⚑` are *absent*, is what tells the two apart.
+    /// Finding 2: `protected: true` used to be the *only* signal a live
+    /// branch had, and it was shared by three different reasons — the
+    /// default branch, one GitHub protects directly, and one that is simply
+    /// unmerged — all rendering the same word, "protégée", a claim GitHub
+    /// backs for only the first two. These three tests feed one
+    /// `BranchClass` each and assert all four possible words
+    /// (`mergée`/`par défaut`/`protégée`/`vivante`) are mutually exclusive:
+    /// a row_spans that collapsed any two of the non-merged classes back
+    /// together (e.g. always printing "protégée" for both `Default` and
+    /// `Live`) would pass a test that only checked the word it expects
+    /// present, but fail the sibling test that checks the same word is
+    /// *absent* for a different class.
     #[test]
-    fn a_live_branch_is_labelled_protected_not_merged() {
-        let line = text(&row_spans(&branch("main", true), false));
+    fn a_default_branch_is_labelled_par_defaut() {
+        let line = text(&row_spans(&branch("main", BranchClass::Default), false));
+        assert!(line.contains("par défaut"), "got: {line}");
+        assert!(!line.contains("mergée"), "got: {line}");
+        assert!(!line.contains("vivante"), "got: {line}");
+        assert!(!line.contains('⚑'), "got: {line}");
+    }
+
+    #[test]
+    fn a_github_protected_branch_is_labelled_protegee() {
+        let line = text(&row_spans(
+            &branch("release/2.0", BranchClass::Protected),
+            false,
+        ));
         assert!(line.contains("protégée"), "got: {line}");
+        assert!(!line.contains("par défaut"), "got: {line}");
+        assert!(!line.contains("mergée"), "got: {line}");
+        assert!(!line.contains("vivante"), "got: {line}");
+        assert!(!line.contains('⚑'), "got: {line}");
+    }
+
+    #[test]
+    fn a_live_unmerged_branch_is_labelled_vivante() {
+        let line = text(&row_spans(
+            &branch("feature/rejected", BranchClass::Live),
+            false,
+        ));
+        assert!(line.contains("vivante"), "got: {line}");
+        assert!(!line.contains("protégée"), "got: {line}");
+        assert!(!line.contains("par défaut"), "got: {line}");
         assert!(!line.contains("mergée"), "got: {line}");
         assert!(!line.contains('⚑'), "got: {line}");
     }
 
     /// `scan::tag_resources` sets `protected: true` unconditionally — there
     /// is no "dead tag" the way there is a dead branch — so this needs no
-    /// negative counterpart the way the two branch tests above do.
+    /// negative counterpart the way the branch tests above do.
     #[test]
     fn a_tag_is_always_labelled_protected() {
         let line = text(&row_spans(&tag("v0.1.3"), false));
@@ -374,7 +428,7 @@ mod tests {
     /// delete must never be painted like a problem.
     #[test]
     fn the_dead_branch_flag_is_painted_stale_not_error() {
-        let spans = row_spans(&branch("claude/landing-3jbqk4", false), false);
+        let spans = row_spans(&branch("claude/landing-3jbqk4", BranchClass::Merged), false);
         let flag = spans
             .last()
             .expect("a branch row always ends with a classification");
@@ -412,7 +466,10 @@ mod tests {
     fn a_branch_and_an_asset_row_stay_legible_across_swept_widths() {
         let mut app = App::new(vec![]);
         app.resources = vec![
-            branch("claude/claudine-landing-positioning-3jbqk4", false),
+            branch(
+                "claude/claudine-landing-positioning-3jbqk4",
+                BranchClass::Merged,
+            ),
             asset("claudine-linux-x86_64.tar.gz (v0.1.1)", 2_400_000, 40),
         ];
 
@@ -446,6 +503,62 @@ mod tests {
             assert!(
                 rendered.contains("v0.1.1"),
                 "the asset's release tag clipped at width {width}: {rendered}"
+            );
+        }
+    }
+
+    /// The merged/asset sweep above proves the longest branch label
+    /// ("mergée ⚑") survives from width 73; it says nothing about the three
+    /// shorter classifications this task adds. Swept, not sampled, for the
+    /// same reason as the sweep above — a single sampled width could dodge a
+    /// truncation the way the confirm modal's height sweep found one
+    /// recurring at exactly one height per width.
+    #[test]
+    fn every_branch_classification_stays_legible_across_swept_widths() {
+        let mut app = App::new(vec![]);
+        app.resources = vec![
+            branch("main", BranchClass::Default),
+            branch("release/2.0", BranchClass::Protected),
+            branch("claude/landing-3jbqk4", BranchClass::Merged),
+            branch("feature/rejected", BranchClass::Live),
+        ];
+
+        // Floor: the smallest width at which all four classification words
+        // are on screen at once, determined empirically the same way as the
+        // sweep above — probing every width from 40 to 200 and recording the
+        // first one all five markers ("par défaut", "protégée", "mergée",
+        // "⚑", "vivante") appeared at, with no gap above it up to 200. 74
+        // (one below) was checked separately and clips "par défaut" to "par
+        // défau" — confirming this is the real floor.
+        const FLOOR: u16 = 75;
+        for width in FLOOR..=200 {
+            let backend = ratatui::backend::TestBackend::new(width, 10);
+            let mut terminal = ratatui::Terminal::new(backend).unwrap();
+            terminal.draw(|f| render(&mut app, f, f.area())).unwrap();
+
+            let rendered: String = terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .map(|c| c.symbol())
+                .collect();
+
+            assert!(
+                rendered.contains("par défaut"),
+                "the default-branch label clipped at width {width}: {rendered}"
+            );
+            assert!(
+                rendered.contains("protégée"),
+                "the GitHub-protected label clipped at width {width}: {rendered}"
+            );
+            assert!(
+                rendered.contains("mergée") && rendered.contains('⚑'),
+                "the merged-branch classification clipped at width {width}: {rendered}"
+            );
+            assert!(
+                rendered.contains("vivante"),
+                "the live-branch label clipped at width {width}: {rendered}"
             );
         }
     }

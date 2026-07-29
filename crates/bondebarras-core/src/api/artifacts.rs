@@ -41,6 +41,8 @@ pub async fn list(client: &Client, owner: &str, repo: &str) -> Result<Vec<Resour
                         // No equivalent of a live reference by name for an
                         // artifact.
                         protected: false,
+                        // Only a `Branch` row carries a classification.
+                        branch_class: None,
                     })
                 })
                 .collect()

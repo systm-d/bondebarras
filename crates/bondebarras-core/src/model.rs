@@ -32,6 +32,25 @@ impl ResourceKind {
         ResourceKind::Tag,
         ResourceKind::ReleaseAsset,
     ];
+
+    /// Whether GitHub reports a real size for this family.
+    ///
+    /// `false` for the three sizeless kinds: a package version (no size
+    /// field exists, under any name — see `api::packages`), a branch and a
+    /// tag (a ref carries no size of its own). `true` for every other kind,
+    /// whose `size_bytes` is a real GitHub-reported number, zero included.
+    /// One place to update when a family is added — before this existed,
+    /// `size_display`, `Plan::summary` and the sizeless-deletion count in
+    /// `clean::execute` each spelled out their own `kind == PackageVersion`
+    /// check, and only one of the three was ever updated when branches and
+    /// tags joined the sizeless set: a branch rendered a bare "0 o", the
+    /// exact "reads as empty" defect v0.3 spent a whole fix wave on.
+    pub fn has_known_size(self) -> bool {
+        !matches!(
+            self,
+            ResourceKind::PackageVersion | ResourceKind::Branch | ResourceKind::Tag
+        )
+    }
 }
 
 /// How much friction a deletion must go through. Ordered by severity.
@@ -97,22 +116,32 @@ pub struct Resource {
     /// not preselect it, and a headless run refuses it outright, because there
     /// is no human at the other end of a cron to notice.
     pub protected: bool,
+    /// Why a `Branch` row is or is not offered — `None` for every other
+    /// kind. `protected` alone collapses `refs::BranchClass::Default`,
+    /// `Protected` and `Live` into the same bool, which is right for bulk
+    /// selection (see `commands::clean::select`) but cannot tell a human
+    /// which of the three actually applies. This is what lets a branch row
+    /// say "protégée" only when GitHub itself refuses the branch, and what
+    /// lets the TUI's individual-selection guard (`tui::app::App::
+    /// toggle_selected`) tell "GitHub-backed" apart from "merely unmerged".
+    pub branch_class: Option<crate::refs::BranchClass>,
 }
 
 /// A resource's size, formatted for display.
 ///
-/// GitHub exposes no size for a package version, under any name (see
-/// `api::packages`); `size_bytes` is hardcoded to `0` for that kind, and a
-/// bare "0 o" would read as "empty" — the opposite of the truth. Shown as
-/// `—` instead, everywhere a resource's size reaches a screen: the TUI's
-/// resource list and the headless `clean` dry-run listing both go through
-/// this one function, so the two cannot drift the way two independent
-/// `if r.kind == PackageVersion` checks would risk.
+/// GitHub exposes no size at all for a package version, a branch or a tag
+/// (see `api::packages` and `api::refs`); `size_bytes` is hardcoded to `0`
+/// for all three, and a bare "0 o" would read as "empty" — the opposite of
+/// the truth. Shown as `—` instead, everywhere a resource's size reaches a
+/// screen: the TUI's resource list and the headless `clean` dry-run listing
+/// both go through this one function and `ResourceKind::has_known_size`, so
+/// the two cannot drift the way independent `if r.kind == PackageVersion`
+/// checks did before v0.4 added the other two sizeless kinds.
 pub fn size_display(r: &Resource) -> String {
-    if r.kind == ResourceKind::PackageVersion {
-        "—".to_string()
-    } else {
+    if r.kind.has_known_size() {
         human_size(r.size_bytes)
+    } else {
+        "—".to_string()
     }
 }
 
@@ -164,6 +193,24 @@ mod tests {
             git_ref: None,
             stale_pr: false,
             protected: false,
+            branch_class: None,
+        }
+    }
+
+    /// A wrong implementation returning `true` for every kind, `false` for
+    /// every kind, or excluding only `PackageVersion` (the pre-v0.4 set)
+    /// each fail a different arm of this sweep — enumerating `ALL` rather
+    /// than asserting the three sizeless kinds and the four sized ones
+    /// separately is what catches "only `PackageVersion` was updated," the
+    /// exact gap Finding 3 names.
+    #[test]
+    fn has_known_size_is_false_only_for_the_three_sizeless_kinds() {
+        for kind in ResourceKind::ALL {
+            let expected = !matches!(
+                kind,
+                ResourceKind::PackageVersion | ResourceKind::Branch | ResourceKind::Tag
+            );
+            assert_eq!(kind.has_known_size(), expected, "wrong answer for {kind:?}");
         }
     }
 
@@ -177,12 +224,26 @@ mod tests {
         assert!(s.contains('—'), "got: {s}");
     }
 
+    /// v0.4 adds two more sizeless kinds, branches and tags — a bare "0 o"
+    /// here is the exact "reads as empty" defect v0.3's whole fix wave was
+    /// about, recurring for the two new families a `kind ==
+    /// ResourceKind::PackageVersion` check cannot see.
+    #[test]
+    fn size_display_shows_unknown_not_zero_for_a_branch_or_a_tag() {
+        for kind in [ResourceKind::Branch, ResourceKind::Tag] {
+            let s = size_display(&resource(kind, 0));
+            assert!(!s.contains("0 o"), "got: {s} for {kind:?}");
+            assert!(s.contains('—'), "got: {s} for {kind:?}");
+        }
+    }
+
     #[test]
     fn size_display_shows_real_bytes_for_every_other_kind() {
         for kind in [
             ResourceKind::Cache,
             ResourceKind::Artifact,
             ResourceKind::WorkflowRun,
+            ResourceKind::ReleaseAsset,
         ] {
             assert_eq!(size_display(&resource(kind, 1_500)), "1.5 Ko");
         }

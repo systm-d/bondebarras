@@ -10,7 +10,7 @@ use crate::api::releases::ReleaseAsset;
 use crate::api::{Client, artifacts, caches, packages, prs, refs, releases, repos, runs};
 use crate::model::{OrgSummary, Resource, ResourceKind};
 use crate::packages::{PackageVersion, VersionClass, classify};
-use crate::refs::{BranchRef, branch_is_dead};
+use crate::refs::{BranchClass, BranchRef, classify_branch};
 use crate::stale::is_stale;
 use anyhow::Result;
 use std::collections::HashSet;
@@ -157,6 +157,8 @@ fn version_resources(versions: Vec<PackageVersion>) -> Vec<Resource> {
             // `latest` breaks whatever pulls it. Untagged and orphaned
             // attestations are exactly the two classes nothing depends on.
             protected: class == VersionClass::Tagged,
+            // Only a `Branch` row carries a classification.
+            branch_class: None,
         })
         .collect()
 }
@@ -205,12 +207,16 @@ fn elide_digest(digest: &str) -> String {
 
 /// Turn every branch into a drill-down row.
 ///
-/// A branch backing a merged PR (`branch_is_dead`) is offered for bulk
+/// A branch backing a merged PR (`BranchClass::Merged`) is offered for bulk
 /// deletion; every other branch — the default, one GitHub itself marks
 /// `protected`, or simply one with no merged PR behind it — is shown but
-/// never bulk-selectable. `protected` is the only mechanism this needs: no
-/// new field, no new exclusion path in `commands::clean::select` or the
-/// TUI's bulk shortcuts.
+/// never bulk-selectable. `protected` stays the only mechanism
+/// `commands::clean::select` and the TUI's bulk shortcuts need: no change
+/// there. `branch_class` carries the finer distinction `protected` alone
+/// collapses away — which of the three non-merged cases actually applies —
+/// for the row's own label and for the TUI's individual-selection guard
+/// (`tui::app::App::toggle_selected`), neither of which `protected` alone
+/// can drive correctly.
 fn branch_resources(
     branches: Vec<BranchRef>,
     default_branch: &str,
@@ -219,7 +225,7 @@ fn branch_resources(
     branches
         .into_iter()
         .map(|b| {
-            let dead = branch_is_dead(&b, default_branch, merged_refs);
+            let class = classify_branch(&b, default_branch, merged_refs);
             Resource {
                 kind: ResourceKind::Branch,
                 id: refs::resource_id(&b.name),
@@ -234,7 +240,8 @@ fn branch_resources(
                 // or not, exactly as the task 4 conversion table requires.
                 git_ref: None,
                 stale_pr: false,
-                protected: !dead,
+                protected: class != BranchClass::Merged,
+                branch_class: Some(class),
             }
         })
         .collect()
@@ -256,6 +263,8 @@ fn tag_resources(tags: Vec<String>) -> Vec<Resource> {
             git_ref: None,
             stale_pr: false,
             protected: true,
+            // Only a `Branch` row carries a classification.
+            branch_class: None,
         })
         .collect()
 }
@@ -280,6 +289,8 @@ fn asset_resources(assets: Vec<ReleaseAsset>) -> Vec<Resource> {
             git_ref: None,
             stale_pr: false,
             protected: false,
+            // Only a `Branch` row carries a classification.
+            branch_class: None,
         })
         .collect()
 }
@@ -307,6 +318,7 @@ mod tests {
             git_ref: Some(git_ref.to_string()),
             stale_pr: false,
             protected: false,
+            branch_class: None,
         }
     }
 
@@ -597,6 +609,23 @@ mod tests {
         assert!(
             find("feature/rejected").protected,
             "a branch with no merged PR is alive, not offered"
+        );
+
+        // `protected` alone cannot tell these four apart — `branch_class`
+        // must. A wrong wiring that always set `Some(BranchClass::Live)` (or
+        // always `None`) would still pass every `protected` assertion above.
+        assert_eq!(find("main").branch_class, Some(BranchClass::Default));
+        assert_eq!(
+            find("release/2.0").branch_class,
+            Some(BranchClass::Protected)
+        );
+        assert_eq!(
+            find("claude/landing-3jbqk4").branch_class,
+            Some(BranchClass::Merged)
+        );
+        assert_eq!(
+            find("feature/rejected").branch_class,
+            Some(BranchClass::Live)
         );
 
         for item in &items {
