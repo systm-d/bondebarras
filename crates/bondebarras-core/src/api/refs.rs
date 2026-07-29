@@ -112,14 +112,67 @@ pub async fn tags(client: &Client, owner: &str, repo: &str) -> Result<Vec<String
 
 pub async fn delete_branch(client: &Client, owner: &str, repo: &str, name: &str) -> Result<()> {
     client
-        .delete(&format!("/repos/{owner}/{repo}/git/refs/heads/{name}"))
+        .delete(&format!(
+            "/repos/{owner}/{repo}/git/refs/heads/{}",
+            encode_ref_name(name)
+        ))
         .await
 }
 
 pub async fn delete_tag(client: &Client, owner: &str, repo: &str, name: &str) -> Result<()> {
     client
-        .delete(&format!("/repos/{owner}/{repo}/git/refs/tags/{name}"))
+        .delete(&format!(
+            "/repos/{owner}/{repo}/git/refs/tags/{}",
+            encode_ref_name(name)
+        ))
         .await
+}
+
+/// Percent-encode a branch or tag name for use inside a GitHub ref path,
+/// leaving `/` intact.
+///
+/// `git check-ref-format` accepts `#`, `%`, `?`, `[`, `]` and more in a
+/// refname — confirmed directly (`git check-ref-format feat/issue#42` exits
+/// 0) — none of which build a path safely once interpolated raw: `#` opens
+/// a URL fragment `http::Uri` drops silently before the request is ever
+/// sent (no error — the DELETE just lands on a *different*, shorter,
+/// possibly already-existing ref); `?` opens a query string, routing the
+/// DELETE to whatever exists at the truncated path with the rest as a bogus
+/// parameter; a bare `%` is not valid percent-encoding on its own and is
+/// not guaranteed to survive unchanged. `/` is the one deliberate exception:
+/// `feat/foo` is one ref name whose slash is part of it, and it must reach
+/// the API as the path separator GitHub's own routing expects, not `%2F`.
+///
+/// Every byte outside RFC 3986's `unreserved` set (`ALPHA / DIGIT / "-" /
+/// "." / "_" / "~"`) is escaped — a superset of what git or GitHub strictly
+/// require, on purpose: a small, easily-audited allowlist is safer than
+/// trying to enumerate every character that could reinterpret a path, and
+/// there is no real ref name that comes out worse for the extra caution.
+fn encode_ref_name(name: &str) -> String {
+    name.split('/')
+        .map(encode_segment)
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+/// Percent-encode one path segment (never containing `/` itself — the
+/// caller already split on it).
+fn encode_segment(segment: &str) -> String {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    let mut out = String::with_capacity(segment.len());
+    for byte in segment.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                out.push(byte as char);
+            }
+            _ => {
+                out.push('%');
+                out.push(HEX[(byte >> 4) as usize] as char);
+                out.push(HEX[(byte & 0x0F) as usize] as char);
+            }
+        }
+    }
+    out
 }
 
 /// A repository's default branch name.
@@ -315,6 +368,80 @@ mod tests {
         delete_tag(&client, "systm-d", "claudine", "v0.1.2")
             .await
             .unwrap();
+    }
+
+    /// `git check-ref-format feat/issue#42` exits 0 — a legal branch name.
+    /// Interpolated raw, `#` opens a URL fragment that `http::Uri` silently
+    /// drops before the request is ever sent (verified directly:
+    /// `"...feat/issue#42".parse::<http::Uri>()` yields a path ending in
+    /// `.../feat/issue`, no error) — the DELETE would land on
+    /// `.../git/refs/heads/feat/issue`, a **different, shorter, and possibly
+    /// already-existing** ref. A fixture using only well-formed names, like
+    /// `delete_branch_targets_the_heads_endpoint` above, cannot catch this:
+    /// every character in `claude/landing-3jbqk4` is already
+    /// percent-encoding-safe, so that test would pass unchanged whether or
+    /// not encoding ever happened. This one only passes if `delete_branch`
+    /// actually escapes the name before it reaches the client.
+    #[tokio::test]
+    async fn delete_branch_percent_encodes_a_hash_in_the_name() {
+        let server = MockServer::start().await;
+        Mock::given(method("DELETE"))
+            .and(path(
+                "/repos/systm-d/claudine/git/refs/heads/feat/issue%2342",
+            ))
+            .respond_with(ResponseTemplate::new(204))
+            .mount(&server)
+            .await;
+
+        let client = Client::with_base("t0ken", &server.uri()).unwrap();
+        delete_branch(&client, "systm-d", "claudine", "feat/issue#42")
+            .await
+            .expect("the escaped path must reach the mock, not a truncated one");
+    }
+
+    /// Same defect, a different terminator: `?` opens a query string rather
+    /// than a fragment, so an unescaped one would route the DELETE to
+    /// `.../git/refs/tags/weird` with `name` as a query parameter — again a
+    /// different ref than the one named.
+    #[tokio::test]
+    async fn delete_tag_percent_encodes_a_question_mark_in_the_name() {
+        let server = MockServer::start().await;
+        Mock::given(method("DELETE"))
+            .and(path("/repos/systm-d/claudine/git/refs/tags/weird%3Fname"))
+            .respond_with(ResponseTemplate::new(204))
+            .mount(&server)
+            .await;
+
+        let client = Client::with_base("t0ken", &server.uri()).unwrap();
+        delete_tag(&client, "systm-d", "claudine", "weird?name")
+            .await
+            .expect("a `?` must not truncate the ref name into a query string");
+    }
+
+    /// The encoding helper itself, isolated from the HTTP plumbing: the four
+    /// cases the fix calls for, in one place. `feat/issue#42` and
+    /// `weird?name` are also proven end-to-end above; `%` and `[`/`]` are
+    /// only proven here, since GitHub's mock-path matcher already covers the
+    /// wiring for the other two.
+    #[test]
+    fn encode_ref_name_escapes_reserved_characters_but_leaves_slash_and_a_plain_name_alone() {
+        assert_eq!(encode_ref_name("feat/issue#42"), "feat/issue%2342");
+        assert_eq!(
+            encode_ref_name("50%tag"),
+            "50%25tag",
+            "a literal % must itself be escaped, not passed through as if already encoded"
+        );
+        assert_eq!(encode_ref_name("weird?name"), "weird%3Fname");
+        assert_eq!(
+            encode_ref_name("release[2]"),
+            "release%5B2%5D",
+            "brackets must be escaped too"
+        );
+        assert_eq!(
+            encode_ref_name("feat/foo"),
+            "feat/foo",
+            "a well-formed name must pass through unchanged, slash included"
+        );
     }
 
     #[tokio::test]
