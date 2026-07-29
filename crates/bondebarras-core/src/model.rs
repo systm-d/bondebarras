@@ -40,21 +40,37 @@ impl ResourceKind {
 
     /// Whether GitHub reports a real size for this family.
     ///
-    /// `false` for the three sizeless kinds: a package version (no size
-    /// field exists, under any name — see `api::packages`), a branch and a
-    /// tag (a ref carries no size of its own). `true` for every other kind,
-    /// whose `size_bytes` is a real GitHub-reported number, zero included.
-    /// One place to update when a family is added — before this existed,
-    /// `size_display`, `Plan::summary` and the sizeless-deletion count in
-    /// `clean::execute` each spelled out their own `kind == PackageVersion`
-    /// check, and only one of the three was ever updated when branches and
-    /// tags joined the sizeless set: a branch rendered a bare "0 o", the
-    /// exact "reads as empty" defect v0.3 spent a whole fix wave on.
+    /// `false` for the four sizeless kinds: a package version (no size field
+    /// exists, under any name — see `api::packages`), a branch and a tag (a
+    /// ref carries no size of its own), and a repository (archiving frees no
+    /// bytes — the repository's size is unchanged, only its Actions are
+    /// disabled). `true` for every other kind, whose `size_bytes` is a real
+    /// GitHub-reported number, zero included.
+    ///
+    /// An exhaustive `match`, not the `matches!` shorthand this used to be:
+    /// that version, `!matches!(self, PackageVersion | Branch | Tag)`,
+    /// silently defaulted every kind absent from its list to `true` — the
+    /// wrong direction for a sizeless family added later, since nothing
+    /// forced a decision when `Repository` joined `ResourceKind` in v0.5.
+    /// Debt 1 of the v0.4 final review; closed here rather than carried into
+    /// v0.5 as a fifth debt. One place to update when a family is added —
+    /// before this existed, `size_display`, `Plan::summary` and the
+    /// sizeless-deletion count in `clean::execute` each spelled out their own
+    /// `kind == PackageVersion` check, and only one of the three was ever
+    /// updated when branches and tags joined the sizeless set: a branch
+    /// rendered a bare "0 o", the exact "reads as empty" defect v0.3 spent a
+    /// whole fix wave on.
     pub fn has_known_size(self) -> bool {
-        !matches!(
-            self,
-            ResourceKind::PackageVersion | ResourceKind::Branch | ResourceKind::Tag
-        )
+        match self {
+            ResourceKind::Cache
+            | ResourceKind::Artifact
+            | ResourceKind::WorkflowRun
+            | ResourceKind::ReleaseAsset => true,
+            ResourceKind::PackageVersion
+            | ResourceKind::Branch
+            | ResourceKind::Tag
+            | ResourceKind::Repository => false,
+        }
     }
 }
 
@@ -216,20 +232,43 @@ mod tests {
         }
     }
 
-    /// A wrong implementation returning `true` for every kind, `false` for
-    /// every kind, or excluding only `PackageVersion` (the pre-v0.4 set)
-    /// each fail a different arm of this sweep — enumerating `ALL` rather
-    /// than asserting the three sizeless kinds and the four sized ones
-    /// separately is what catches "only `PackageVersion` was updated," the
-    /// exact gap Finding 3 names.
+    /// Debt 1 of the v0.4 final review: the old version of this test
+    /// recomputed `has_known_size`'s own `!matches!(...)` expression to
+    /// build `expected`, so both sides of the assertion always agreed no
+    /// matter which kinds the predicate actually covered — a sizeless family
+    /// added later, `Repository` among them, would default to `true` on
+    /// both sides and this "test" would stay green regardless. Every arm is
+    /// typed out by hand here instead, one per `ResourceKind::ALL` entry, so
+    /// the table and the predicate are two independent sources of truth.
     #[test]
-    fn has_known_size_is_false_only_for_the_three_sizeless_kinds() {
+    fn has_known_size_matches_a_hardcoded_table() {
+        let expected: [(ResourceKind, bool); 8] = [
+            (ResourceKind::Cache, true),
+            (ResourceKind::Artifact, true),
+            (ResourceKind::WorkflowRun, true),
+            (ResourceKind::PackageVersion, false),
+            (ResourceKind::Branch, false),
+            (ResourceKind::Tag, false),
+            (ResourceKind::ReleaseAsset, true),
+            // Archiving frees no bytes — the repository's own size is
+            // unchanged — so this reads `—` like the other three sizeless
+            // kinds, not a misleading "0 o".
+            (ResourceKind::Repository, false),
+        ];
+        // Every `ResourceKind::ALL` entry must appear in the table exactly
+        // once — otherwise a variant added to the enum but forgotten here
+        // would silently fall out of this sweep instead of failing it.
+        assert_eq!(
+            expected.len(),
+            ResourceKind::ALL.len(),
+            "the hardcoded table must cover every ResourceKind variant"
+        );
         for kind in ResourceKind::ALL {
-            let expected = !matches!(
-                kind,
-                ResourceKind::PackageVersion | ResourceKind::Branch | ResourceKind::Tag
-            );
-            assert_eq!(kind.has_known_size(), expected, "wrong answer for {kind:?}");
+            let (_, expect) = expected
+                .iter()
+                .find(|(k, _)| *k == kind)
+                .unwrap_or_else(|| panic!("{kind:?} is missing from the hardcoded table"));
+            assert_eq!(kind.has_known_size(), *expect, "wrong answer for {kind:?}");
         }
     }
 

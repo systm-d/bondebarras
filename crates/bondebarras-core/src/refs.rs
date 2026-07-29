@@ -45,7 +45,19 @@ pub enum BranchClass {
 /// then a GitHub-protected one (someone deliberately said no), then whether
 /// a merged pull request came from it. Anything left over is simply
 /// unmerged — alive, not because anything protects it, only because nothing
-/// has proven it dead.
+/// has proven it dead — **unless** `default_branch` is itself unknown, the
+/// empty string `scan::repo_detail` degrades to when its own fetch fails
+/// (see `api::refs::default_branch`'s doc comment: no real branch is ever
+/// named that). Debt 3 of the v0.4 final review: an unmatched branch in that
+/// case used to read `Live` exactly as it would with a real default branch
+/// name, which stopped the TUI's individual-selection guard
+/// (`tui::app::App::toggle_selected`, which only refuses `Default` and
+/// `Protected`) from covering the one row most likely to actually *be* the
+/// default branch — precisely when the fetch that would have proven it
+/// failed. Erring toward `Protected` instead costs nothing a real, known
+/// default branch would have offered anyway, and the merged-PR check above
+/// still takes priority, so a genuinely dead branch stays offerable
+/// regardless of whether the default-branch fetch succeeded.
 pub fn classify_branch(
     b: &BranchRef,
     default_branch: &str,
@@ -57,6 +69,8 @@ pub fn classify_branch(
         BranchClass::Protected
     } else if merged_refs.contains(&b.name) {
         BranchClass::Merged
+    } else if default_branch.is_empty() {
+        BranchClass::Protected
     } else {
         BranchClass::Live
     }
@@ -151,6 +165,45 @@ mod tests {
         assert_eq!(
             classify_branch(&b("feature/rejected", false), "main", &m),
             BranchClass::Live
+        );
+    }
+
+    /// Debt 3 of the v0.4 final review: when the default-branch fetch fails,
+    /// `scan::repo_detail` degrades `default_branch` to `""` (see
+    /// `api::refs::default_branch`'s own doc comment — no real branch is
+    /// ever named that). Before this fix, an unmatched branch fell through
+    /// to `Live` exactly as it would with a real, known default branch name
+    /// — which meant the TUI's individual-selection guard
+    /// (`tui::app::App::toggle_selected`, which only refuses `Default` and
+    /// `Protected`) stopped covering the one row most likely to actually
+    /// *be* the default branch, precisely when the fetch that would have
+    /// proven it failed. A wrong fix that left `Live` as the catch-all
+    /// regardless of `default_branch` would still pass every other test in
+    /// this module, since all of them pass a real, non-empty default branch
+    /// name — this is the one that does not.
+    #[test]
+    fn an_unmatched_branch_errs_toward_protected_when_the_default_branch_name_is_unknown() {
+        let m = merged(&[]);
+        assert_eq!(
+            classify_branch(&b("main", false), "", &m),
+            BranchClass::Protected,
+            "an unknown default-branch name must not leave an unmatched branch reading as \
+             merely Live"
+        );
+    }
+
+    /// The fail-safe above must not swallow a real, provable case: a branch
+    /// a merged PR came from is still safe to offer for bulk deletion,
+    /// whether or not the default-branch fetch succeeded. A wrong
+    /// implementation that checked `default_branch.is_empty()` before
+    /// `merged_refs` would return `Protected` here instead, wrongly
+    /// withdrawing a branch this project already proved dead.
+    #[test]
+    fn a_genuinely_merged_branch_still_classifies_merged_even_with_an_unknown_default_branch() {
+        let m = merged(&["claude/landing-3jbqk4"]);
+        assert_eq!(
+            classify_branch(&b("claude/landing-3jbqk4", false), "", &m),
+            BranchClass::Merged
         );
     }
 

@@ -72,10 +72,41 @@ pub async fn overview(client: &Client, orgs: &[String]) -> Vec<OrgSummary> {
 
 /// Stage 2: every deletable resource of one repository, already flagged.
 ///
+/// A thin wrapper over `repo_detail_with_warnings`: prints one line per
+/// failed family to stderr (Debt 4 of the v0.4 final review — see that
+/// function's own doc comment) and returns just the items, for the many
+/// existing callers that only ever wanted those.
+pub async fn repo_detail(client: &Client, owner: &str, repo: &str) -> Result<Vec<Resource>> {
+    let (items, failed) = repo_detail_with_warnings(client, owner, repo).await?;
+    for family in failed {
+        eprintln!("Avertissement : le listing des {family} a échoué et est ignoré.");
+    }
+    Ok(items)
+}
+
+/// Stage 2, plus the name of every one of the seven resource families whose
+/// listing failed.
+///
 /// Every one of the seven listings this joins degrades independently on its
 /// own failure — a token missing one scope must not break a cleanup that
-/// never needed it. See the `unwrap_or_default()` calls below.
-pub async fn repo_detail(client: &Client, owner: &str, repo: &str) -> Result<Vec<Resource>> {
+/// never needed it. See the `take` calls below. That degradation is
+/// deliberate and unchanged by this function; what it adds is Debt 4 of the
+/// v0.4 final review: a refused listing used to contribute zero rows with no
+/// signal at all, indistinguishable from a repository genuinely holding none
+/// of that family — so a headless `clean` that hit a permission wall read
+/// "Rien à supprimer." with nothing to say why. The failed names are
+/// returned as data, not printed directly here, so they can be asserted on
+/// without capturing process stderr; `repo_detail` above is the thin
+/// stderr-printing wrapper most callers want.
+///
+/// Only the seven `ResourceKind` families are tracked — `closed_r` (the PR
+/// listing) and `default_branch_r` feed classification, not rows of their
+/// own, and are not named in Finding 4's "sept familles."
+pub async fn repo_detail_with_warnings(
+    client: &Client,
+    owner: &str,
+    repo: &str,
+) -> Result<(Vec<Resource>, Vec<&'static str>)> {
     let (
         caches_r,
         artifacts_r,
@@ -101,6 +132,8 @@ pub async fn repo_detail(client: &Client, owner: &str, repo: &str) -> Result<Vec
         refs::default_branch(client, owner, repo),
     );
 
+    let mut failed: Vec<&'static str> = Vec::new();
+
     // Every one of the seven listings degrades the same way: a token
     // missing one scope, or one family's transient outage, costs only that
     // family's rows, never the rest of the drill-down. Caches, artifacts and
@@ -108,40 +141,67 @@ pub async fn repo_detail(client: &Client, owner: &str, repo: &str) -> Result<Vec
     // them failed the whole function, branches/tags/release assets
     // included, even though none of those three needed the scope that
     // failed.
-    let mut items = caches_r.unwrap_or_default();
-    items.extend(artifacts_r.unwrap_or_default());
-    items.extend(runs_r.unwrap_or_default());
+    let mut items = take(caches_r, "caches", &mut failed);
+    items.extend(take(artifacts_r, "artifacts", &mut failed));
+    items.extend(take(runs_r, "workflow runs", &mut failed));
     // A failed packages listing — a token without `read:packages`, or a
     // GHCR outage — costs the package rows, not the rest of the drill-down:
     // caches, artifacts and workflow runs are a different family, and the
     // user may not even have asked about packages. Same pattern as the PR,
     // branch, tag and release-asset listings below: each family's failure
     // costs only that family's rows.
-    items.extend(version_resources(versions_r.unwrap_or_default()));
+    items.extend(version_resources(take(
+        versions_r,
+        "versions de packages",
+        &mut failed,
+    )));
 
     // A failed PR listing costs the ⚑ flag and the dead-branch
     // classification, not the listing: everything still shows, just with
-    // every branch reading as merely "not known to be dead".
+    // every branch reading as merely "not known to be dead". Not one of the
+    // seven families — see this function's own doc comment.
     let closed = closed_r.unwrap_or_default();
     // A failed default-branch fetch degrades to "" — no real branch is ever
     // named that, so `branch_is_dead`'s default-branch exclusion simply
-    // never fires. The branch is still safe: it cannot be offered unless it
-    // is genuinely a merged PR's head ref, which a real default branch
-    // essentially never is (PRs merge *into* it, not from it). See
-    // `refs::default_branch`'s own doc comment.
+    // never fires. The branch is still safe for *bulk* selection: it cannot
+    // be offered unless it is genuinely a merged PR's head ref, which a real
+    // default branch essentially never is (PRs merge *into* it, not from
+    // it). For the TUI's finer-grained *individual*-selection guard,
+    // `classify_branch` itself (Debt 3 of the v0.4 final review) errs toward
+    // `BranchClass::Protected` rather than `Live` for an unmatched branch
+    // whenever `default_branch` is empty — see its own doc comment, and
+    // `api::refs::default_branch`'s. Also not one of the seven families.
     let default_branch = default_branch_r.unwrap_or_default();
     items.extend(branch_resources(
-        branches_r.unwrap_or_default(),
+        take(branches_r, "branches", &mut failed),
         &default_branch,
         &closed.merged_refs,
     ));
-    items.extend(tag_resources(tags_r.unwrap_or_default()));
-    items.extend(asset_resources(assets_r.unwrap_or_default()));
+    items.extend(tag_resources(take(tags_r, "tags", &mut failed)));
+    items.extend(asset_resources(take(
+        assets_r,
+        "assets de releases",
+        &mut failed,
+    )));
 
     mark_stale(&mut items, &closed.numbers);
 
     items.sort_by_key(|i| std::cmp::Reverse(i.size_bytes));
-    Ok(items)
+    Ok((items, failed))
+}
+
+/// Unwrap a family listing's result to its default on failure, recording its
+/// name in `failed` — the data half of Debt 4's fix (see
+/// `repo_detail_with_warnings`'s doc comment). Does not change the
+/// degradation itself, only makes it visible.
+fn take<T: Default>(result: Result<T>, family: &'static str, failed: &mut Vec<&'static str>) -> T {
+    match result {
+        Ok(v) => v,
+        Err(_) => {
+            failed.push(family);
+            T::default()
+        }
+    }
 }
 
 /// Turn classified package versions into drill-down rows.
@@ -1324,6 +1384,20 @@ mod tests {
             items[0].protected,
             "main was never merged, so it must stay protected even without a default-branch name"
         );
+        // Debt 3 of the v0.4 final review: `protected` alone was already
+        // `true` here before the fix too (`Live` and `Protected` both set
+        // it) — it is `branch_class` that the TUI's individual-selection
+        // guard actually reads (`tui::app::App::toggle_selected`), and that
+        // guard only refuses `Default` and `Protected`. Before the fix this
+        // branch classified `Live` — merely unmerged, still individually
+        // selectable — precisely when it might in fact *be* the default
+        // branch the failed fetch could not name.
+        assert_eq!(
+            items[0].branch_class,
+            Some(BranchClass::Protected),
+            "an unknown default-branch name must classify an unmatched branch toward Protected, \
+             not Live, so the TUI's individual-selection guard still covers it"
+        );
     }
 
     #[tokio::test]
@@ -1464,5 +1538,296 @@ mod tests {
         assert_eq!(out.len(), 1, "a billing 403 must not drop the org");
         assert_eq!(out[0].cache_bytes, 1000);
         assert!(out[0].billing.is_none());
+    }
+
+    /// Debt 4 of the v0.4 final review: all seven family listings degrade
+    /// identically on failure — an empty contribution to `items`, exactly
+    /// what a repository genuinely holding none of that family also
+    /// produces. Headless, a refused listing then reads as "Rien à
+    /// supprimer." with no signal that anything was refused at all.
+    /// `repo_detail_with_warnings` is the same drill-down, plus which
+    /// families' listings failed — kept as returned data, not a direct
+    /// `eprintln!`, so the signal can be asserted on here without capturing
+    /// process stderr. `repo_detail` (below) is a thin wrapper that prints
+    /// each name and returns just the items, unchanged for its existing
+    /// callers.
+    #[tokio::test]
+    async fn repo_detail_with_warnings_names_a_failed_family() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/claudine/actions/caches"))
+            .respond_with(ResponseTemplate::new(403))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/claudine/actions/artifacts"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({ "artifacts": [] })),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/claudine/actions/runs"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({ "workflow_runs": [] })),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/orgs/systm-d/packages/container/claudine/versions"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/claudine/pulls"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/claudine/branches"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/claudine/tags"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/claudine/releases"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/claudine"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "default_branch": "main"
+            })))
+            .mount(&server)
+            .await;
+
+        let client = Client::with_base("t0ken", &server.uri()).unwrap();
+        let (items, failed) = repo_detail_with_warnings(&client, "systm-d", "claudine")
+            .await
+            .expect("a failed caches listing must not fail the whole drill-down");
+
+        assert!(items.is_empty());
+        assert_eq!(
+            failed,
+            vec!["caches"],
+            "the failed family must be named, and only that one"
+        );
+    }
+
+    /// A wrong implementation that stops at the first failure (or only ever
+    /// reports one) would still pass the single-family test above — this
+    /// fails two families that are not adjacent in `repo_detail`'s own
+    /// `futures::join!` order (caches is first, tags is second-to-last), so
+    /// only a version that checks every listing independently names both.
+    #[tokio::test]
+    async fn repo_detail_with_warnings_names_every_failed_family_not_just_the_first() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/claudine/actions/caches"))
+            .respond_with(ResponseTemplate::new(403))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/claudine/actions/artifacts"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({ "artifacts": [] })),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/claudine/actions/runs"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({ "workflow_runs": [] })),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/orgs/systm-d/packages/container/claudine/versions"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/claudine/pulls"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/claudine/branches"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/claudine/tags"))
+            .respond_with(ResponseTemplate::new(403))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/claudine/releases"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/claudine"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "default_branch": "main"
+            })))
+            .mount(&server)
+            .await;
+
+        let client = Client::with_base("t0ken", &server.uri()).unwrap();
+        let (_, failed) = repo_detail_with_warnings(&client, "systm-d", "claudine")
+            .await
+            .unwrap();
+
+        assert_eq!(failed, vec!["caches", "tags"]);
+    }
+
+    /// The healthy path must stay silent — a wrong implementation that
+    /// always names every family (or one hardcoded regardless of outcome)
+    /// would still pass the two tests above by accident, since neither
+    /// checks the non-failing families are actually absent from `failed`.
+    #[tokio::test]
+    async fn repo_detail_with_warnings_is_empty_when_every_listing_succeeds() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/repolens/actions/caches"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({ "actions_caches": [] })),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/repolens/actions/artifacts"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({ "artifacts": [] })),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/repolens/actions/runs"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({ "workflow_runs": [] })),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/orgs/systm-d/packages/container/repolens/versions"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/repolens/pulls"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/repolens/branches"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/repolens/tags"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/repolens/releases"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/repolens"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "default_branch": "main"
+            })))
+            .mount(&server)
+            .await;
+
+        let client = Client::with_base("t0ken", &server.uri()).unwrap();
+        let (_, failed) = repo_detail_with_warnings(&client, "systm-d", "repolens")
+            .await
+            .unwrap();
+
+        assert!(failed.is_empty(), "got: {failed:?}");
+    }
+
+    /// `closed_r` (the PR listing) and `default_branch_r` are not one of the
+    /// "seven familles" Finding 4 names — they feed classification, not
+    /// `items` rows of their own — so their failure must not be reported the
+    /// same way. A wrong implementation folding all nine joined futures into
+    /// `failed` would name "pulls" here even though nothing in Finding 4's
+    /// own wording covers it.
+    #[tokio::test]
+    async fn a_failed_pr_or_default_branch_listing_is_not_named_in_warnings() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/claudine/actions/caches"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({ "actions_caches": [] })),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/claudine/actions/artifacts"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({ "artifacts": [] })),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/claudine/actions/runs"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({ "workflow_runs": [] })),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/orgs/systm-d/packages/container/claudine/versions"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/claudine/pulls"))
+            .respond_with(ResponseTemplate::new(403))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/claudine/branches"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/claudine/tags"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/claudine/releases"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/claudine"))
+            .respond_with(ResponseTemplate::new(403))
+            .mount(&server)
+            .await;
+
+        let client = Client::with_base("t0ken", &server.uri()).unwrap();
+        let (_, failed) = repo_detail_with_warnings(&client, "systm-d", "claudine")
+            .await
+            .unwrap();
+
+        assert!(failed.is_empty(), "got: {failed:?}");
     }
 }
