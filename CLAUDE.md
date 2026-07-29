@@ -1,9 +1,10 @@
 # bondebarras — project guide for AI agents & contributors
 
 TUI/CLI to audit and clean up GitHub organization resources: Actions caches,
-artifacts, and workflow runs, across every org a token can see. Rust
-workspace: `bondebarras-core` (library: pure logic, the `api/` boundary, the
-CLI parser and the TUI) + `bondebarras` (binary, thin shim).
+artifacts, workflow runs, and container package versions, across every org a
+token can see. Rust workspace: `bondebarras-core` (library: pure logic, the
+`api/` boundary, the CLI parser and the TUI) + `bondebarras` (binary, thin
+shim).
 
 ## Read first
 
@@ -26,12 +27,21 @@ CLI parser and the TUI) + `bondebarras` (binary, thin shim).
   is an exhaustive `match` over `ResourceKind`: a destructive kind added
   without a tier assigned does not compile.
 - **No trash, no undo.** Nothing GitHub lets us delete is reversible, so the
-  tool never promises otherwise — a Tier-1 confirmation before deletion, a
-  per-item result after, is the whole safety model for v0.1.
-- Required token scopes: `repo` and `read:org` cover everything bondebarras
-  does, including the Billing tab's usage report (a 403 there just means the
-  token's owner isn't an org owner). Repository *deletion* is permanently
-  out of scope, so `delete_repo` is never needed.
+  tool never promises otherwise. Tier 1 (caches, artifacts, workflow runs) is
+  regenerable by a re-run and gets a bare confirmation; Tier 2 (package
+  versions, since v0.3) does not come back, so its modal lists the items and
+  says so plainly — see `tui::views::confirm::modal_kind`.
+- **Package versions carry no size, ever.** GitHub's API exposes no size
+  field for a package version, under any name, and no billing SKU covers
+  package storage either. `Resource.size_bytes` is hardcoded to `0` for
+  `ResourceKind::PackageVersion`; never estimate or extrapolate one. The TUI
+  shows `—` instead of formatting that zero, with a header line spelling out
+  why — see `tui::views::repo::list_title`.
+- Required token scopes: `repo`, `read:org`, `read:packages`, and
+  `delete:packages` cover everything bondebarras does, including the Billing
+  tab's usage report (a 403 there just means the token's owner isn't an org
+  owner). Repository *deletion* is permanently out of scope, so
+  `delete_repo` is never needed.
 - User-facing strings (CLI/TUI output) may be in **French** (e.g.
   `Erreur : …`); code identifiers and documentation stay in English.
 
@@ -50,6 +60,8 @@ CLI parser and the TUI) + `bondebarras` (binary, thin shim).
 | Closed pull request listing | `crates/bondebarras-core/src/api/prs.rs` |
 | Repository listing | `crates/bondebarras-core/src/api/repos.rs` |
 | Billing usage-report fetch (403 degrades to `None`, not an error) | `crates/bondebarras-core/src/api/billing.rs` |
+| Package version endpoints (list, delete) | `crates/bondebarras-core/src/api/packages.rs` |
+| Package version classification: untagged, orphaned attestation, tagged (pure) | `crates/bondebarras-core/src/packages.rs` |
 | Two-stage scan orchestration | `crates/bondebarras-core/src/scan.rs` |
 | Deletion planning & execution, progress events | `crates/bondebarras-core/src/clean.rs` |
 | TUI event loop, terminal setup/teardown | `crates/bondebarras-core/src/tui/mod.rs` |

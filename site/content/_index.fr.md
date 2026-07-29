@@ -69,6 +69,7 @@ cta2 = "Installer"
 <ul>
 <li>Caches croisés avec les pull requests fermées</li>
 <li>Le cache d'une PR fermée ou mergée ne sera plus jamais relu</li>
+<li>Versions de packages vérifiées : sans tag, ou attestation orpheline</li>
 <li>Une touche sélectionne toutes les lignes marquées</li>
 </ul>
 </div>
@@ -89,7 +90,7 @@ cta2 = "Installer"
 <h3>Nettoyer, en sûreté</h3>
 <p class="mission-line">Supprimer avec une confirmation et un résultat.</p>
 <ul>
-<li>Confirmation palier 1 avant toute suppression</li>
+<li>Confirmation par palier : un simple [y/N] pour les caches, artifacts et workflow runs régénérables ; un récapitulatif chiffré pour les versions de packages, qui ne reviennent pas</li>
 <li>S'exécute en tâche de fond, le TUI reste réactif</li>
 <li>Espacé et retenté face à la limite de débit de GitHub</li>
 <li>Chaque élément annonce <span class="kbd">✓</span> ou <span class="kbd">✗</span> une fois terminé</li>
@@ -159,6 +160,9 @@ cta2 = "Installer"
 <div class="out">[ { "org": "systm-d", "cache_bytes": 37200000000, "cache_count": 132, … } ]</div>
 <div class="line"><span class="prompt">$</span>bondebarras clean <span class="flag">--org</span> systm-d <span class="flag">--repo</span> josephine <span class="flag">--caches</span> <span class="flag">--stale-pr</span> <span class="flag">--yes</span></div>
 <div class="out">Bon débarras ! 261.0 Mo libérés.</div>
+<div class="comment"># les versions de packages n'ont pas de taille — l'API GitHub n'en expose aucune</div>
+<div class="line"><span class="prompt">$</span>bondebarras clean <span class="flag">--org</span> systm-d <span class="flag">--repo</span> repolens <span class="flag">--packages</span> <span class="flag">--yes</span></div>
+<div class="out">Bon débarras ! 0 o libérés.</div>
 </div>
 </div>
 </section>
