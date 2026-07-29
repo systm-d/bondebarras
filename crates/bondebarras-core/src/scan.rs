@@ -6,9 +6,11 @@
 //! it. Paying only for what you look at is what keeps manual navigation
 //! viable across a hundred repositories.
 
-use crate::api::{Client, artifacts, caches, packages, prs, repos, runs};
+use crate::api::releases::ReleaseAsset;
+use crate::api::{Client, artifacts, caches, packages, prs, refs, releases, repos, runs};
 use crate::model::{OrgSummary, Resource, ResourceKind};
 use crate::packages::{PackageVersion, VersionClass, classify};
+use crate::refs::{BranchRef, branch_is_dead};
 use crate::stale::is_stale;
 use anyhow::Result;
 use std::collections::HashSet;
@@ -70,7 +72,17 @@ pub async fn overview(client: &Client, orgs: &[String]) -> Vec<OrgSummary> {
 
 /// Stage 2: every deletable resource of one repository, already flagged.
 pub async fn repo_detail(client: &Client, owner: &str, repo: &str) -> Result<Vec<Resource>> {
-    let (caches_r, artifacts_r, runs_r, versions_r, closed) = futures::join!(
+    let (
+        caches_r,
+        artifacts_r,
+        runs_r,
+        versions_r,
+        closed_r,
+        branches_r,
+        tags_r,
+        assets_r,
+        default_branch_r,
+    ) = futures::join!(
         caches::list(client, owner, repo),
         artifacts::list(client, owner, repo),
         runs::list(client, owner, repo),
@@ -79,6 +91,10 @@ pub async fn repo_detail(client: &Client, owner: &str, repo: &str) -> Result<Vec
         // already turns that into an empty list, not an error.
         packages::versions(client, owner, repo),
         prs::closed_prs(client, owner, repo),
+        refs::branches(client, owner, repo),
+        refs::tags(client, owner, repo),
+        releases::assets(client, owner, repo),
+        refs::default_branch(client, owner, repo),
     );
 
     let mut items = caches_r?;
@@ -87,13 +103,31 @@ pub async fn repo_detail(client: &Client, owner: &str, repo: &str) -> Result<Vec
     // A failed packages listing — a token without `read:packages`, or a
     // GHCR outage — costs the package rows, not the rest of the drill-down:
     // caches, artifacts and workflow runs are a different family, and the
-    // user may not even have asked about packages. Same pattern as the PR
-    // listing just below.
+    // user may not even have asked about packages. Same pattern as the PR,
+    // branch, tag and release-asset listings below: each family's failure
+    // costs only that family's rows.
     items.extend(version_resources(versions_r.unwrap_or_default()));
 
-    // A failed PR listing costs the flag, not the listing: everything still
-    // shows, just without the ⚑ shortcut.
-    mark_stale(&mut items, &closed.unwrap_or_default().numbers);
+    // A failed PR listing costs the ⚑ flag and the dead-branch
+    // classification, not the listing: everything still shows, just with
+    // every branch reading as merely "not known to be dead".
+    let closed = closed_r.unwrap_or_default();
+    // A failed default-branch fetch degrades to "" — no real branch is ever
+    // named that, so `branch_is_dead`'s default-branch exclusion simply
+    // never fires. The branch is still safe: it cannot be offered unless it
+    // is genuinely a merged PR's head ref, which a real default branch
+    // essentially never is (PRs merge *into* it, not from it). See
+    // `refs::default_branch`'s own doc comment.
+    let default_branch = default_branch_r.unwrap_or_default();
+    items.extend(branch_resources(
+        branches_r.unwrap_or_default(),
+        &default_branch,
+        &closed.merged_refs,
+    ));
+    items.extend(tag_resources(tags_r.unwrap_or_default()));
+    items.extend(asset_resources(assets_r.unwrap_or_default()));
+
+    mark_stale(&mut items, &closed.numbers);
 
     items.sort_by_key(|i| std::cmp::Reverse(i.size_bytes));
     Ok(items)
@@ -167,6 +201,87 @@ fn elide_digest(digest: &str) -> String {
         Some((prefix, hex)) if hex.len() > 9 => format!("{prefix}:{}…", &hex[..9]),
         _ => digest.to_string(),
     }
+}
+
+/// Turn every branch into a drill-down row.
+///
+/// A branch backing a merged PR (`branch_is_dead`) is offered for bulk
+/// deletion; every other branch — the default, one GitHub itself marks
+/// `protected`, or simply one with no merged PR behind it — is shown but
+/// never bulk-selectable. `protected` is the only mechanism this needs: no
+/// new field, no new exclusion path in `commands::clean::select` or the
+/// TUI's bulk shortcuts.
+fn branch_resources(
+    branches: Vec<BranchRef>,
+    default_branch: &str,
+    merged_refs: &HashSet<String>,
+) -> Vec<Resource> {
+    branches
+        .into_iter()
+        .map(|b| {
+            let dead = branch_is_dead(&b, default_branch, merged_refs);
+            Resource {
+                kind: ResourceKind::Branch,
+                id: refs::resource_id(&b.name),
+                label: b.name,
+                // GitHub exposes no size for a branch, under any name.
+                size_bytes: 0,
+                // Neither the branch listing nor the closed-PR listing
+                // carries a per-branch timestamp.
+                age_days: 0,
+                // No pull-request ref to carry: `mark_stale` must leave
+                // `stale_pr` at its default `false` for every branch, dead
+                // or not, exactly as the task 4 conversion table requires.
+                git_ref: None,
+                stale_pr: false,
+                protected: !dead,
+            }
+        })
+        .collect()
+}
+
+/// Turn every tag name into a drill-down row.
+///
+/// A tag is always `protected`: it is what a release, a `go get`, or a
+/// `Cargo.toml` points at by name, and unlike a branch there is no "dead"
+/// classification for one — it is never offered for bulk deletion.
+fn tag_resources(tags: Vec<String>) -> Vec<Resource> {
+    tags.into_iter()
+        .map(|name| Resource {
+            kind: ResourceKind::Tag,
+            id: refs::resource_id(&name),
+            label: name,
+            size_bytes: 0,
+            age_days: 0,
+            git_ref: None,
+            stale_pr: false,
+            protected: true,
+        })
+        .collect()
+}
+
+/// Turn every release asset into a drill-down row.
+///
+/// Unlike a branch or a tag, an asset carries a real numeric id from GitHub
+/// — no hashing needed — and a real size: this is the one v0.4 family
+/// actually measured in bytes (7.3 Go across four orgs). The release itself
+/// never becomes a row of its own (see `api::releases`'s doc comment); its
+/// tag is folded into the label instead, since nothing else here carries it
+/// forward.
+fn asset_resources(assets: Vec<ReleaseAsset>) -> Vec<Resource> {
+    assets
+        .into_iter()
+        .map(|a| Resource {
+            kind: ResourceKind::ReleaseAsset,
+            id: a.id,
+            label: format!("{} ({})", a.name, a.release_tag),
+            size_bytes: a.size,
+            age_days: a.age_days,
+            git_ref: None,
+            stale_pr: false,
+            protected: false,
+        })
+        .collect()
 }
 
 /// Flag every resource whose ref belongs to a closed pull request.
@@ -389,7 +504,7 @@ mod tests {
     /// rest of the drill-down: caches, artifacts and workflow runs are a
     /// different family, and the user may not even have asked about
     /// packages. Same pattern as the failed-PR-listing degradation right
-    /// below it in `repo_detail` (`prs::closed_numbers`'s
+    /// below it in `repo_detail` (`prs::closed_prs`'s
     /// `.unwrap_or_default()` at the same call site).
     #[tokio::test]
     async fn a_failed_packages_listing_costs_only_the_package_rows() {
@@ -442,6 +557,517 @@ mod tests {
         assert!(
             items.iter().all(|i| i.kind != ResourceKind::PackageVersion),
             "no package row should appear when the listing failed"
+        );
+    }
+
+    fn branch(name: &str, protected: bool) -> BranchRef {
+        BranchRef {
+            name: name.to_string(),
+            protected,
+        }
+    }
+
+    /// Exercises every `branch_is_dead` exclusion at once — the default
+    /// branch, a GitHub-protected one, a branch with no merged PR behind it,
+    /// and a genuinely dead one — so a wrong `protected: dead` (inverted)
+    /// implementation, or one that always returns `true`/`false`, fails
+    /// obviously rather than by accident on a single-branch fixture.
+    #[test]
+    fn branch_resources_marks_only_a_dead_branch_unprotected() {
+        let branches = vec![
+            branch("main", false),
+            branch("release/2.0", true),
+            branch("claude/landing-3jbqk4", false),
+            branch("feature/rejected", false),
+        ];
+        let merged = HashSet::from(["claude/landing-3jbqk4".to_string()]);
+
+        let items = branch_resources(branches, "main", &merged);
+
+        let find = |name: &str| items.iter().find(|r| r.label == name).unwrap();
+        assert!(find("main").protected, "the default branch stays protected");
+        assert!(
+            find("release/2.0").protected,
+            "a GitHub-protected branch stays protected"
+        );
+        assert!(
+            !find("claude/landing-3jbqk4").protected,
+            "a dead branch must be bulk-selectable"
+        );
+        assert!(
+            find("feature/rejected").protected,
+            "a branch with no merged PR is alive, not offered"
+        );
+
+        for item in &items {
+            assert_eq!(item.kind, ResourceKind::Branch);
+            assert_eq!(item.size_bytes, 0);
+            assert!(!item.stale_pr);
+            assert!(item.git_ref.is_none());
+        }
+        // The id must actually come from the shared hash, not e.g. a
+        // per-call index that would happen to look plausible here too.
+        assert_eq!(find("main").id, crate::api::refs::resource_id("main"));
+    }
+
+    #[test]
+    fn tag_resources_are_always_protected_and_zero_sized() {
+        let items = tag_resources(vec!["v0.1.3".to_string(), "v0.1.2".to_string()]);
+
+        assert_eq!(items.len(), 2);
+        for item in &items {
+            assert_eq!(item.kind, ResourceKind::Tag);
+            assert!(item.protected, "a tag must never be bulk-selectable");
+            assert_eq!(item.size_bytes, 0);
+            assert!(!item.stale_pr);
+        }
+        assert_eq!(
+            items[0].id,
+            crate::api::refs::resource_id("v0.1.3"),
+            "the id must come from the shared name hash"
+        );
+    }
+
+    #[test]
+    fn asset_resources_carry_their_size_and_are_never_protected() {
+        let assets = vec![ReleaseAsset {
+            id: 1,
+            name: "terminus-linux-x86_64.tar.gz".into(),
+            size: 2_400_000,
+            release_tag: "v0.1.1".into(),
+            age_days: 10,
+        }];
+
+        let items = asset_resources(assets);
+
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].kind, ResourceKind::ReleaseAsset);
+        assert_eq!(items[0].id, 1, "a release asset keeps its real GitHub id");
+        assert_eq!(items[0].size_bytes, 2_400_000);
+        assert_eq!(items[0].age_days, 10);
+        assert!(!items[0].protected);
+        assert!(items[0].label.contains("terminus-linux-x86_64.tar.gz"));
+        assert!(
+            items[0].label.contains("v0.1.1"),
+            "the release tag must survive somewhere, since the release itself \
+             never becomes its own row: got {:?}",
+            items[0].label
+        );
+    }
+
+    /// End-to-end through `repo_detail`'s real `futures::join!` wiring, not
+    /// just the conversion helpers in isolation: a merged PR makes one
+    /// branch dead, GitHub marks a second branch protected directly, the
+    /// default-branch fetch names a third, and a tag and a release asset
+    /// round out the fixture — one call exercising every new-in-v0.4 row at
+    /// once, the way `SecondBrain-io/claudine` actually looks.
+    #[tokio::test]
+    async fn repo_detail_folds_in_branches_tags_and_release_assets() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/claudine/actions/caches"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({ "actions_caches": [] })),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/claudine/actions/artifacts"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({ "artifacts": [] })),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/claudine/actions/runs"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({ "workflow_runs": [] })),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/orgs/systm-d/packages/container/claudine/versions"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/claudine/pulls"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                { "number": 31, "state": "closed", "merged_at": "2026-07-24T13:33:32Z",
+                  "head": { "ref": "claude/landing-3jbqk4" } }
+            ])))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/claudine/branches"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                { "name": "main", "protected": false },
+                { "name": "release/2.0", "protected": true },
+                { "name": "claude/landing-3jbqk4", "protected": false }
+            ])))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/claudine/tags"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                { "name": "v0.1.3" }
+            ])))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/claudine/releases"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                { "tag_name": "v0.1.1",
+                  "assets": [
+                      { "id": 9, "name": "claudine-linux-x86_64.tar.gz",
+                        "size": 2_400_000_u64, "created_at": "2026-06-01T00:00:00Z" }
+                  ] }
+            ])))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/claudine"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "name": "claudine",
+                "default_branch": "main"
+            })))
+            .mount(&server)
+            .await;
+
+        let client = Client::with_base("t0ken", &server.uri()).unwrap();
+        let items = repo_detail(&client, "systm-d", "claudine").await.unwrap();
+
+        let branches: Vec<&Resource> = items
+            .iter()
+            .filter(|r| r.kind == ResourceKind::Branch)
+            .collect();
+        assert_eq!(branches.len(), 3);
+        let branch = |name: &str| branches.iter().find(|r| r.label == name).unwrap();
+        assert!(branch("main").protected, "the default branch is protected");
+        assert!(
+            branch("release/2.0").protected,
+            "the GitHub-protected branch is protected"
+        );
+        assert!(
+            !branch("claude/landing-3jbqk4").protected,
+            "the merged branch is bulk-selectable"
+        );
+
+        let tags: Vec<&Resource> = items
+            .iter()
+            .filter(|r| r.kind == ResourceKind::Tag)
+            .collect();
+        assert_eq!(tags.len(), 1);
+        assert_eq!(tags[0].label, "v0.1.3");
+        assert!(tags[0].protected);
+
+        let assets: Vec<&Resource> = items
+            .iter()
+            .filter(|r| r.kind == ResourceKind::ReleaseAsset)
+            .collect();
+        assert_eq!(assets.len(), 1);
+        assert_eq!(assets[0].id, 9);
+        assert_eq!(assets[0].size_bytes, 2_400_000);
+        assert!(!assets[0].protected);
+    }
+
+    /// A failed branches listing must cost only the branch rows — same
+    /// degradation pattern as the failed packages listing above.
+    #[tokio::test]
+    async fn a_failed_branches_listing_costs_only_the_branch_rows() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/claudine/actions/caches"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "actions_caches": [
+                    { "id": 1, "key": "coverage-linux", "size_in_bytes": 1000,
+                      "last_accessed_at": "2026-06-01T00:00:00Z" }
+                ]
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/claudine/actions/artifacts"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({ "artifacts": [] })),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/claudine/actions/runs"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({ "workflow_runs": [] })),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/orgs/systm-d/packages/container/claudine/versions"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/claudine/pulls"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+            .mount(&server)
+            .await;
+        // No `repo` scope, or an outage — either way, not the ordinary case.
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/claudine/branches"))
+            .respond_with(ResponseTemplate::new(403))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/claudine/tags"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/claudine/releases"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/claudine"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "default_branch": "main"
+            })))
+            .mount(&server)
+            .await;
+
+        let client = Client::with_base("t0ken", &server.uri()).unwrap();
+        let items = repo_detail(&client, "systm-d", "claudine")
+            .await
+            .expect("a failed branches listing must not fail the whole drill-down");
+
+        assert_eq!(items.len(), 1, "the cache must still show");
+        assert_eq!(items[0].kind, ResourceKind::Cache);
+        assert!(items.iter().all(|i| i.kind != ResourceKind::Branch));
+    }
+
+    /// A failed tags listing must cost only the tag rows.
+    #[tokio::test]
+    async fn a_failed_tags_listing_costs_only_the_tag_rows() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/claudine/actions/caches"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({ "actions_caches": [] })),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/claudine/actions/artifacts"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({ "artifacts": [] })),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/claudine/actions/runs"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({ "workflow_runs": [] })),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/orgs/systm-d/packages/container/claudine/versions"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/claudine/pulls"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/claudine/branches"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                { "name": "main", "protected": true }
+            ])))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/claudine/tags"))
+            .respond_with(ResponseTemplate::new(403))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/claudine/releases"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/claudine"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "default_branch": "main"
+            })))
+            .mount(&server)
+            .await;
+
+        let client = Client::with_base("t0ken", &server.uri()).unwrap();
+        let items = repo_detail(&client, "systm-d", "claudine")
+            .await
+            .expect("a failed tags listing must not fail the whole drill-down");
+
+        assert_eq!(items.len(), 1, "the branch must still show");
+        assert_eq!(items[0].kind, ResourceKind::Branch);
+        assert!(items.iter().all(|i| i.kind != ResourceKind::Tag));
+    }
+
+    /// A failed release-assets listing must cost only the asset rows — the
+    /// brief's own example: "a token that cannot read releases must not
+    /// break a cache cleanup."
+    #[tokio::test]
+    async fn a_failed_release_assets_listing_costs_only_the_asset_rows() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/claudine/actions/caches"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "actions_caches": [
+                    { "id": 1, "key": "coverage-linux", "size_in_bytes": 1000,
+                      "last_accessed_at": "2026-06-01T00:00:00Z" }
+                ]
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/claudine/actions/artifacts"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({ "artifacts": [] })),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/claudine/actions/runs"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({ "workflow_runs": [] })),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/orgs/systm-d/packages/container/claudine/versions"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/claudine/pulls"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/claudine/branches"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/claudine/tags"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/claudine/releases"))
+            .respond_with(ResponseTemplate::new(403))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/claudine"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "default_branch": "main"
+            })))
+            .mount(&server)
+            .await;
+
+        let client = Client::with_base("t0ken", &server.uri()).unwrap();
+        let items = repo_detail(&client, "systm-d", "claudine")
+            .await
+            .expect("a failed release-assets listing must not fail the whole drill-down");
+
+        assert_eq!(items.len(), 1, "the cache must still show");
+        assert_eq!(items[0].kind, ResourceKind::Cache);
+        assert!(items.iter().all(|i| i.kind != ResourceKind::ReleaseAsset));
+    }
+
+    /// A failed default-branch fetch must degrade to "" rather than fail the
+    /// drill-down — and a branch that is merely not merged (like "main" here)
+    /// must still come through protected, because it was never in
+    /// `merged_refs` to begin with. This is the fail-safe case
+    /// `refs::default_branch`'s own doc comment describes.
+    #[tokio::test]
+    async fn a_failed_default_branch_fetch_still_leaves_an_unmerged_branch_protected() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/claudine/actions/caches"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({ "actions_caches": [] })),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/claudine/actions/artifacts"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({ "artifacts": [] })),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/claudine/actions/runs"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({ "workflow_runs": [] })),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/orgs/systm-d/packages/container/claudine/versions"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/claudine/pulls"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/claudine/branches"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                { "name": "main", "protected": false }
+            ])))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/claudine/tags"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/claudine/releases"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+            .mount(&server)
+            .await;
+        // The repo-info fetch itself fails.
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/claudine"))
+            .respond_with(ResponseTemplate::new(403))
+            .mount(&server)
+            .await;
+
+        let client = Client::with_base("t0ken", &server.uri()).unwrap();
+        let items = repo_detail(&client, "systm-d", "claudine")
+            .await
+            .expect("a failed default-branch fetch must not fail the whole drill-down");
+
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].kind, ResourceKind::Branch);
+        assert!(
+            items[0].protected,
+            "main was never merged, so it must stay protected even without a default-branch name"
         );
     }
 

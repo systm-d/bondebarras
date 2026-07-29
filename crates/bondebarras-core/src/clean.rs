@@ -4,7 +4,7 @@
 //! undo — promising either would be a lie. What we offer instead is an
 //! accurate recap before, and a per-item verdict after.
 
-use crate::api::{Client, artifacts, caches, packages, runs};
+use crate::api::{Client, artifacts, caches, packages, refs, releases, runs};
 use crate::model::{Resource, ResourceKind, RiskTier, human_size, risk_tier};
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::time::{Duration, sleep};
@@ -140,21 +140,26 @@ pub async fn execute(client: &Client, plan: Plan, tx: UnboundedSender<Progress>)
             ResourceKind::PackageVersion => {
                 packages::delete_version(client, &plan.owner, &plan.repo, item.id).await
             }
-            // Task 4 wires these three to `api::refs::delete_branch`,
-            // `api::refs::delete_tag` and `api::releases::delete_asset`. No
-            // plan can contain any of them yet — `scan::repo_detail` does not
-            // produce them until task 4 lands — so these arms exist only to
-            // keep the match exhaustive; each fails its single item rather
-            // than panicking the whole run if reached early.
-            ResourceKind::Branch => Err(anyhow::anyhow!(
-                "suppression des branches non câblée pour l'instant (tâche 4)"
-            )),
-            ResourceKind::Tag => Err(anyhow::anyhow!(
-                "suppression des tags non câblée pour l'instant (tâche 4)"
-            )),
-            ResourceKind::ReleaseAsset => Err(anyhow::anyhow!(
-                "suppression des assets de release non câblée pour l'instant (tâche 4)"
-            )),
+            // A branch and a tag have no numeric id from GitHub — `item.id`
+            // is a hash of the name (see `api::refs::resource_id`), a
+            // selection key only. Deleting by it would be deleting by an
+            // implementation detail that GitHub's API knows nothing about;
+            // `item.label` carries the real name, so the arm deletes by
+            // that instead. A hash collision — vanishingly unlikely as it
+            // is — can therefore never delete the wrong ref.
+            ResourceKind::Branch => {
+                refs::delete_branch(client, &plan.owner, &plan.repo, &item.label).await
+            }
+            ResourceKind::Tag => {
+                refs::delete_tag(client, &plan.owner, &plan.repo, &item.label).await
+            }
+            // Unlike a branch or a tag, a release asset carries a real
+            // numeric GitHub id (see `api::releases::assets`) — no name
+            // ambiguity, so it deletes by `item.id` like every v0.1-v0.3
+            // family above.
+            ResourceKind::ReleaseAsset => {
+                releases::delete_asset(client, &plan.owner, &plan.repo, item.id).await
+            }
         };
 
         match result {
@@ -303,6 +308,112 @@ mod tests {
         let s = finished_recap(0, 2, 0);
         assert!(s.contains("0 o"), "got: {s}");
         assert!(!s.to_lowercase().contains("inconnue"), "got: {s}");
+    }
+
+    /// A branch must be deleted by its **name** — carried in `label` — not
+    /// by the hashed `id`: the hash is a selection key only. If `execute`
+    /// were to send `item.id` to the DELETE path instead, the mock below
+    /// would never match (it only listens on the literal branch name) and
+    /// the call would 404, so this doubles as the load-bearing-label proof.
+    #[tokio::test]
+    async fn execute_deletes_a_branch_by_name_not_by_its_hashed_id() {
+        let server = MockServer::start().await;
+        Mock::given(method("DELETE"))
+            .and(path(
+                "/repos/systm-d/claudine/git/refs/heads/claude/landing-3jbqk4",
+            ))
+            .respond_with(ResponseTemplate::new(204))
+            .mount(&server)
+            .await;
+
+        let client = Client::with_base("t0ken", &server.uri()).unwrap();
+        let mut branch = item(ResourceKind::Branch, 999, 0);
+        branch.label = "claude/landing-3jbqk4".to_string();
+        let p = plan(vec![branch]);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+
+        execute(&client, p, tx).await;
+
+        let mut done = false;
+        while let Ok(msg) = rx.try_recv() {
+            match msg {
+                Progress::Done { kind, id } => {
+                    assert_eq!(kind, ResourceKind::Branch);
+                    assert_eq!(id, 999, "the reported id is still the hashed selection key");
+                    done = true;
+                }
+                Progress::Failed { reason, .. } => panic!("unexpected failure: {reason}"),
+                Progress::Finished { .. } => {}
+            }
+        }
+        assert!(done, "the branch must be reported as deleted");
+    }
+
+    /// Same load-bearing-label proof as the branch arm above, for a tag.
+    #[tokio::test]
+    async fn execute_deletes_a_tag_by_name_not_by_its_hashed_id() {
+        let server = MockServer::start().await;
+        Mock::given(method("DELETE"))
+            .and(path("/repos/systm-d/claudine/git/refs/tags/v0.1.3"))
+            .respond_with(ResponseTemplate::new(204))
+            .mount(&server)
+            .await;
+
+        let client = Client::with_base("t0ken", &server.uri()).unwrap();
+        let mut tag = item(ResourceKind::Tag, 42, 0);
+        tag.label = "v0.1.3".to_string();
+        let p = plan(vec![tag]);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+
+        execute(&client, p, tx).await;
+
+        let mut done = false;
+        while let Ok(msg) = rx.try_recv() {
+            if let Progress::Done { kind, .. } = msg {
+                assert_eq!(kind, ResourceKind::Tag);
+                done = true;
+            } else if let Progress::Failed { reason, .. } = msg {
+                panic!("unexpected failure: {reason}");
+            }
+        }
+        assert!(done, "the tag must be reported as deleted");
+    }
+
+    /// A release asset, unlike a branch or a tag, deletes by its real
+    /// numeric GitHub id — never by name.
+    #[tokio::test]
+    async fn execute_deletes_a_release_asset_by_id() {
+        let server = MockServer::start().await;
+        Mock::given(method("DELETE"))
+            .and(path("/repos/systm-d/claudine/releases/assets/9"))
+            .respond_with(ResponseTemplate::new(204))
+            .mount(&server)
+            .await;
+
+        let client = Client::with_base("t0ken", &server.uri()).unwrap();
+        let p = plan(vec![item(ResourceKind::ReleaseAsset, 9, 2_400_000)]);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+
+        execute(&client, p, tx).await;
+
+        let mut done = false;
+        let mut freed = 0;
+        while let Ok(msg) = rx.try_recv() {
+            match msg {
+                Progress::Done { kind, id } => {
+                    assert_eq!(kind, ResourceKind::ReleaseAsset);
+                    assert_eq!(id, 9);
+                    done = true;
+                }
+                Progress::Failed { reason, .. } => panic!("unexpected failure: {reason}"),
+                Progress::Finished { freed: f, .. } => freed = f,
+            }
+        }
+        assert!(done, "the release asset must be reported as deleted");
+        assert_eq!(
+            freed, 2_400_000,
+            "a release asset's real size must be freed"
+        );
     }
 
     #[tokio::test]
