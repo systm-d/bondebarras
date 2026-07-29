@@ -7,6 +7,7 @@
 pub mod artifacts;
 pub mod billing;
 pub mod caches;
+pub mod packages;
 pub mod prs;
 pub mod repos;
 pub mod runs;
@@ -85,6 +86,42 @@ impl Client {
             .get::<serde_json::Value, _, ()>(path, None::<&()>)
             .await
             .with_context(|| format!("GET {path}"))
+    }
+
+    /// GET whose absence is the ordinary case, not a failure.
+    ///
+    /// A repository's homonymous container package, for one, 404s far more
+    /// often than it exists — most repositories publish no image at all.
+    /// `get_json`'s typed path cannot express that distinction cheaply: it
+    /// asks octocrab to parse the response as its own error body first, and
+    /// GitHub's bare `404` (no JSON body at all) fails that parse before a
+    /// status code is ever consulted. Going through the raw `_get` decides
+    /// the missing case from the status alone, before any attempt to read a
+    /// body.
+    pub async fn get_json_or_missing(&self, path: &str) -> Result<Option<serde_json::Value>> {
+        let _permit = self.sem.acquire().await.expect("semaphore never closed");
+        let response = self
+            .gh
+            ._get(path)
+            .await
+            .with_context(|| format!("GET {path}"))?;
+
+        if response.status() == StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+
+        let response = octocrab::map_github_error(response)
+            .await
+            .with_context(|| format!("GET {path}"))?;
+        let body = self
+            .gh
+            .body_to_string(response)
+            .await
+            .with_context(|| format!("GET {path}"))?;
+
+        serde_json::from_str(&body)
+            .with_context(|| format!("GET {path} : réponse JSON invalide"))
+            .map(Some)
     }
 
     /// DELETE ignoring the (usually empty) body, retrying when GitHub throttles.
@@ -177,6 +214,49 @@ mod tests {
             .unwrap();
 
         assert_eq!(v["total_active_caches_count"], 132);
+    }
+
+    #[tokio::test]
+    async fn get_json_or_missing_reads_none_from_a_bodyless_404() {
+        // The wiremock default: a bare 404 with no response body at all —
+        // exactly what "this repo publishes no image" looks like on the
+        // real API. `get_json` would fail trying to parse this as an error
+        // body; this method must not.
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/orgs/systm-d/packages/container/no-such/versions"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+
+        let client = Client::with_base("t0ken", &server.uri()).unwrap();
+        let out = client
+            .get_json_or_missing("/orgs/systm-d/packages/container/no-such/versions")
+            .await
+            .unwrap();
+
+        assert!(out.is_none());
+    }
+
+    #[tokio::test]
+    async fn get_json_or_missing_reads_the_body_on_success() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/orgs/systm-d/packages/container/repolens/versions"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!([{ "id": 1 }])),
+            )
+            .mount(&server)
+            .await;
+
+        let client = Client::with_base("t0ken", &server.uri()).unwrap();
+        let out = client
+            .get_json_or_missing("/orgs/systm-d/packages/container/repolens/versions")
+            .await
+            .unwrap()
+            .expect("a 200 must yield a body");
+
+        assert_eq!(out[0]["id"], 1);
     }
 
     #[tokio::test]
