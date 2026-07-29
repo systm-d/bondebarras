@@ -6,7 +6,7 @@ pub mod views;
 
 use crate::api::{Client, caches};
 use crate::clean::{self, Plan, Progress};
-use crate::model::{OrgSummary, human_size};
+use crate::model::OrgSummary;
 use crate::scan;
 use anyhow::Result;
 use app::{App, Focus, View};
@@ -84,19 +84,22 @@ where
                     app.selected.remove(&(kind, id));
                     app.status = format!("Erreur : suppression de {id} — {reason}");
                 }
-                Progress::Finished { freed, failures } => {
+                Progress::Finished {
+                    freed,
+                    failures,
+                    deleted,
+                    deleted_sizeless,
+                } => {
                     // One purge is done. `purge_finished` only disarms the
                     // quit guard once every in-flight purge has settled — a
                     // second purge started before this one landed must keep
                     // `q` guarded.
                     app.purge_finished();
+                    let recap = clean::finished_recap(freed, deleted, deleted_sizeless);
                     app.status = if failures == 0 {
-                        format!("Bon débarras ! {} libérés.", human_size(freed))
+                        format!("Bon débarras ! {recap}.")
                     } else {
-                        format!(
-                            "Bon débarras ! {} libérés, {failures} échec(s).",
-                            human_size(freed)
-                        )
+                        format!("Bon débarras ! {recap}, {failures} échec(s).")
                     };
 
                     // The recap above talks about bytes freed; the left pane

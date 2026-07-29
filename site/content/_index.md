@@ -69,6 +69,7 @@ cta2 = "Install"
 <ul>
 <li>Caches cross-checked against closed pull requests</li>
 <li>A closed or merged PR's cache can never be read again</li>
+<li>Package versions checked for missing tags and orphaned attestations</li>
 <li>One keystroke selects every flagged row</li>
 </ul>
 </div>
@@ -89,7 +90,7 @@ cta2 = "Install"
 <h3>Purge, safely</h3>
 <p class="mission-line">Delete with a confirmation and a result.</p>
 <ul>
-<li>Tier-1 confirmation before anything is deleted</li>
+<li>Tiered confirmation: a bare [y/N] for regenerable caches, artifacts and workflow runs; an itemised recap for package versions, which don't come back</li>
 <li>Runs in the background, TUI stays responsive</li>
 <li>Spaced out and retried on GitHub's rate limit</li>
 <li>Every item reports <span class="kbd">✓</span> or <span class="kbd">✗</span> when it's done</li>
@@ -159,6 +160,9 @@ cta2 = "Install"
 <div class="out">[ { "org": "systm-d", "cache_bytes": 37200000000, "cache_count": 132, … } ]</div>
 <div class="line"><span class="prompt">$</span>bondebarras clean <span class="flag">--org</span> systm-d <span class="flag">--repo</span> josephine <span class="flag">--caches</span> <span class="flag">--stale-pr</span> <span class="flag">--yes</span></div>
 <div class="out">Bon débarras ! 261.0 Mo libérés.</div>
+<div class="comment"># package versions carry no size — GitHub's API exposes none</div>
+<div class="line"><span class="prompt">$</span>bondebarras clean <span class="flag">--org</span> systm-d <span class="flag">--repo</span> repolens <span class="flag">--packages</span> <span class="flag">--yes</span></div>
+<div class="out">Bon débarras ! 0 o libérés.</div>
 </div>
 </div>
 </section>

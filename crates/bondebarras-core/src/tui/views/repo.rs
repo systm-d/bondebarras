@@ -1,6 +1,6 @@
 //! Right pane: the resources of the selected repository.
 
-use crate::model::{Resource, ResourceKind, human_size};
+use crate::model::{Resource, ResourceKind, human_size, size_display};
 use crate::stale::pr_number_from_ref;
 use crate::tui::app::App;
 use crate::tui::theme;
@@ -17,7 +17,14 @@ pub fn row_spans(r: &Resource, checked: bool) -> Vec<Span<'static>> {
         ResourceKind::Cache => "cache",
         ResourceKind::Artifact => "artif",
         ResourceKind::WorkflowRun => "run  ",
+        ResourceKind::PackageVersion => "pkg  ",
     };
+
+    // `size_display` shows `—` rather than "0 o" for a package version:
+    // GitHub exposes no size for that family, and a bare 0 here would read
+    // as "empty" — the opposite of the truth. Shared with the headless
+    // `clean` dry-run listing so the two screens cannot drift apart.
+    let size = size_display(r);
 
     let mut spans = vec![
         Span::styled(
@@ -26,10 +33,7 @@ pub fn row_spans(r: &Resource, checked: bool) -> Vec<Span<'static>> {
         ),
         Span::styled(format!("{kind}  "), theme::muted()),
         Span::styled(format!("{:<34}", r.label), theme::text_style()),
-        Span::styled(
-            format!("{:>10}  ", human_size(r.size_bytes)),
-            theme::muted(),
-        ),
+        Span::styled(format!("{size:>10}  "), theme::muted()),
     ];
 
     // A stale row earns its own colour and the PR that made it dead weight.
@@ -42,11 +46,37 @@ pub fn row_spans(r: &Resource, checked: bool) -> Vec<Span<'static>> {
     spans
 }
 
+/// The list block's title: item count and byte tally, plus — when the
+/// visible list holds at least one package version — the caveat that GitHub
+/// exposes no size for that family.
+///
+/// Not optional when `has_packages` is true: a column of `—` in a tool that
+/// shows bytes on every other screen reads as "these are empty", which is
+/// the opposite of the truth.
+fn list_title(count: usize, bytes: u64, has_packages: bool) -> String {
+    if has_packages {
+        format!(
+            " {count} éléments · {} · ⚠ GitHub n'expose pas la taille des versions de packages ",
+            human_size(bytes)
+        )
+    } else {
+        format!(" {count} éléments · {} ", human_size(bytes))
+    }
+}
+
 /// Renders the resource list as a stateful list so ratatui scrolls to keep
 /// the selection visible. On a 69-cache repo, an 80x24 terminal only fits
 /// about 19 rows without this — the plain `render_widget` used before left
 /// most of them unreachable.
 pub fn render(app: &mut App, f: &mut Frame, area: Rect) {
+    // Read before `items` is built, from the same shared borrow, so both can
+    // draw from `app.visible_resources()` before anything is borrowed
+    // mutably below.
+    let has_packages = app
+        .visible_resources()
+        .iter()
+        .any(|r| r.kind == ResourceKind::PackageVersion);
+
     // Built first, from a shared borrow of `app` only: the items own their
     // strings (`ListItem<'static>`), so the borrow ends here, before
     // `app.res_state` is borrowed mutably below.
@@ -59,11 +89,7 @@ pub fn render(app: &mut App, f: &mut Frame, area: Rect) {
         })
         .collect();
 
-    let title = format!(
-        " {} éléments · {} ",
-        items.len(),
-        human_size(app.selection_bytes())
-    );
+    let title = list_title(items.len(), app.selection_bytes(), has_packages);
 
     app.res_state.select(if items.is_empty() {
         None
@@ -97,6 +123,33 @@ mod tests {
             age_days: 40,
             git_ref: Some("refs/pull/32/merge".into()),
             stale_pr: stale,
+            protected: false,
+        }
+    }
+
+    /// Builds its label through the real `scan::version_label`, from a
+    /// full, unelided 71-character digest — the shape production actually
+    /// produces. A fixture that instead hand-types an already-elided string
+    /// would still read "sha256:9a26c7080… (sans tag)" even if
+    /// `version_label` regressed back to emitting the full digest: nothing
+    /// in that string flows through the function under test.
+    fn package_resource() -> Resource {
+        let v = crate::packages::PackageVersion {
+            id: 9,
+            digest: "sha256:9a26c70801010123223adb5e73ff703aca86c15e19b30124ede5628a1e185826"
+                .into(),
+            tags: vec![],
+            age_days: 5,
+        };
+        Resource {
+            kind: ResourceKind::PackageVersion,
+            id: v.id,
+            label: crate::scan::version_label(&v, crate::packages::VersionClass::Untagged),
+            size_bytes: 0,
+            age_days: v.age_days,
+            git_ref: None,
+            stale_pr: false,
+            protected: false,
         }
     }
 
@@ -138,5 +191,67 @@ mod tests {
             .expect("a row always ends with a flag or an age");
         assert_eq!(flag.style, theme::stale_style());
         assert_ne!(flag.style, theme::status_error());
+    }
+
+    #[test]
+    fn a_package_row_says_its_size_is_unknown_not_zero() {
+        // Every other screen shows bytes. A bare "0 o" here would read as
+        // "empty", which is the opposite of the truth.
+        let line = text(&row_spans(&package_resource(), false));
+        assert!(!line.contains("0 o"), "got: {line}");
+        assert!(line.contains('—'), "got: {line}");
+    }
+
+    /// Rendered, not stringly: `row_spans` alone cannot show what actually
+    /// reaches the screen. Before `version_label` elided its digest, this
+    /// row's label alone ran to 82 characters — past column 80 before the
+    /// checkbox and kind columns even get counted — pushing the `—` size
+    /// marker and the `(sans tag)` class suffix off the visible buffer
+    /// entirely, with no assertion here able to see it, since every other
+    /// test in this module asserts on the spans, not on what a terminal
+    /// would actually show.
+    #[test]
+    fn a_package_row_survives_at_eighty_columns() {
+        let mut app = App::new(vec![]);
+        app.resources = vec![package_resource()];
+
+        let backend = ratatui::backend::TestBackend::new(80, 24);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|f| render(&mut app, f, f.area())).unwrap();
+
+        let rendered: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+
+        assert!(
+            rendered.contains('—'),
+            "the size marker must survive: {rendered}"
+        );
+        assert!(
+            rendered.contains("sans tag"),
+            "the class suffix must survive: {rendered}"
+        );
+    }
+
+    #[test]
+    fn the_title_warns_when_the_list_holds_a_package_version() {
+        // A wrong implementation that never surfaces the caveat would leave
+        // the "—" size column reading as "empty" instead of "unmeasured".
+        let title = list_title(3, 0, true);
+        assert!(title.contains("GitHub"), "got: {title}");
+        assert!(title.to_lowercase().contains("taille"), "got: {title}");
+    }
+
+    #[test]
+    fn the_title_carries_no_warning_without_a_package_version() {
+        // A wrong implementation that always shows the caveat would clutter
+        // every ordinary cache/artifact/run listing with an irrelevant line.
+        let title = list_title(3, 100, false);
+        assert!(!title.contains("GitHub"), "got: {title}");
+        assert!(title.contains("100 o"), "got: {title}");
     }
 }

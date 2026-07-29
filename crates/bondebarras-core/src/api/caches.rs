@@ -64,6 +64,9 @@ pub async fn list(client: &Client, owner: &str, repo: &str) -> Result<Vec<Resour
                         git_ref: item["ref"].as_str().map(str::to_string),
                         // Filled in by `scan`, which knows the repo's closed PRs.
                         stale_pr: false,
+                        // A cache carries no equivalent of a live reference by
+                        // name; only a tagged package version does, today.
+                        protected: false,
                     })
                 })
                 .collect()

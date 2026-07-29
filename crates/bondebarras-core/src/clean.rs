@@ -4,7 +4,7 @@
 //! undo — promising either would be a lie. What we offer instead is an
 //! accurate recap before, and a per-item verdict after.
 
-use crate::api::{Client, artifacts, caches, runs};
+use crate::api::{Client, artifacts, caches, packages, runs};
 use crate::model::{Resource, ResourceKind, RiskTier, human_size, risk_tier};
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::time::{Duration, sleep};
@@ -35,12 +35,53 @@ impl Plan {
     }
 
     /// User-facing recap shown in the confirmation modal.
+    ///
+    /// A plan made up entirely of package versions always totals 0 bytes —
+    /// GitHub exposes no size for that family, `size_bytes` is hardcoded to
+    /// 0 for every one of them (see `scan::version_resources`) — but that is
+    /// not the same thing as an empty plan. Printing "0 o" would read as
+    /// "nothing was selected"; the honest recap names the count instead and
+    /// says plainly that the size is unknown.
     pub fn summary(&self) -> String {
-        format!(
-            "{} élément(s) · {}",
-            self.items.len(),
-            human_size(self.total_bytes())
-        )
+        if !self.items.is_empty()
+            && self
+                .items
+                .iter()
+                .all(|i| i.kind == ResourceKind::PackageVersion)
+        {
+            format!("{} élément(s) · taille inconnue", self.items.len())
+        } else {
+            format!(
+                "{} élément(s) · {}",
+                self.items.len(),
+                human_size(self.total_bytes())
+            )
+        }
+    }
+}
+
+/// The "N libérés" fragment of the post-purge recap, shared by the TUI's
+/// status line and the headless `clean` command so the wording never drifts
+/// between the two.
+///
+/// `deleted_sizeless` — how many of `deleted` were package versions, the one
+/// family GitHub exposes no size for — is what this needs to say something
+/// true: keying the decision on `freed == 0` alone, as an earlier version
+/// did, cannot tell "every deleted item's size is unknown" apart from
+/// "every deleted item was genuinely zero bytes" — two real, empty caches
+/// deleted would then read "taille inconnue," which is false, their size
+/// was known and it was zero. Only "unknown" once every deletion that
+/// happened was one where the size genuinely cannot be known.
+///
+/// A mixed purge (some package versions among sized resources) still just
+/// reports `freed` here — accurate as far as it goes, even though it says
+/// nothing about the package versions in the mix. Making that case honest
+/// too is a separate concern, out of scope for this fix.
+pub fn finished_recap(freed: u64, deleted: usize, deleted_sizeless: usize) -> String {
+    if deleted > 0 && deleted_sizeless == deleted {
+        format!("{deleted} élément(s) supprimé(s) · taille inconnue")
+    } else {
+        format!("{} libérés", human_size(freed))
     }
 }
 
@@ -64,6 +105,16 @@ pub enum Progress {
     Finished {
         freed: u64,
         failures: usize,
+        /// How many items were actually deleted. `freed` alone cannot carry
+        /// this: a purge of package versions frees 0 bytes by construction
+        /// (GitHub exposes no size for that family) even when dozens were
+        /// deleted, so the recap needs the count to say something true.
+        deleted: usize,
+        /// How many of `deleted` were package versions — the resource kind
+        /// GitHub exposes no size for. `finished_recap` needs this, not
+        /// `deleted` alone, to tell "every deletion's size is unknown" apart
+        /// from "every deletion was a real, empty resource."
+        deleted_sizeless: usize,
     },
 }
 
@@ -71,6 +122,8 @@ pub enum Progress {
 pub async fn execute(client: &Client, plan: Plan, tx: UnboundedSender<Progress>) {
     let mut freed = 0_u64;
     let mut failures = 0_usize;
+    let mut deleted = 0_usize;
+    let mut deleted_sizeless = 0_usize;
 
     for item in &plan.items {
         let result = match item.kind {
@@ -81,11 +134,21 @@ pub async fn execute(client: &Client, plan: Plan, tx: UnboundedSender<Progress>)
             ResourceKind::WorkflowRun => {
                 runs::delete(client, &plan.owner, &plan.repo, item.id).await
             }
+            // `Plan` carries no separate package name: `plan.repo` doubles as
+            // the package name, per this account's convention that a repo's
+            // image is named after the repo itself (see `scan::repo_detail`).
+            ResourceKind::PackageVersion => {
+                packages::delete_version(client, &plan.owner, &plan.repo, item.id).await
+            }
         };
 
         match result {
             Ok(()) => {
                 freed += item.size_bytes;
+                deleted += 1;
+                if item.kind == ResourceKind::PackageVersion {
+                    deleted_sizeless += 1;
+                }
                 let _ = tx.send(Progress::Done {
                     kind: item.kind,
                     id: item.id,
@@ -104,12 +167,19 @@ pub async fn execute(client: &Client, plan: Plan, tx: UnboundedSender<Progress>)
         sleep(DELETE_SPACING).await;
     }
 
-    let _ = tx.send(Progress::Finished { freed, failures });
+    let _ = tx.send(Progress::Finished {
+        freed,
+        failures,
+        deleted,
+        deleted_sizeless,
+    });
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
 
     fn item(kind: ResourceKind, id: u64, size: u64) -> Resource {
         Resource {
@@ -120,6 +190,7 @@ mod tests {
             age_days: 30,
             git_ref: None,
             stale_pr: false,
+            protected: false,
         }
     }
 
@@ -154,5 +225,100 @@ mod tests {
         assert_eq!(p.total_bytes(), 3_000_000);
         assert!(p.summary().contains("3.0 Mo"));
         assert!(p.summary().contains('2'));
+    }
+
+    #[test]
+    fn summary_says_size_is_unknown_for_an_all_package_version_plan() {
+        // GitHub exposes no size for a package version, so a plan made up of
+        // them always totals 0 bytes even though real deletions happen —
+        // "0 o" here would read as "nothing was selected".
+        let p = plan(vec![
+            item(ResourceKind::PackageVersion, 1, 0),
+            item(ResourceKind::PackageVersion, 2, 0),
+        ]);
+        let s = p.summary();
+        assert!(!s.contains("0 o"), "got: {s}");
+        assert!(s.contains('2'), "got: {s}");
+        assert!(s.to_lowercase().contains("inconnue"), "got: {s}");
+    }
+
+    #[test]
+    fn summary_reports_a_genuinely_zero_byte_cache_plainly() {
+        // A wrong implementation keyed on `total_bytes() == 0` rather than
+        // the resource kind would also call this "unknown" — but a cache's
+        // size is always known, zero included. Only tell apart from the test
+        // above by resource kind, not by the coincidence of a zero total.
+        let p = plan(vec![item(ResourceKind::Cache, 1, 0)]);
+        let s = p.summary();
+        assert!(s.contains("0 o"), "got: {s}");
+        assert!(!s.to_lowercase().contains("inconnue"), "got: {s}");
+    }
+
+    #[test]
+    fn finished_recap_says_the_count_when_bytes_are_meaningless() {
+        // A purge of package versions frees 0 bytes by construction, even
+        // when dozens were deleted — and every one of the 45 deleted here
+        // was one of them.
+        let s = finished_recap(0, 45, 45);
+        assert!(!s.contains("0 o"), "got: {s}");
+        assert!(s.contains("45"), "got: {s}");
+    }
+
+    #[test]
+    fn finished_recap_reports_zero_bytes_plainly_when_nothing_was_deleted() {
+        let s = finished_recap(0, 0, 0);
+        assert!(s.contains("0 o"), "got: {s}");
+    }
+
+    #[test]
+    fn finished_recap_reports_real_bytes_when_they_exist() {
+        // Discriminates a wrong implementation that always reports the
+        // count, ignoring `freed` even when it is meaningful.
+        let s = finished_recap(3_000_000, 2, 0);
+        assert!(s.contains("3.0 Mo"), "got: {s}");
+    }
+
+    #[test]
+    fn finished_recap_reports_zero_bytes_plainly_for_genuinely_zero_byte_deletions() {
+        // Two real caches, truly empty: their size is known, and it is
+        // zero — unlike a package version's, which is unknown. A version
+        // keyed on `freed == 0` alone (rather than on `deleted_sizeless`)
+        // could not tell this apart from an all-package-version purge, and
+        // would have called two genuinely empty caches "taille inconnue".
+        let s = finished_recap(0, 2, 0);
+        assert!(s.contains("0 o"), "got: {s}");
+        assert!(!s.to_lowercase().contains("inconnue"), "got: {s}");
+    }
+
+    #[tokio::test]
+    async fn execute_deletes_a_package_version_via_the_repos_homonymous_package() {
+        // `Plan` carries no separate package name: `plan.repo` doubles as the
+        // package name, per this account's convention.
+        let server = MockServer::start().await;
+        Mock::given(method("DELETE"))
+            .and(path("/orgs/systm-d/packages/container/claudine/versions/9"))
+            .respond_with(ResponseTemplate::new(204))
+            .mount(&server)
+            .await;
+
+        let client = Client::with_base("t0ken", &server.uri()).unwrap();
+        let p = plan(vec![item(ResourceKind::PackageVersion, 9, 0)]);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+
+        execute(&client, p, tx).await;
+
+        let mut done = false;
+        while let Ok(msg) = rx.try_recv() {
+            match msg {
+                Progress::Done { kind, id } => {
+                    assert_eq!(kind, ResourceKind::PackageVersion);
+                    assert_eq!(id, 9);
+                    done = true;
+                }
+                Progress::Failed { reason, .. } => panic!("unexpected failure: {reason}"),
+                Progress::Finished { .. } => {}
+            }
+        }
+        assert!(done, "the package version must be reported as deleted");
     }
 }

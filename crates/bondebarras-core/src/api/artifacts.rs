@@ -38,6 +38,9 @@ pub async fn list(client: &Client, owner: &str, repo: &str) -> Result<Vec<Resour
                         age_days: age_days(item["created_at"].as_str()),
                         git_ref: None,
                         stale_pr: false,
+                        // No equivalent of a live reference by name for an
+                        // artifact.
+                        protected: false,
                     })
                 })
                 .collect()

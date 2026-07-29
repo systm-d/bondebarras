@@ -7,6 +7,7 @@ pub mod clean;
 pub mod cli;
 pub mod commands;
 pub mod model;
+pub mod packages;
 pub mod scan;
 pub mod stale;
 pub mod tui;
@@ -72,6 +73,7 @@ async fn run_async() -> anyhow::Result<ExitCode> {
             caches,
             artifacts,
             runs,
+            packages,
             stale_pr,
             older_than,
             yes,
@@ -80,6 +82,7 @@ async fn run_async() -> anyhow::Result<ExitCode> {
                 caches,
                 artifacts,
                 runs,
+                packages,
                 stale_pr,
                 older_than,
             };

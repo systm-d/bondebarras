@@ -36,6 +36,8 @@ pub async fn list(client: &Client, owner: &str, repo: &str) -> Result<Vec<Resour
                             .as_str()
                             .map(|b| format!("refs/heads/{b}")),
                         stale_pr: false,
+                        // No equivalent of a live reference by name for a run.
+                        protected: false,
                     })
                 })
                 .collect()

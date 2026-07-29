@@ -2,7 +2,7 @@
 
 use crate::api::Client;
 use crate::clean::{self, Plan, Progress};
-use crate::model::{Resource, ResourceKind, RiskTier, human_size};
+use crate::model::{Resource, ResourceKind, RiskTier, size_display};
 use crate::scan;
 use anyhow::{Result, bail};
 use std::process::ExitCode;
@@ -13,6 +13,9 @@ pub struct CleanFilter {
     pub caches: bool,
     pub artifacts: bool,
     pub runs: bool,
+    /// Container package versions. Like every other family, absent means not
+    /// selected — a `clean` that named no family must never mean "everything".
+    pub packages: bool,
     pub stale_pr: bool,
     pub older_than: Option<i64>,
 }
@@ -22,6 +25,12 @@ pub struct CleanFilter {
 /// Naming no family selects **nothing**. A `clean` that quietly meant
 /// "everything" would be the worst possible default for an irreversible
 /// operation running unattended.
+///
+/// A `protected` resource is never returned, regardless of the filter: it is
+/// still live-referenced by name (a tag like `latest`, today), and headless
+/// has no human at the other end of a cron to notice a broken deployment.
+/// The TUI's individual `espace` selection is the only path left to it — see
+/// `tui::app::App::toggle_selected`.
 pub fn select(items: &[Resource], filter: &CleanFilter) -> Vec<Resource> {
     items
         .iter()
@@ -29,7 +38,11 @@ pub fn select(items: &[Resource], filter: &CleanFilter) -> Vec<Resource> {
             ResourceKind::Cache => filter.caches,
             ResourceKind::Artifact => filter.artifacts,
             ResourceKind::WorkflowRun => filter.runs,
+            ResourceKind::PackageVersion => filter.packages,
         })
+        // A protected resource is never taken in bulk. Headless has no human
+        // to override that, so this is not a default — it is the rule.
+        .filter(|r| !r.protected)
         .filter(|r| !filter.stale_pr || r.stale_pr)
         .filter(|r| filter.older_than.is_none_or(|d| r.age_days >= d))
         .cloned()
@@ -71,8 +84,12 @@ pub async fn run(
             "Plan ({}) — relancez avec --yes pour l'appliquer :",
             plan.summary()
         );
+        // `size_display` shows `—` rather than "0 o" for a package version:
+        // this is the screen a headless user reads *before* typing --yes,
+        // and the TUI's resource list already shows `—` here — the two
+        // must not disagree about what a package version's size means.
         for r in &plan.items {
-            eprintln!("  {:<40} {:>10}", r.label, human_size(r.size_bytes));
+            eprintln!("  {:<40} {:>10}", r.label, size_display(r));
         }
         return Ok(ExitCode::SUCCESS);
     }
@@ -87,9 +104,17 @@ pub async fn run(
                 failures += 1;
                 eprintln!("Erreur : suppression de {id} — {reason}");
             }
-            Progress::Finished { freed, failures: f } => {
+            Progress::Finished {
+                freed,
+                failures: f,
+                deleted,
+                deleted_sizeless,
+            } => {
                 failures = f;
-                eprintln!("Bon débarras ! {} libérés.", human_size(freed));
+                eprintln!(
+                    "Bon débarras ! {}.",
+                    clean::finished_recap(freed, deleted, deleted_sizeless)
+                );
             }
             Progress::Done { .. } => {}
         }
@@ -116,6 +141,7 @@ mod tests {
             age_days: age,
             git_ref: None,
             stale_pr: stale,
+            protected: false,
         }
     }
 
@@ -124,6 +150,7 @@ mod tests {
             caches: false,
             artifacts: false,
             runs: false,
+            packages: false,
             stale_pr: false,
             older_than: None,
         }
@@ -234,5 +261,75 @@ mod tests {
         };
         let picked: Vec<u64> = select(&items, &f).iter().map(|r| r.id).collect();
         assert_eq!(picked, vec![1, 2]);
+    }
+
+    #[test]
+    fn a_package_version_is_only_selected_when_its_family_is_named() {
+        // This arm was `unreachable!()` until repo_detail started producing
+        // package rows, at which point a headless clean panicked against any
+        // repo publishing an image. The fixture must contain the kind, or the
+        // arm is never exercised at all.
+        let items = vec![res(ResourceKind::PackageVersion, 1, 1, false)];
+        assert!(select(&items, &filter()).is_empty());
+
+        let f = CleanFilter {
+            packages: true,
+            ..filter()
+        };
+        let picked: Vec<u64> = select(&items, &f).iter().map(|r| r.id).collect();
+        assert_eq!(picked, vec![1]);
+    }
+
+    // The test above uses a fixture holding only `PackageVersion` items, so
+    // it cannot tell a correctly wired arm from one accidentally shared with
+    // another kind — e.g. `ResourceKind::WorkflowRun | ResourceKind::PackageVersion
+    // => filter.packages` (a plausible copy/paste of the match arm above it)
+    // still passes that test by accident: there is no `WorkflowRun` item in
+    // its fixture to leak into the selection. Verified by injecting exactly
+    // that mutation: the single-kind test above stayed green, and only this
+    // fixture — which carries all four kinds at once — caught it, with a
+    // `WorkflowRun` id showing up in `picked` alongside the package version.
+    #[test]
+    fn packages_alone_isolates_the_package_version_from_the_other_three_families() {
+        let items = vec![
+            res(ResourceKind::Cache, 1, 1, false),
+            res(ResourceKind::Artifact, 2, 1, false),
+            res(ResourceKind::WorkflowRun, 3, 1, false),
+            res(ResourceKind::PackageVersion, 4, 1, false),
+        ];
+
+        // No family named: nothing, from any of the four.
+        assert!(select(&items, &filter()).is_empty());
+
+        // --packages alone: only the PackageVersion item.
+        let f = CleanFilter {
+            packages: true,
+            ..filter()
+        };
+        let picked: Vec<u64> = select(&items, &f).iter().map(|r| r.id).collect();
+        assert_eq!(picked, vec![4]);
+    }
+
+    #[test]
+    fn a_protected_resource_is_never_taken_in_bulk() {
+        // `latest` in a cron is the scenario: no human, no confirmation, and a
+        // broken deployment for everyone pulling that tag.
+        let mut tagged = res(ResourceKind::PackageVersion, 1, 90, false);
+        tagged.protected = true;
+        let untagged = res(ResourceKind::PackageVersion, 2, 90, false);
+
+        let f = CleanFilter {
+            packages: true,
+            ..filter()
+        };
+        let picked: Vec<u64> = select(&[tagged, untagged], &f)
+            .iter()
+            .map(|r| r.id)
+            .collect();
+        assert_eq!(
+            picked,
+            vec![2],
+            "a tagged version must never be selected headlessly"
+        );
     }
 }

@@ -3,8 +3,9 @@
 *Good riddance.*
 
 **bondebarras** is a Rust TUI/CLI to audit and clean up the resources piling
-up across your GitHub organizations: Actions caches, artifacts, and workflow
-runs — the stuff CI leaves behind that nobody ever comes back to delete.
+up across your GitHub organizations: Actions caches, artifacts, workflow
+runs, and container package versions — the stuff CI leaves behind that
+nobody ever comes back to delete.
 
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)](#license)
 [![CI](https://github.com/systm-d/bondebarras/actions/workflows/ci.yml/badge.svg)](https://github.com/systm-d/bondebarras/actions/workflows/ci.yml)
@@ -40,14 +41,24 @@ again by anything.
   the selected repository's resources on the right.
 - **Actions caches, artifacts, and workflow runs**, each deletable
   individually or as part of a bulk selection.
+- **Container package versions** (GHCR) — untagged layers and orphaned
+  attestations, flagged the same way a cache attached to a closed PR is.
+  GitHub's API exposes **no size** for a package version, so this family is
+  never measured in bytes: it is a hygiene cleanup, not a volume one. On the
+  author's own account, the real footprint across fifteen organizations is
+  **7 packages, 45 versions, 23 of them untagged** — one organization alone
+  (`maxds-lyon`) carries 20 of its 28 versions with no tag at all.
 - **⚑ Stale-PR flag** — every cache is checked against the repository's
   closed pull requests; a cache attached to a closed or merged PR is flagged
   as safe to delete in one keystroke.
 - **Ad-hoc bulk selection** — sort by size/age/name, filter incrementally by
   label, or select every flagged row at once. Nothing is persisted: no rules
   engine, no config file, you decide every time.
-- **Tier-1 confirmation** before any deletion, followed by a background purge
-  with a per-item result — the TUI stays responsive throughout.
+- **Tiered confirmation** before any deletion — a bare `[y/N]` for the
+  regenerable Tier 1 (caches, artifacts, workflow runs), an itemised recap
+  plus an explicit irreversibility warning for Tier 2 (package versions,
+  which do not come back once deleted) — followed by a background purge with
+  a per-item result. The TUI stays responsive throughout.
 - **Billing tab** — per-organization Actions-minutes usage against the free
   allowance, month by month, with a per-repository breakdown of what is
   burning it. The gauge counts **private repositories only**: GitHub's usage
@@ -188,6 +199,10 @@ bondebarras scan --org systm-d --json
 
 # Delete every cache attached to a closed PR, unattended
 bondebarras clean --org systm-d --repo josephine --caches --stale-pr --yes
+
+# Delete every untagged/orphaned package version in a repo, unattended —
+# a tagged version (latest, 2.0.2, …) is never touched, headless or not
+bondebarras clean --org systm-d --repo repolens --packages --yes
 ```
 
 | Flag | Effect |
@@ -195,7 +210,7 @@ bondebarras clean --org systm-d --repo josephine --caches --stale-pr --yes
 | `--org <name>` | Limits `scan` to one organization; absent = every one the token can see |
 | `--json` | Machine-readable output on stdout — nothing else goes to stdout |
 | `--repo <name>` | Repository targeted by `clean` |
-| `--caches` `--artifacts` `--runs` | Resource families `clean` should touch, cumulative |
+| `--caches` `--artifacts` `--runs` `--packages` | Resource families `clean` should touch, cumulative |
 | `--stale-pr` | Restricts `clean` to resources flagged ⚑ (attached to a closed PR) |
 | `--older-than <days>` | Restricts `clean` to resources at least that old |
 | `--yes` | Confirms without a prompt |
@@ -210,12 +225,22 @@ bondebarras' current scope reaches it, but the rule is set now, while the CLI
 surface is still small, so a future destructive operation can't slip into a
 cron job by accident.
 
+**`--packages` cannot delete a tagged package version, headless or not.**
+`latest`, `2.0.2`, and any other real tag are *protected*: the rule lives on
+the resource itself, not in the TUI's selection step, so it applies just the
+same to a `clean --packages --yes` run from a crontab. Only untagged layers
+and orphaned attestations are ever taken in bulk. Deleting a tagged version
+is still possible, but only one row at a time, from the interactive TUI
+(`espace`) — a human looking at that specific row is the case the tool
+allows it in.
+
 ### Required token scopes
 
-`repo` and `read:org` are enough for everything bondebarras does — reading
-and deleting caches, artifacts, and workflow runs; listing the organizations
-and repositories a token can see; and reading the Billing tab's usage report
-(a 403 there just means the token's owner isn't an org owner — the org stays
+`repo`, `read:org`, `read:packages`, and `delete:packages` are enough for
+everything bondebarras does — reading and deleting caches, artifacts,
+workflow runs, and container package versions; listing the organizations and
+repositories a token can see; and reading the Billing tab's usage report (a
+403 there just means the token's owner isn't an org owner — the org stays
 otherwise navigable). Repository *deletion* is explicitly and permanently
 out of scope for this tool, so `delete_repo` is never required.
 
