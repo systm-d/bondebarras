@@ -279,16 +279,8 @@ pub fn render(plan: &Plan, f: &mut Frame, area: Rect) {
     let inner_width = width.saturating_sub(2).max(1);
     let available = area.height.max(1).saturating_sub(2);
 
-    // The footer is reserved first, and only it is allowed to claim it is
-    // never clippable — see its own doc comment. The recap gets whatever
-    // rows are left over, and truncates its item list (down to nothing, if
-    // it must) to fit rather than the other way around, which is what let
-    // an ordinary ten-cache-plus-one-package-version plan clip the warning,
-    // the caveat and the prompt off an 80x24 terminal even after the
-    // content-sized `height` fix: that fix sized the *box* from the
-    // content, but a single `Paragraph` still clips *within* the box from
-    // the bottom — exactly where the footer lives — whenever the content
-    // does not fit the box after all.
+    // `compact` drops the footer's blank spacer lines once the full version
+    // does not fit `available` at all — see `footer`'s own doc comment.
     let mut footer_lines = footer(kind, false);
     let mut footer_rows = wrapped_row_count(&footer_lines, inner_width);
     if footer_rows > available {
@@ -296,6 +288,16 @@ pub fn render(plan: &Plan, f: &mut Frame, area: Rect) {
         footer_rows = wrapped_row_count(&footer_lines, inner_width);
     }
 
+    // From here down, `footer_rows` and `recap_lines` only decide how big to
+    // *draw* the box — never whether the footer survives. That guarantee
+    // comes from the `Layout` split below, not from this arithmetic: a
+    // hand-computed total height, clamped to the frame with `.min()`, was
+    // exactly what let an off-by-one in `recap`'s own budgeting reach the
+    // footer and clip `[y/N]` off an ordinary 80x13 terminal, even though
+    // the footer itself had three rows to spare — the clamp shrank the box
+    // without shrinking the content, and a single `Paragraph` clips
+    // whatever does not fit from the bottom, which is where the footer
+    // lives. Getting this estimate slightly wrong is now merely untidy.
     let recap_lines = recap(
         plan,
         kind,
@@ -303,23 +305,43 @@ pub fn render(plan: &Plan, f: &mut Frame, area: Rect) {
         inner_width,
     );
     let recap_rows = wrapped_row_count(&recap_lines, inner_width);
-
-    let mut lines = recap_lines;
-    lines.extend(footer_lines);
-
     let height = (2 + recap_rows + footer_rows).min(area.height.max(1));
 
     let zone = centered(Constraint::Length(width), Constraint::Length(height), area);
     f.render_widget(Clear, zone);
 
+    let block = Block::default()
+        .title(" Confirmation ")
+        .borders(Borders::ALL)
+        .border_style(theme::border_style());
+    let inner = block.inner(zone);
+    f.render_widget(block, zone);
+
+    // Two `Paragraph`s in two `Layout`-reserved chunks, not one handed the
+    // whole content. `Constraint::Length(footer_rows)` is satisfied before
+    // `Constraint::Min(0)` gets any space at all — ratatui's solver weighs a
+    // `Length` request roughly two orders of magnitude more strongly than a
+    // `Min`'s "grow to fill" preference — so the footer chunk is exactly
+    // `footer_rows` tall whenever `inner` has that many rows to give, no
+    // matter what `recap_rows` above worked out to. If the recap chunk
+    // overflows, it clips inside its own chunk, which is correct: items are
+    // what may be dropped, never the footer. The one case nothing here can
+    // fix is `inner` itself being shorter than `footer_rows` — the frame is
+    // then too small for the footer, full stop, and the footer chunk clips
+    // like any undersized `Paragraph` would; see the confirm-view tests for
+    // how far down that goes before it happens.
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(0), Constraint::Length(footer_rows)])
+        .split(inner);
+
     f.render_widget(
-        Paragraph::new(lines).wrap(Wrap { trim: false }).block(
-            Block::default()
-                .title(" Confirmation ")
-                .borders(Borders::ALL)
-                .border_style(theme::border_style()),
-        ),
-        zone,
+        Paragraph::new(recap_lines).wrap(Wrap { trim: false }),
+        chunks[0],
+    );
+    f.render_widget(
+        Paragraph::new(footer_lines).wrap(Wrap { trim: false }),
+        chunks[1],
     );
 }
 
@@ -543,5 +565,68 @@ mod tests {
             "a {}-character line at width {width} must need two rows",
             line.chars().count()
         );
+    }
+
+    /// Ten 71-char cache keys plus a package version — an everyday tier-2
+    /// plan, and the exact shape that clipped the prompt at 80x24 after the
+    /// first content-sized-box fix (see
+    /// `the_prompt_survives_a_plan_whose_items_overflow_the_frame` above).
+    /// Reused here because the sweep below has to exercise the recap's
+    /// truncation logic (where the off-by-one lived), not just an
+    /// already-empty recap.
+    fn overflow_plan() -> Plan {
+        let mut items: Vec<Resource> = (0..10)
+            .map(|i| {
+                item(
+                    ResourceKind::Cache,
+                    i,
+                    &format!("Linux-x64-cargo-registry-{i:0>46}"),
+                )
+            })
+            .collect();
+        items.push(item(
+            ResourceKind::PackageVersion,
+            100,
+            "sha256:9a26c7080… (sans tag)",
+        ));
+        plan(items)
+    }
+
+    #[test]
+    fn the_prompt_survives_every_height_the_footer_fits_in() {
+        // This modal has clipped its own prompt three times, each by a
+        // different mechanism, and each time the sampled sizes happened to
+        // dodge the hole — the last one recurred at exactly one height per
+        // width. Sweep rather than sample.
+        //
+        // Each width's sweep starts at the smallest height where the footer
+        // itself (warning, caveat, prompt) fits the frame at all — below
+        // that floor the frame is too small for the footer regardless of
+        // this fix, and asserting the prompt would be wrong. Determined
+        // empirically by probing every height from 1 to 40 with this same
+        // overflow plan and recording the first height at which `[y/N]`
+        // appeared on screen (captured to
+        // `.superpowers/sdd/2026-07-29-bondebarras-v0.3/final-fix-report.md`,
+        // not retyped here): width=40 -> 12, width=60 -> 9, width=80 -> 8,
+        // width=120 -> 7.
+        let p = overflow_plan();
+        for (width, floor) in [(40u16, 12u16), (60, 9), (80, 8), (120, 7)] {
+            for height in floor..=40u16 {
+                let backend = ratatui::backend::TestBackend::new(width, height);
+                let mut terminal = ratatui::Terminal::new(backend).unwrap();
+                terminal.draw(|f| render(&p, f, f.area())).unwrap();
+                let rendered: String = terminal
+                    .backend()
+                    .buffer()
+                    .content()
+                    .iter()
+                    .map(|c| c.symbol())
+                    .collect();
+                assert!(
+                    rendered.contains("[y/N]"),
+                    "prompt clipped at {width}x{height}"
+                );
+            }
+        }
     }
 }
