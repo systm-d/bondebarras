@@ -158,6 +158,15 @@ pub async fn execute(client: &Client, plan: Plan, tx: UnboundedSender<Progress>)
             ResourceKind::ReleaseAsset => {
                 releases::delete_asset(client, &plan.owner, &plan.repo, item.id).await
             }
+            // Task 3 wires this to `api::archive::archive`. No plan can
+            // contain a `Repository` yet — nothing produces one — so this arm
+            // exists only to keep the match exhaustive; it fails the single
+            // item rather than panicking the whole run if it is ever reached
+            // early. Not a deletion, so the message says "archivage", not
+            // "suppression", unlike every stub before it.
+            ResourceKind::Repository => Err(anyhow::anyhow!(
+                "archivage non câblé pour l'instant (tâche 3)"
+            )),
         };
 
         match result {

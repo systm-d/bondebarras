@@ -55,6 +55,18 @@ pub fn select(items: &[Resource], filter: &CleanFilter) -> Vec<Resource> {
             ResourceKind::Branch => filter.branches,
             ResourceKind::Tag => filter.tags,
             ResourceKind::ReleaseAsset => filter.assets,
+            // Task 3 makes the repository tree feed this — only to prove it
+            // NEVER returns a `Repository` headlessly: archiving a whole
+            // repository is not a cron decision, no `--archive` flag exists,
+            // and none is planned. Until that guard is written explicitly,
+            // this arm is unreachable: `scan::repo_detail` never puts a
+            // `Repository` into `items`, the same reasoning as the
+            // `Branch | Tag | ReleaseAsset` arm above when v0.4 introduced
+            // them.
+            ResourceKind::Repository => unreachable!(
+                "Repository never reaches select() before task 3 wires the tree and its \
+                 headless-refusal guard"
+            ),
         })
         // A protected resource is never taken in bulk. Headless has no human
         // to override that, so this is not a default — it is the rule.

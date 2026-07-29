@@ -9,6 +9,7 @@ pub mod commands;
 pub mod model;
 pub mod packages;
 pub mod refs;
+pub mod repos;
 pub mod scan;
 pub mod stale;
 pub mod tui;

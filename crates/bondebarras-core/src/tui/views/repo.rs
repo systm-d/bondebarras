@@ -49,6 +49,13 @@ pub fn row_spans(r: &Resource, checked: bool) -> Vec<Span<'static>> {
         ResourceKind::Branch => "branc",
         ResourceKind::Tag => "tag  ",
         ResourceKind::ReleaseAsset => "asset",
+        // Never actually reaches this list in production — a repository
+        // lives in the left tree (`tui::views::orgs`), not this right-pane
+        // resource list (task 3) — but the match must stay exhaustive
+        // regardless, and a real label costs nothing (same reasoning v0.3
+        // and v0.4 gave every other kind here: this function is pure
+        // display, with no dependency on later tasks).
+        ResourceKind::Repository => "repo ",
     };
 
     // `size_display` shows `—` rather than "0 o" for a package version:
@@ -269,6 +276,28 @@ mod tests {
 
     fn text(spans: &[Span<'static>]) -> String {
         spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    /// `ResourceKind::Repository` never actually reaches `row_spans` in
+    /// production — task 3 keeps a repository in the left tree, never in
+    /// `app.resources` — but the match on `r.kind` must stay exhaustive
+    /// regardless, and this locks the label it was given rather than leaving
+    /// it unverified.
+    #[test]
+    fn a_repository_row_shows_its_kind_label() {
+        let r = Resource {
+            kind: ResourceKind::Repository,
+            id: 1,
+            label: "claudine".into(),
+            size_bytes: 0,
+            age_days: 0,
+            git_ref: None,
+            stale_pr: false,
+            protected: false,
+            branch_class: None,
+        };
+        let line = text(&row_spans(&r, false));
+        assert!(line.contains("repo"), "got: {line}");
     }
 
     #[test]

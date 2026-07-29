@@ -1,8 +1,11 @@
 //! Core data model: resources, risk tiers, and display formatting.
 
-/// A deletable GitHub resource family. v0.1 covers the three regenerable ones;
-/// v0.3 adds container package versions, the first irreversible one; v0.4
-/// adds branches, tags and release assets.
+/// A deletable — or, since v0.5, archivable — GitHub resource family. v0.1
+/// covers the three regenerable ones; v0.3 adds container package versions,
+/// the first irreversible one; v0.4 adds branches, tags and release assets;
+/// v0.5 adds the repository itself, archived rather than deleted (see
+/// `repos::classify_repo` and `api::archive`) — repository *deletion* stays
+/// permanently out of scope.
 ///
 /// `Hash` matters as much as `Eq` here: GitHub numbers caches, artifacts,
 /// workflow runs and package versions in independent namespaces, so a
@@ -19,11 +22,12 @@ pub enum ResourceKind {
     Branch,
     Tag,
     ReleaseAsset,
+    Repository,
 }
 
 impl ResourceKind {
     /// Every variant, so tests can assert the `risk_tier` match stays exhaustive.
-    pub const ALL: [ResourceKind; 7] = [
+    pub const ALL: [ResourceKind; 8] = [
         ResourceKind::Cache,
         ResourceKind::Artifact,
         ResourceKind::WorkflowRun,
@@ -31,6 +35,7 @@ impl ResourceKind {
         ResourceKind::Branch,
         ResourceKind::Tag,
         ResourceKind::ReleaseAsset,
+        ResourceKind::Repository,
     ];
 
     /// Whether GitHub reports a real size for this family.
@@ -53,12 +58,18 @@ impl ResourceKind {
     }
 }
 
-/// How much friction a deletion must go through. Ordered by severity.
+/// How much friction a deletion — or, since v0.5, an archive — must go
+/// through. Ordered by severity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum RiskTier {
     /// Regenerable by re-running a workflow: a single confirmation.
     Low,
-    /// Irreversible but rarely critical: itemised recap plus confirmation.
+    /// Not undoable by a re-run: either the change is irreversible outright
+    /// (a package version, a branch, a tag, a release asset — the layer or
+    /// ref is gone for good), or, since v0.5, it turns a whole repository
+    /// read-only (reversible on GitHub's side, but not by anything this
+    /// re-run-shaped tool can trigger). Either way: itemised recap plus
+    /// confirmation.
     Medium,
     /// Definitive destruction: the user must type the target's name.
     Nuclear,
@@ -81,6 +92,14 @@ pub fn risk_tier(kind: ResourceKind) -> RiskTier {
         | ResourceKind::Branch
         | ResourceKind::Tag
         | ResourceKind::ReleaseAsset => RiskTier::Medium,
+        // Reversible, unlike every other kind at this tier — un-archiving
+        // restores it — but not a re-run away either, and it turns the whole
+        // repository read-only in the meantime. Medium, not Low: the blast
+        // radius is bigger than one cache key even though nothing here is
+        // permanent. Not Nuclear: repository *deletion*, the operation that
+        // tier exists for, is permanently out of scope (see
+        // `tui::views::confirm`'s module doc).
+        ResourceKind::Repository => RiskTier::Medium,
     }
 }
 
