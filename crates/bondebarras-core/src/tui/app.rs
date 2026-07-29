@@ -75,6 +75,12 @@ pub struct App {
     /// Index into `BillingReport::months()` for the org under the cursor —
     /// which month the Billing tab shows.
     pub month_cursor: usize,
+    /// Set by a first quit press while a purge is running: it warns instead
+    /// of quitting outright, and only a second press goes through. A purge
+    /// runs on a spawned task, so an unattended quit would otherwise drop
+    /// whatever deletions are still queued with no summary shown. Reset on
+    /// `Progress::Finished`.
+    pub quit_armed: bool,
 }
 
 impl App {
@@ -98,6 +104,7 @@ impl App {
             purging_org: None,
             view: View::Orgs,
             month_cursor: 0,
+            quit_armed: false,
         }
     }
 

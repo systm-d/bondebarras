@@ -85,6 +85,11 @@ where
                     app.status = format!("Erreur : suppression de {id} — {reason}");
                 }
                 Progress::Finished { freed, failures } => {
+                    // The purge this guard was watching over is done: a
+                    // fresh `q` press must quit outright again, not still
+                    // need a second confirmation for a purge that no longer
+                    // exists.
+                    app.quit_armed = false;
                     app.status = if failures == 0 {
                         format!("Bon débarras ! {} libérés.", human_size(freed))
                     } else {
@@ -167,7 +172,7 @@ where
         // moving between months are.
         if app.view == View::Billing {
             match key.code {
-                KeyCode::Char('q') | KeyCode::Esc => app.should_quit = true,
+                KeyCode::Char('q') | KeyCode::Esc => request_quit(&mut app),
                 KeyCode::Char('b') => app.view = View::Orgs,
                 KeyCode::Left => app.month_cursor = app.month_cursor.saturating_sub(1),
                 KeyCode::Right => {
@@ -188,7 +193,7 @@ where
                 app.filter.clear();
                 app.res_cursor = 0;
             }
-            KeyCode::Char('q') | KeyCode::Esc => app.should_quit = true,
+            KeyCode::Char('q') | KeyCode::Esc => request_quit(&mut app),
             KeyCode::Char('b') => app.view = View::Billing,
             KeyCode::Tab => {
                 app.focus = match app.focus {
@@ -260,4 +265,19 @@ where
         }
     }
     Ok(())
+}
+
+/// Handle a `q`/`Esc` press, from either top-level view.
+///
+/// A purge runs on a spawned task while the event loop keeps handling keys;
+/// quitting mid-purge drops whatever is still queued and shows no summary.
+/// Say so once and let a second press through — an unattended quit must not
+/// silently cut an irreversible operation short.
+fn request_quit(app: &mut App) {
+    if app.purging_org.is_some() && !app.quit_armed {
+        app.quit_armed = true;
+        app.status = "Purge en cours — [q] à nouveau pour quitter sans l'achever.".into();
+    } else {
+        app.should_quit = true;
+    }
 }
