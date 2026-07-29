@@ -1,24 +1,27 @@
 //! Core data model: resources, risk tiers, and display formatting.
 
-/// A deletable GitHub resource family. v0.1 covers the three regenerable ones.
+/// A deletable GitHub resource family. v0.1 covers the three regenerable ones;
+/// v0.3 adds container package versions, the first irreversible one.
 ///
-/// `Hash` matters as much as `Eq` here: GitHub numbers caches, artifacts and
-/// workflow runs in independent namespaces, so a selection set keyed on `id`
-/// alone would collide across kinds. Keying on `(ResourceKind, u64)` needs
-/// both derives.
+/// `Hash` matters as much as `Eq` here: GitHub numbers caches, artifacts,
+/// workflow runs and package versions in independent namespaces, so a
+/// selection set keyed on `id` alone would collide across kinds. Keying on
+/// `(ResourceKind, u64)` needs both derives.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ResourceKind {
     Cache,
     Artifact,
     WorkflowRun,
+    PackageVersion,
 }
 
 impl ResourceKind {
     /// Every variant, so tests can assert the `risk_tier` match stays exhaustive.
-    pub const ALL: [ResourceKind; 3] = [
+    pub const ALL: [ResourceKind; 4] = [
         ResourceKind::Cache,
         ResourceKind::Artifact,
         ResourceKind::WorkflowRun,
+        ResourceKind::PackageVersion,
     ];
 }
 
@@ -39,6 +42,9 @@ pub enum RiskTier {
 pub fn risk_tier(kind: ResourceKind) -> RiskTier {
     match kind {
         ResourceKind::Cache | ResourceKind::Artifact | ResourceKind::WorkflowRun => RiskTier::Low,
+        // Irreversible: the layer leaves the registry. A cache or an artifact
+        // comes back with a re-run; this does not.
+        ResourceKind::PackageVersion => RiskTier::Medium,
     }
 }
 
@@ -111,7 +117,15 @@ mod tests {
 
     #[test]
     fn every_v01_kind_is_low_risk() {
-        for kind in ResourceKind::ALL {
+        // `ResourceKind::ALL` now spans every family, v0.3's included, so it
+        // can no longer stand in for "the v0.1 set" here — that is exactly
+        // what `deleting_a_package_version_is_medium_risk` below exists to
+        // tell apart from this one.
+        for kind in [
+            ResourceKind::Cache,
+            ResourceKind::Artifact,
+            ResourceKind::WorkflowRun,
+        ] {
             assert_eq!(risk_tier(kind), RiskTier::Low);
         }
     }
@@ -120,5 +134,14 @@ mod tests {
     fn risk_tiers_are_ordered_by_severity() {
         assert!(RiskTier::Low < RiskTier::Medium);
         assert!(RiskTier::Medium < RiskTier::Nuclear);
+    }
+
+    #[test]
+    fn deleting_a_package_version_is_medium_risk() {
+        // Irreversible and not regenerable by a re-run, unlike a cache: the
+        // layer is gone from the registry. But it is not the nuclear tier —
+        // nothing here destroys a repository.
+        assert_eq!(risk_tier(ResourceKind::PackageVersion), RiskTier::Medium);
+        assert!(RiskTier::Low < risk_tier(ResourceKind::PackageVersion));
     }
 }

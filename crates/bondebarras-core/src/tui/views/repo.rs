@@ -17,6 +17,7 @@ pub fn row_spans(r: &Resource, checked: bool) -> Vec<Span<'static>> {
         ResourceKind::Cache => "cache",
         ResourceKind::Artifact => "artif",
         ResourceKind::WorkflowRun => "run  ",
+        ResourceKind::PackageVersion => "pkg  ",
     };
 
     let mut spans = vec![

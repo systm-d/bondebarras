@@ -29,6 +29,15 @@ pub fn select(items: &[Resource], filter: &CleanFilter) -> Vec<Resource> {
             ResourceKind::Cache => filter.caches,
             ResourceKind::Artifact => filter.artifacts,
             ResourceKind::WorkflowRun => filter.runs,
+            // Task 6 adds the `--packages` flag this arm would read. Until
+            // then `CleanFilter` has no field for it, and `scan::repo_detail`
+            // (task 4) never puts a `PackageVersion` into `items`, so this is
+            // unreachable today — not a silent `false` standing in for a
+            // flag that does not exist yet.
+            ResourceKind::PackageVersion => unreachable!(
+                "PackageVersion never reaches select() before task 4 wires scan::repo_detail \
+                 and task 6 adds the --packages flag"
+            ),
         })
         .filter(|r| !filter.stale_pr || r.stale_pr)
         .filter(|r| filter.older_than.is_none_or(|d| r.age_days >= d))

@@ -81,6 +81,14 @@ pub async fn execute(client: &Client, plan: Plan, tx: UnboundedSender<Progress>)
             ResourceKind::WorkflowRun => {
                 runs::delete(client, &plan.owner, &plan.repo, item.id).await
             }
+            // Task 4 wires this to `api::packages::delete_version`. No plan
+            // can contain a `PackageVersion` yet — `scan::repo_detail` does
+            // not produce them — so this arm exists only to keep the match
+            // exhaustive; it fails the single item rather than panicking the
+            // whole run if it is ever reached early.
+            ResourceKind::PackageVersion => Err(anyhow::anyhow!(
+                "suppression des versions de packages non câblée pour l'instant (tâche 4)"
+            )),
         };
 
         match result {
