@@ -100,9 +100,13 @@ pub async fn run(
                 failures += 1;
                 eprintln!("Erreur : suppression de {id} — {reason}");
             }
-            Progress::Finished { freed, failures: f } => {
+            Progress::Finished {
+                freed,
+                failures: f,
+                deleted,
+            } => {
                 failures = f;
-                eprintln!("Bon débarras ! {} libérés.", human_size(freed));
+                eprintln!("Bon débarras ! {}.", clean::finished_recap(freed, deleted));
             }
             Progress::Done { .. } => {}
         }
