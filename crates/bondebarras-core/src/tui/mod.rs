@@ -88,13 +88,14 @@ where
                     freed,
                     failures,
                     deleted,
+                    deleted_sizeless,
                 } => {
                     // One purge is done. `purge_finished` only disarms the
                     // quit guard once every in-flight purge has settled — a
                     // second purge started before this one landed must keep
                     // `q` guarded.
                     app.purge_finished();
-                    let recap = clean::finished_recap(freed, deleted);
+                    let recap = clean::finished_recap(freed, deleted, deleted_sizeless);
                     app.status = if failures == 0 {
                         format!("Bon débarras ! {recap}.")
                     } else {

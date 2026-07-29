@@ -82,6 +82,23 @@ pub struct Resource {
     pub protected: bool,
 }
 
+/// A resource's size, formatted for display.
+///
+/// GitHub exposes no size for a package version, under any name (see
+/// `api::packages`); `size_bytes` is hardcoded to `0` for that kind, and a
+/// bare "0 o" would read as "empty" — the opposite of the truth. Shown as
+/// `—` instead, everywhere a resource's size reaches a screen: the TUI's
+/// resource list and the headless `clean` dry-run listing both go through
+/// this one function, so the two cannot drift the way two independent
+/// `if r.kind == PackageVersion` checks would risk.
+pub fn size_display(r: &Resource) -> String {
+    if r.kind == ResourceKind::PackageVersion {
+        "—".to_string()
+    } else {
+        human_size(r.size_bytes)
+    }
+}
+
 /// Per-repository cache aggregate, from the org-level endpoint.
 #[derive(Debug, Clone)]
 pub struct RepoSummary {
@@ -118,6 +135,40 @@ mod tests {
         assert_eq!(human_size(999), "999 o");
         assert_eq!(human_size(1_500), "1.5 Ko");
         assert_eq!(human_size(37_166_609_585), "37.2 Go");
+    }
+
+    fn resource(kind: ResourceKind, size_bytes: u64) -> Resource {
+        Resource {
+            kind,
+            id: 1,
+            label: "r".into(),
+            size_bytes,
+            age_days: 1,
+            git_ref: None,
+            stale_pr: false,
+            protected: false,
+        }
+    }
+
+    #[test]
+    fn size_display_shows_unknown_not_zero_for_a_package_version() {
+        // Every other screen shows bytes. A bare "0 o" here would read as
+        // "empty", the opposite of the truth: GitHub exposes no size for a
+        // package version at all.
+        let s = size_display(&resource(ResourceKind::PackageVersion, 0));
+        assert!(!s.contains("0 o"), "got: {s}");
+        assert!(s.contains('—'), "got: {s}");
+    }
+
+    #[test]
+    fn size_display_shows_real_bytes_for_every_other_kind() {
+        for kind in [
+            ResourceKind::Cache,
+            ResourceKind::Artifact,
+            ResourceKind::WorkflowRun,
+        ] {
+            assert_eq!(size_display(&resource(kind, 1_500)), "1.5 Ko");
+        }
     }
 
     #[test]

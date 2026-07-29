@@ -1,6 +1,6 @@
 //! Right pane: the resources of the selected repository.
 
-use crate::model::{Resource, ResourceKind, human_size};
+use crate::model::{Resource, ResourceKind, human_size, size_display};
 use crate::stale::pr_number_from_ref;
 use crate::tui::app::App;
 use crate::tui::theme;
@@ -20,15 +20,11 @@ pub fn row_spans(r: &Resource, checked: bool) -> Vec<Span<'static>> {
         ResourceKind::PackageVersion => "pkg  ",
     };
 
-    // GitHub exposes no size for a package version, under any name (see
-    // `api::packages`). `size_bytes` is hardcoded to 0 for that kind, and a
-    // bare "0 o" here would read as "empty" — the opposite of the truth — so
-    // this column shows the gap explicitly instead of formatting the 0.
-    let size = if r.kind == ResourceKind::PackageVersion {
-        "—".to_string()
-    } else {
-        human_size(r.size_bytes)
-    };
+    // `size_display` shows `—` rather than "0 o" for a package version:
+    // GitHub exposes no size for that family, and a bare 0 here would read
+    // as "empty" — the opposite of the truth. Shared with the headless
+    // `clean` dry-run listing so the two screens cannot drift apart.
+    let size = size_display(r);
 
     let mut spans = vec![
         Span::styled(

@@ -64,13 +64,21 @@ impl Plan {
 /// status line and the headless `clean` command so the wording never drifts
 /// between the two.
 ///
-/// `freed == 0` legitimately happens two ways: nothing was deleted, or only
-/// package versions were — GitHub exposes no size for that family, so their
-/// bytes are always 0 even when `deleted` is well into the dozens. Saying "0
-/// o libérés" either way would read as "nothing happened" for the second
-/// case, which is false: 45 versions can vanish while the byte total stays 0.
-pub fn finished_recap(freed: u64, deleted: usize) -> String {
-    if freed == 0 && deleted > 0 {
+/// `deleted_sizeless` — how many of `deleted` were package versions, the one
+/// family GitHub exposes no size for — is what this needs to say something
+/// true: keying the decision on `freed == 0` alone, as an earlier version
+/// did, cannot tell "every deleted item's size is unknown" apart from
+/// "every deleted item was genuinely zero bytes" — two real, empty caches
+/// deleted would then read "taille inconnue," which is false, their size
+/// was known and it was zero. Only "unknown" once every deletion that
+/// happened was one where the size genuinely cannot be known.
+///
+/// A mixed purge (some package versions among sized resources) still just
+/// reports `freed` here — accurate as far as it goes, even though it says
+/// nothing about the package versions in the mix. Making that case honest
+/// too is a separate concern, out of scope for this fix.
+pub fn finished_recap(freed: u64, deleted: usize, deleted_sizeless: usize) -> String {
+    if deleted > 0 && deleted_sizeless == deleted {
         format!("{deleted} élément(s) supprimé(s) · taille inconnue")
     } else {
         format!("{} libérés", human_size(freed))
@@ -102,6 +110,11 @@ pub enum Progress {
         /// (GitHub exposes no size for that family) even when dozens were
         /// deleted, so the recap needs the count to say something true.
         deleted: usize,
+        /// How many of `deleted` were package versions — the resource kind
+        /// GitHub exposes no size for. `finished_recap` needs this, not
+        /// `deleted` alone, to tell "every deletion's size is unknown" apart
+        /// from "every deletion was a real, empty resource."
+        deleted_sizeless: usize,
     },
 }
 
@@ -110,6 +123,7 @@ pub async fn execute(client: &Client, plan: Plan, tx: UnboundedSender<Progress>)
     let mut freed = 0_u64;
     let mut failures = 0_usize;
     let mut deleted = 0_usize;
+    let mut deleted_sizeless = 0_usize;
 
     for item in &plan.items {
         let result = match item.kind {
@@ -132,6 +146,9 @@ pub async fn execute(client: &Client, plan: Plan, tx: UnboundedSender<Progress>)
             Ok(()) => {
                 freed += item.size_bytes;
                 deleted += 1;
+                if item.kind == ResourceKind::PackageVersion {
+                    deleted_sizeless += 1;
+                }
                 let _ = tx.send(Progress::Done {
                     kind: item.kind,
                     id: item.id,
@@ -154,6 +171,7 @@ pub async fn execute(client: &Client, plan: Plan, tx: UnboundedSender<Progress>)
         freed,
         failures,
         deleted,
+        deleted_sizeless,
     });
 }
 
@@ -239,15 +257,16 @@ mod tests {
     #[test]
     fn finished_recap_says_the_count_when_bytes_are_meaningless() {
         // A purge of package versions frees 0 bytes by construction, even
-        // when dozens were deleted.
-        let s = finished_recap(0, 45);
+        // when dozens were deleted — and every one of the 45 deleted here
+        // was one of them.
+        let s = finished_recap(0, 45, 45);
         assert!(!s.contains("0 o"), "got: {s}");
         assert!(s.contains("45"), "got: {s}");
     }
 
     #[test]
     fn finished_recap_reports_zero_bytes_plainly_when_nothing_was_deleted() {
-        let s = finished_recap(0, 0);
+        let s = finished_recap(0, 0, 0);
         assert!(s.contains("0 o"), "got: {s}");
     }
 
@@ -255,8 +274,20 @@ mod tests {
     fn finished_recap_reports_real_bytes_when_they_exist() {
         // Discriminates a wrong implementation that always reports the
         // count, ignoring `freed` even when it is meaningful.
-        let s = finished_recap(3_000_000, 2);
+        let s = finished_recap(3_000_000, 2, 0);
         assert!(s.contains("3.0 Mo"), "got: {s}");
+    }
+
+    #[test]
+    fn finished_recap_reports_zero_bytes_plainly_for_genuinely_zero_byte_deletions() {
+        // Two real caches, truly empty: their size is known, and it is
+        // zero — unlike a package version's, which is unknown. A version
+        // keyed on `freed == 0` alone (rather than on `deleted_sizeless`)
+        // could not tell this apart from an all-package-version purge, and
+        // would have called two genuinely empty caches "taille inconnue".
+        let s = finished_recap(0, 2, 0);
+        assert!(s.contains("0 o"), "got: {s}");
+        assert!(!s.to_lowercase().contains("inconnue"), "got: {s}");
     }
 
     #[tokio::test]

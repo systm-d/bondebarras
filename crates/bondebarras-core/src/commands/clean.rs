@@ -2,7 +2,7 @@
 
 use crate::api::Client;
 use crate::clean::{self, Plan, Progress};
-use crate::model::{Resource, ResourceKind, RiskTier, human_size};
+use crate::model::{Resource, ResourceKind, RiskTier, size_display};
 use crate::scan;
 use anyhow::{Result, bail};
 use std::process::ExitCode;
@@ -84,8 +84,12 @@ pub async fn run(
             "Plan ({}) — relancez avec --yes pour l'appliquer :",
             plan.summary()
         );
+        // `size_display` shows `—` rather than "0 o" for a package version:
+        // this is the screen a headless user reads *before* typing --yes,
+        // and the TUI's resource list already shows `—` here — the two
+        // must not disagree about what a package version's size means.
         for r in &plan.items {
-            eprintln!("  {:<40} {:>10}", r.label, human_size(r.size_bytes));
+            eprintln!("  {:<40} {:>10}", r.label, size_display(r));
         }
         return Ok(ExitCode::SUCCESS);
     }
@@ -104,9 +108,13 @@ pub async fn run(
                 freed,
                 failures: f,
                 deleted,
+                deleted_sizeless,
             } => {
                 failures = f;
-                eprintln!("Bon débarras ! {}.", clean::finished_recap(freed, deleted));
+                eprintln!(
+                    "Bon débarras ! {}.",
+                    clean::finished_recap(freed, deleted, deleted_sizeless)
+                );
             }
             Progress::Done { .. } => {}
         }
