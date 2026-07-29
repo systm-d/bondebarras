@@ -28,8 +28,10 @@ CLI parser and the TUI) + `bondebarras` (binary, thin shim).
 - **No trash, no undo.** Nothing GitHub lets us delete is reversible, so the
   tool never promises otherwise — a Tier-1 confirmation before deletion, a
   per-item result after, is the whole safety model for v0.1.
-- Required token scopes: `repo` and `read:org` cover everything v0.1 does.
-  Repository *deletion* is out of scope, so `delete_repo` is never needed.
+- Required token scopes: `repo` and `read:org` cover everything bondebarras
+  does, including the Billing tab's usage report (a 403 there just means the
+  token's owner isn't an org owner). Repository *deletion* is permanently
+  out of scope, so `delete_repo` is never needed.
 - User-facing strings (CLI/TUI output) may be in **French** (e.g.
   `Erreur : …`); code identifiers and documentation stay in English.
 
@@ -38,6 +40,7 @@ CLI parser and the TUI) + `bondebarras` (binary, thin shim).
 | Need | File |
 |------|------|
 | Core types (`Resource`, `ResourceKind`, `RiskTier`, size formatting) | `crates/bondebarras-core/src/model.rs` |
+| Billing aggregation: SKU multipliers, allowance math, per-repo/-month rollups | `crates/bondebarras-core/src/billing.rs` |
 | ⚑ stale-PR-cache detection | `crates/bondebarras-core/src/stale.rs` |
 | Token resolution, OAuth scopes | `crates/bondebarras-core/src/auth.rs` |
 | HTTP client, pagination, concurrency, delete retry | `crates/bondebarras-core/src/api/mod.rs` |
@@ -46,16 +49,19 @@ CLI parser and the TUI) + `bondebarras` (binary, thin shim).
 | Workflow run endpoints | `crates/bondebarras-core/src/api/runs.rs` |
 | Closed pull request listing | `crates/bondebarras-core/src/api/prs.rs` |
 | Repository listing | `crates/bondebarras-core/src/api/repos.rs` |
+| Billing usage-report fetch (403 degrades to `None`, not an error) | `crates/bondebarras-core/src/api/billing.rs` |
 | Two-stage scan orchestration | `crates/bondebarras-core/src/scan.rs` |
 | Deletion planning & execution, progress events | `crates/bondebarras-core/src/clean.rs` |
 | TUI event loop, terminal setup/teardown | `crates/bondebarras-core/src/tui/mod.rs` |
-| TUI state: navigation, selection, sort, filter | `crates/bondebarras-core/src/tui/app.rs` |
+| TUI state: navigation, selection, sort, filter, quit guard | `crates/bondebarras-core/src/tui/app.rs` |
 | TUI palette and styles | `crates/bondebarras-core/src/tui/theme.rs` |
 | Left pane (orgs / repos tree) | `crates/bondebarras-core/src/tui/views/orgs.rs` |
 | Right pane (resource list) | `crates/bondebarras-core/src/tui/views/repo.rs` |
 | Confirmation modal | `crates/bondebarras-core/src/tui/views/confirm.rs` |
+| Billing tab rendering | `crates/bondebarras-core/src/tui/views/billing.rs` |
 | Overall layout (header/status/footer) | `crates/bondebarras-core/src/tui/views/mod.rs` |
-| CLI parsing (`bondebarras scan`) | `crates/bondebarras-core/src/cli.rs` |
+| CLI parsing (`scan`, `clean`) | `crates/bondebarras-core/src/cli.rs` |
+| Headless `scan --json` / `clean` command bodies | `crates/bondebarras-core/src/commands/{scan,clean}.rs` |
 | Entry point / runtime wiring | `crates/bondebarras-core/src/lib.rs` |
 
 ## Quality gate

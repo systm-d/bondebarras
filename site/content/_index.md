@@ -47,7 +47,7 @@ cta2 = "Install"
 </section>
 
 <section class="missions">
-<h2>Four things it does for you</h2>
+<h2>Five things it does for you</h2>
 <p class="section-lede">Not a rules engine, not a config file — a fast way to see the mess and clear it, on purpose, every time.</p>
 <div class="grid">
 
@@ -96,6 +96,17 @@ cta2 = "Install"
 </ul>
 </div>
 
+<div class="mission">
+<div class="mission-glyph" aria-hidden="true">◔</div>
+<h3>Track billing</h3>
+<p class="mission-line">See which repository is burning the allowance.</p>
+<ul>
+<li>Actions-minutes usage against the free allowance, month by month</li>
+<li>Per-repository breakdown, heaviest allowance consumer first</li>
+<li>Strictly diagnostic — minutes can't be reclaimed after the fact</li>
+</ul>
+</div>
+
 </div>
 </section>
 
@@ -135,7 +146,7 @@ cta2 = "Install"
 
 <section id="usage" class="usage">
 <h2>Scriptable, too</h2>
-<p class="section-lede">Run it bare and it opens the TUI. The <code>scan</code> subcommand gives the same overview to your scripts and cron jobs.</p>
+<p class="section-lede">Run it bare and it opens the TUI. <code>scan</code> and <code>clean</code> give scripts and cron jobs the same overview and the same cleanup — <code>--json</code> for machine-readable output, <code>--yes</code> to confirm without a prompt. Without it, <code>clean</code> only prints the plan.</p>
 <div class="term-window">
 <div class="term-bar"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span><span class="term-title">bash</span></div>
 <div class="term-body cmds">
@@ -144,8 +155,10 @@ cta2 = "Install"
 <div class="line"><span class="prompt">$</span>bondebarras scan</div>
 <div class="out">systm-d                    37.2 Go  (132 caches)</div>
 <div class="out">SecondBrain-io             13.9 Go   (43 caches)</div>
-<div class="line"><span class="prompt">$</span>bondebarras scan <span class="flag">--org</span> systm-d</div>
-<div class="out">systm-d                    37.2 Go  (132 caches)</div>
+<div class="line"><span class="prompt">$</span>bondebarras scan <span class="flag">--org</span> systm-d <span class="flag">--json</span></div>
+<div class="out">[ { "org": "systm-d", "cache_bytes": 37200000000, "cache_count": 132, … } ]</div>
+<div class="line"><span class="prompt">$</span>bondebarras clean <span class="flag">--org</span> systm-d <span class="flag">--repo</span> josephine <span class="flag">--caches</span> <span class="flag">--stale-pr</span> <span class="flag">--yes</span></div>
+<div class="out">Bon débarras ! 261.0 Mo libérés.</div>
 </div>
 </div>
 </section>

@@ -47,7 +47,7 @@ cta2 = "Installer"
 </section>
 
 <section class="missions">
-<h2>Quatre choses qu'il fait pour toi</h2>
+<h2>Cinq choses qu'il fait pour toi</h2>
 <p class="section-lede">Pas un moteur de règles, pas un fichier de config — un moyen rapide de voir le bazar et de le nettoyer, exprès, à chaque fois.</p>
 <div class="grid">
 
@@ -96,6 +96,17 @@ cta2 = "Installer"
 </ul>
 </div>
 
+<div class="mission">
+<div class="mission-glyph" aria-hidden="true">◔</div>
+<h3>Suivre la facturation</h3>
+<p class="mission-line">Voir quel dépôt brûle l'allocation.</p>
+<ul>
+<li>Usage des minutes Actions face à l'allocation gratuite, mois par mois</li>
+<li>Répartition par dépôt, le plus gros consommateur d'allocation d'abord</li>
+<li>Strictement diagnostique — les minutes ne se récupèrent pas après coup</li>
+</ul>
+</div>
+
 </div>
 </section>
 
@@ -135,7 +146,7 @@ cta2 = "Installer"
 
 <section id="usage" class="usage">
 <h2>Scriptable, aussi</h2>
-<p class="section-lede">L'invocation nue ouvre le TUI. La sous-commande <code>scan</code> donne le même aperçu à tes scripts et tes tâches cron.</p>
+<p class="section-lede">L'invocation nue ouvre le TUI. <code>scan</code> et <code>clean</code> donnent le même aperçu et le même nettoyage à tes scripts et tes tâches cron — <code>--json</code> pour une sortie machine, <code>--yes</code> pour confirmer sans prompt. Sans lui, <code>clean</code> affiche seulement le plan.</p>
 <div class="term-window">
 <div class="term-bar"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span><span class="term-title">bash</span></div>
 <div class="term-body cmds">
@@ -144,8 +155,10 @@ cta2 = "Installer"
 <div class="line"><span class="prompt">$</span>bondebarras scan</div>
 <div class="out">systm-d                    37.2 Go  (132 caches)</div>
 <div class="out">SecondBrain-io             13.9 Go   (43 caches)</div>
-<div class="line"><span class="prompt">$</span>bondebarras scan <span class="flag">--org</span> systm-d</div>
-<div class="out">systm-d                    37.2 Go  (132 caches)</div>
+<div class="line"><span class="prompt">$</span>bondebarras scan <span class="flag">--org</span> systm-d <span class="flag">--json</span></div>
+<div class="out">[ { "org": "systm-d", "cache_bytes": 37200000000, "cache_count": 132, … } ]</div>
+<div class="line"><span class="prompt">$</span>bondebarras clean <span class="flag">--org</span> systm-d <span class="flag">--repo</span> josephine <span class="flag">--caches</span> <span class="flag">--stale-pr</span> <span class="flag">--yes</span></div>
+<div class="out">Bon débarras ! 261.0 Mo libérés.</div>
 </div>
 </div>
 </section>
