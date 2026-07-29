@@ -12,7 +12,7 @@
 //! resource maps to tier 3 today, and that name-typing flow has no owner.
 
 use crate::clean::Plan;
-use crate::model::RiskTier;
+use crate::model::{ResourceKind, RiskTier};
 use crate::tui::theme;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -184,35 +184,43 @@ fn caveat_lines() -> [Line<'static>; 2] {
 }
 
 /// The lines that must never be clipped: the confirmation prompt, and — for
-/// a tier-2 plan — the irreversibility warning and the multi-arch caveat
-/// that justify it. GitHub's API gives no way to check the multi-arch risk,
-/// so the caveat has to live here, in the one place the user is guaranteed
-/// to read it before confirming. A user who cannot see what is about to be
-/// deleted can still refuse; a user who cannot see this cannot do either —
-/// so unlike the recap, this is never truncated to fit a small frame.
+/// a tier-2 plan — the irreversibility warning that justifies it, plus the
+/// multi-arch caveat when the plan actually contains a package version.
+/// GitHub's API gives no way to check the multi-arch risk, so the caveat has
+/// to live here, in the one place the user is guaranteed to read it before
+/// confirming — but it is about container image layers specifically, and a
+/// plan of only branches and tags has nothing to do with an image manifest.
+/// The irreversibility line stays unconditional: it is true of every
+/// tier-2 family, branches and tags included. A user who cannot see what is
+/// about to be deleted can still refuse; a user who cannot see this cannot
+/// do either — so unlike the recap, this is never truncated to fit a small
+/// frame.
 ///
 /// `compact` drops the blank spacer lines — pure whitespace, no
 /// information — the one concession this footer makes, and only once
 /// `render` finds that even the full version does not fit the frame at
 /// all. Nothing past that is negotiable: if the footer still does not fit
 /// after that, the frame is simply too small for it, full stop.
-fn footer(kind: ModalKind, compact: bool) -> Vec<Line<'static>> {
+fn footer(kind: ModalKind, compact: bool, has_packages: bool) -> Vec<Line<'static>> {
     match kind {
         ModalKind::Simple => vec![regen_line(), prompt_line()],
         ModalKind::Itemised => {
-            let [caveat1, caveat2] = caveat_lines();
-            if compact {
-                vec![warning_line(), caveat1, caveat2, prompt_line()]
+            let mut lines = if compact {
+                vec![]
             } else {
-                vec![
-                    Line::from(""),
-                    warning_line(),
-                    caveat1,
-                    caveat2,
-                    Line::from(""),
-                    prompt_line(),
-                ]
+                vec![Line::from("")]
+            };
+            lines.push(warning_line());
+            if has_packages {
+                let [caveat1, caveat2] = caveat_lines();
+                lines.push(caveat1);
+                lines.push(caveat2);
             }
+            if !compact {
+                lines.push(Line::from(""));
+            }
+            lines.push(prompt_line());
+            lines
         }
     }
 }
@@ -267,10 +275,18 @@ fn recap(plan: &Plan, kind: ModalKind, budget_rows: u16, inner_width: u16) -> Ve
 
 pub fn render(plan: &Plan, f: &mut Frame, area: Rect) {
     let kind = modal_kind(plan.tier());
+    // The multi-arch caveat is about container image layers specifically —
+    // a plan of only branches and tags (also tier 2) has nothing to do with
+    // an image manifest, so `footer` only includes it when the plan
+    // actually contains a package version.
+    let has_packages = plan
+        .items
+        .iter()
+        .any(|i| i.kind == ResourceKind::PackageVersion);
 
-    // Width: itemised carries a recap list plus the multi-arch caveat, and
-    // gets more of the frame than the bare tier-1 box so that caveat wraps
-    // into fewer, more readable rows.
+    // Width: itemised carries a recap list plus, when relevant, the
+    // multi-arch caveat, and gets more of the frame than the bare tier-1 box
+    // so that caveat wraps into fewer, more readable rows.
     let percent_x: u32 = match kind {
         ModalKind::Simple => 60,
         ModalKind::Itemised => 90,
@@ -281,10 +297,10 @@ pub fn render(plan: &Plan, f: &mut Frame, area: Rect) {
 
     // `compact` drops the footer's blank spacer lines once the full version
     // does not fit `available` at all — see `footer`'s own doc comment.
-    let mut footer_lines = footer(kind, false);
+    let mut footer_lines = footer(kind, false, has_packages);
     let mut footer_rows = wrapped_row_count(&footer_lines, inner_width);
     if footer_rows > available {
-        footer_lines = footer(kind, true);
+        footer_lines = footer(kind, true, has_packages);
         footer_rows = wrapped_row_count(&footer_lines, inner_width);
     }
 
@@ -391,8 +407,12 @@ mod tests {
     /// place — the point of this whole review round.
     fn body(plan: &Plan) -> Vec<Line<'static>> {
         let kind = modal_kind(plan.tier());
+        let has_packages = plan
+            .items
+            .iter()
+            .any(|i| i.kind == ResourceKind::PackageVersion);
         let mut lines = recap(plan, kind, u16::MAX, u16::MAX);
-        lines.extend(footer(kind, false));
+        lines.extend(footer(kind, false, has_packages));
         lines
     }
 
@@ -446,6 +466,28 @@ mod tests {
         assert!(t.contains("manifeste"), "got: {t}");
     }
 
+    /// Finding 4 of the v0.4 final review: the multi-arch caveat is about
+    /// container image layers, but it fired for every tier-2 plan
+    /// regardless of what is actually in it. A plan of only branches and
+    /// tags — both tier 2, per `risk_tier` — gets warned about image
+    /// manifests it has nothing to do with. The irreversibility line stays
+    /// unconditional: it is true of every tier-2 family, branches and tags
+    /// included.
+    #[test]
+    fn a_tier_2_plan_of_only_branches_and_tags_has_no_multi_arch_caveat() {
+        let p = plan(vec![
+            item(ResourceKind::Branch, 1, "claude/landing-3jbqk4"),
+            item(ResourceKind::Tag, 2, "v0.1.2"),
+        ]);
+        let t = text(&body(&p)).to_lowercase();
+        assert!(
+            t.contains("ne reviendront pas"),
+            "the irreversibility line is unconditional: got: {t}"
+        );
+        assert!(!t.contains("multi-arch"), "got: {t}");
+        assert!(!t.contains("manifeste"), "got: {t}");
+    }
+
     #[test]
     fn a_mixed_plan_takes_the_higher_tier() {
         let p = plan(vec![
@@ -496,6 +538,40 @@ mod tests {
         assert!(
             rendered.contains("multi-architecture"),
             "the caveat must be on screen"
+        );
+    }
+
+    /// Same rendered-buffer proof as the test above, for the negative case:
+    /// a real `render()` pass, not just the `body()` seam, must omit the
+    /// caveat for a plan with no package version — while still showing the
+    /// irreversibility warning and the prompt. Also confirms the footer's
+    /// layout math still works with one fewer content line.
+    #[test]
+    fn the_tier_two_modal_omits_the_multi_arch_caveat_for_a_branch_and_tag_only_plan() {
+        let backend = ratatui::backend::TestBackend::new(80, 24);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let p = plan(vec![
+            item(ResourceKind::Branch, 1, "claude/landing-3jbqk4"),
+            item(ResourceKind::Tag, 2, "v0.1.2"),
+        ]);
+        terminal.draw(|f| render(&p, f, f.area())).unwrap();
+
+        let rendered: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+
+        assert!(rendered.contains("[y/N]"), "the prompt must be on screen");
+        assert!(
+            rendered.contains("ne reviendront pas"),
+            "the irreversibility line stays unconditional: {rendered}"
+        );
+        assert!(
+            !rendered.contains("multi-architecture"),
+            "the caveat must not appear without a package version: {rendered}"
         );
     }
 
