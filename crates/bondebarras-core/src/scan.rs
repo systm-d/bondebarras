@@ -6,8 +6,9 @@
 //! it. Paying only for what you look at is what keeps manual navigation
 //! viable across a hundred repositories.
 
-use crate::api::{Client, artifacts, caches, prs, repos, runs};
-use crate::model::{OrgSummary, Resource};
+use crate::api::{Client, artifacts, caches, packages, prs, repos, runs};
+use crate::model::{OrgSummary, Resource, ResourceKind};
+use crate::packages::{PackageVersion, VersionClass, classify};
 use crate::stale::is_stale;
 use anyhow::Result;
 use std::collections::HashSet;
@@ -69,16 +70,21 @@ pub async fn overview(client: &Client, orgs: &[String]) -> Vec<OrgSummary> {
 
 /// Stage 2: every deletable resource of one repository, already flagged.
 pub async fn repo_detail(client: &Client, owner: &str, repo: &str) -> Result<Vec<Resource>> {
-    let (caches_r, artifacts_r, runs_r, closed) = futures::join!(
+    let (caches_r, artifacts_r, runs_r, versions_r, closed) = futures::join!(
         caches::list(client, owner, repo),
         artifacts::list(client, owner, repo),
         runs::list(client, owner, repo),
+        // This account's convention: a repo's image, when it publishes one,
+        // is named after the repo. A repo with no image 404s — `versions`
+        // already turns that into an empty list, not an error.
+        packages::versions(client, owner, repo),
         prs::closed_numbers(client, owner, repo),
     );
 
     let mut items = caches_r?;
     items.extend(artifacts_r?);
     items.extend(runs_r?);
+    items.extend(version_resources(versions_r?));
 
     // A failed PR listing costs the flag, not the listing: everything still
     // shows, just without the ⚑ shortcut.
@@ -86,6 +92,47 @@ pub async fn repo_detail(client: &Client, owner: &str, repo: &str) -> Result<Vec
 
     items.sort_by_key(|i| std::cmp::Reverse(i.size_bytes));
     Ok(items)
+}
+
+/// Turn classified package versions into drill-down rows.
+///
+/// `classify` maps over `versions` in order and returns exactly one
+/// `(id, VersionClass)` per input, so zipping is safe and needs no lookup.
+fn version_resources(versions: Vec<PackageVersion>) -> Vec<Resource> {
+    let classes = classify(&versions);
+    versions
+        .into_iter()
+        .zip(classes)
+        .map(|(v, (_, class))| Resource {
+            kind: ResourceKind::PackageVersion,
+            id: v.id,
+            label: version_label(&v, class),
+            // No size field exists for a package version, under any name —
+            // see `api::packages`.
+            size_bytes: 0,
+            age_days: v.age_days,
+            // Packages carry no git ref: the ⚑ stale-PR flag does not apply.
+            git_ref: None,
+            stale_pr: false,
+        })
+        .collect()
+}
+
+/// A version's row label, carrying the reason it is offered so the user does
+/// not have to trust the classification blindly.
+fn version_label(v: &PackageVersion, class: VersionClass) -> String {
+    let ident = if v.tags.is_empty() {
+        v.digest.clone()
+    } else {
+        v.tags.join(", ")
+    };
+    match class {
+        VersionClass::Untagged => format!("{ident} (sans tag)"),
+        VersionClass::OrphanedAttestation => format!("{ident} (attestation orpheline)"),
+        // Never preselected — deleting a real tag like `latest` breaks
+        // deployments — so the label carries no extra warning of its own.
+        VersionClass::Tagged => ident,
+    }
 }
 
 /// Flag every resource whose ref belongs to a closed pull request.
@@ -98,7 +145,6 @@ pub fn mark_stale(items: &mut [Resource], closed_prs: &HashSet<u64>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::ResourceKind;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -128,6 +174,68 @@ mod tests {
         assert!(items[0].stale_pr);
         assert!(!items[1].stale_pr);
         assert!(!items[2].stale_pr);
+    }
+
+    #[tokio::test]
+    async fn repo_detail_folds_in_the_repos_homonymous_package_versions() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/repolens/actions/caches"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({ "actions_caches": [] })),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/repolens/actions/artifacts"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({ "artifacts": [] })),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/repolens/actions/runs"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({ "workflow_runs": [] })),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/repolens/pulls"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+            .mount(&server)
+            .await;
+        // The package name follows the repo name on this account: `repolens`
+        // publishes `ghcr.io/systm-d/repolens`, not some other name.
+        Mock::given(method("GET"))
+            .and(path("/orgs/systm-d/packages/container/repolens/versions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                { "id": 862511085,
+                  "name": "sha256:9a26c70801010123223adb5e73ff703aca86c15e19b30124ede5628a1e185826",
+                  "created_at": "2026-05-13T16:11:30Z",
+                  "metadata": { "container": { "tags": [] } } }
+            ])))
+            .mount(&server)
+            .await;
+
+        let client = Client::with_base("t0ken", &server.uri()).unwrap();
+        let items = repo_detail(&client, "systm-d", "repolens").await.unwrap();
+
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].kind, ResourceKind::PackageVersion);
+        assert_eq!(items[0].id, 862511085);
+        // GitHub reports no size for a package version, under any name.
+        assert_eq!(items[0].size_bytes, 0);
+        // Packages carry no git ref: the ⚑ stale-PR flag does not apply to them.
+        assert!(!items[0].stale_pr);
+        // The label must carry why this row is offered.
+        assert!(
+            items[0].label.contains("sans tag"),
+            "an untagged version's label must say so: {:?}",
+            items[0].label
+        );
     }
 
     #[tokio::test]

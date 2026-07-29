@@ -4,7 +4,7 @@
 //! undo — promising either would be a lie. What we offer instead is an
 //! accurate recap before, and a per-item verdict after.
 
-use crate::api::{Client, artifacts, caches, runs};
+use crate::api::{Client, artifacts, caches, packages, runs};
 use crate::model::{Resource, ResourceKind, RiskTier, human_size, risk_tier};
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::time::{Duration, sleep};
@@ -81,14 +81,12 @@ pub async fn execute(client: &Client, plan: Plan, tx: UnboundedSender<Progress>)
             ResourceKind::WorkflowRun => {
                 runs::delete(client, &plan.owner, &plan.repo, item.id).await
             }
-            // Task 4 wires this to `api::packages::delete_version`. No plan
-            // can contain a `PackageVersion` yet — `scan::repo_detail` does
-            // not produce them — so this arm exists only to keep the match
-            // exhaustive; it fails the single item rather than panicking the
-            // whole run if it is ever reached early.
-            ResourceKind::PackageVersion => Err(anyhow::anyhow!(
-                "suppression des versions de packages non câblée pour l'instant (tâche 4)"
-            )),
+            // `Plan` carries no separate package name: `plan.repo` doubles as
+            // the package name, per this account's convention that a repo's
+            // image is named after the repo itself (see `scan::repo_detail`).
+            ResourceKind::PackageVersion => {
+                packages::delete_version(client, &plan.owner, &plan.repo, item.id).await
+            }
         };
 
         match result {
@@ -118,6 +116,8 @@ pub async fn execute(client: &Client, plan: Plan, tx: UnboundedSender<Progress>)
 #[cfg(test)]
 mod tests {
     use super::*;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
 
     fn item(kind: ResourceKind, id: u64, size: u64) -> Resource {
         Resource {
@@ -162,5 +162,37 @@ mod tests {
         assert_eq!(p.total_bytes(), 3_000_000);
         assert!(p.summary().contains("3.0 Mo"));
         assert!(p.summary().contains('2'));
+    }
+
+    #[tokio::test]
+    async fn execute_deletes_a_package_version_via_the_repos_homonymous_package() {
+        // `Plan` carries no separate package name: `plan.repo` doubles as the
+        // package name, per this account's convention.
+        let server = MockServer::start().await;
+        Mock::given(method("DELETE"))
+            .and(path("/orgs/systm-d/packages/container/claudine/versions/9"))
+            .respond_with(ResponseTemplate::new(204))
+            .mount(&server)
+            .await;
+
+        let client = Client::with_base("t0ken", &server.uri()).unwrap();
+        let p = plan(vec![item(ResourceKind::PackageVersion, 9, 0)]);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+
+        execute(&client, p, tx).await;
+
+        let mut done = false;
+        while let Ok(msg) = rx.try_recv() {
+            match msg {
+                Progress::Done { kind, id } => {
+                    assert_eq!(kind, ResourceKind::PackageVersion);
+                    assert_eq!(id, 9);
+                    done = true;
+                }
+                Progress::Failed { reason, .. } => panic!("unexpected failure: {reason}"),
+                Progress::Finished { .. } => {}
+            }
+        }
+        assert!(done, "the package version must be reported as deleted");
     }
 }
