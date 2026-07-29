@@ -5,6 +5,46 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-07-29
+
+### Added
+
+- Repository archiving — the first candidate that lives in the tree itself
+  (the left pane, org and repo) rather than the right-hand resource list. An
+  archivable repository is ticked individually from its own row (`espace`)
+  and archived through the same confirmation-and-execute path as every other
+  family (`d`, then `[y/N]`). An already-archived repository, or one this
+  token cannot administer, is shown but **never tickable at all** — not even
+  one row at a time, unlike a protected tag or a live branch — since GitHub
+  would answer 403 to the second and there is nothing left to do for the
+  first.
+- **`[A]` (select every flagged row) and headless `clean` both refuse a
+  repository unconditionally.** `pushed_at` is not proof of abandonment — a
+  finished, stable library can go years without a push without being dead —
+  so nothing here is ever preselected, at any age. This is the first time
+  bondebarras refuses an entire resource *family* headlessly, not just a
+  tier or a single protected instance: there is no `--archive` flag, and
+  none is planned.
+- The repository's row shows its age (`775 j`) when it is a genuine
+  candidate, or its class (`déjà archivé`, `sans droits`) when it is not.
+
+### Note on what this buys
+
+**Archiving frees no bytes** — a repository's own size is unchanged either
+way. It earns a place in this tool anyway because an archived repository has
+its Actions disabled, so it stops *producing* the caches, artifacts and
+workflow runs v0.1 exists to clean up — closing the tap instead of mopping
+the floor forever. It is also **reversible**: un-archiving restores it on
+GitHub's side, which is exactly what keeps it at Tier 2 rather than Tier 3,
+and what keeps repository *deletion* permanently out of scope — there is
+nothing a delete could offer here that un-archiving doesn't already cover
+more safely.
+
+Measured across five of the author's organizations before writing a line of
+code: a dozen repositories with no push in 500 to 775 days —
+`maxds-lyon/.github` at 775, `maxds-lyon/lokiprint` at 685 — and exactly
+**one** already archived.
+
 ## [0.4.0] - 2026-07-29
 
 ### Added

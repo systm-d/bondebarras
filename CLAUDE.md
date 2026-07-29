@@ -2,9 +2,10 @@
 
 TUI/CLI to audit and clean up GitHub organization resources: Actions caches,
 artifacts, workflow runs, container package versions, merged branches, tags,
-and release assets, across every org a token can see. Rust workspace:
-`bondebarras-core` (library: pure logic, the `api/` boundary, the CLI parser
-and the TUI) + `bondebarras` (binary, thin shim).
+release assets, and (since v0.5) repository archiving, across every org a
+token can see. Rust workspace: `bondebarras-core` (library: pure logic, the
+`api/` boundary, the CLI parser and the TUI) + `bondebarras` (binary, thin
+shim).
 
 ## Read first
 
@@ -26,12 +27,45 @@ and the TUI) + `bondebarras` (binary, thin shim).
 - **The risk tier is carried by the type, not the UI.** `model::risk_tier`
   is an exhaustive `match` over `ResourceKind`: a destructive kind added
   without a tier assigned does not compile.
-- **No trash, no undo.** Nothing GitHub lets us delete is reversible, so the
-  tool never promises otherwise. Tier 1 (caches, artifacts, workflow runs) is
+- **No trash, no undo — except archiving, which the tool says is different in
+  as many words.** Nothing GitHub lets us *delete* is reversible, so the tool
+  never promises otherwise. Tier 1 (caches, artifacts, workflow runs) is
   regenerable by a re-run and gets a bare confirmation; Tier 2 (package
   versions since v0.3; merged branches, tags, and release assets since v0.4)
   does not come back, so its modal lists the items and says so plainly — see
-  `tui::views::confirm::modal_kind`.
+  `tui::views::confirm::modal_kind`. Repository archiving (v0.5) is also
+  Tier 2, but for the opposite reason: it is the one operation this tool
+  performs that *is* reversible on GitHub's side (un-archiving restores it),
+  which is exactly what keeps it off Tier 3 — see `model::risk_tier`'s own
+  doc comment. Its confirmation modal never reuses the deletion wording
+  (`tui::views::confirm::archive_warning_line`, `prompt_line`'s `is_archive`
+  flag): claiming a reversible action is permanent would be as much a lie as
+  the reverse.
+- **Repository archiving frees no bytes, and that is stated plainly
+  everywhere it matters — not glossed over.** It earns its place because an
+  archived repository has its Actions disabled, so it stops *producing* the
+  caches, artifacts and workflow runs every other family here cleans up:
+  closing the tap rather than mopping the floor forever. `ResourceKind::
+  Repository.has_known_size()` is `false`, same as a package version, a
+  branch or a tag.
+- **A repository is never auto-selected, and headless never archives one, at
+  all.** `pushed_at` alone is not proof of abandonment, so unlike every
+  other family, archiving has **no preselection path whatsoever**:
+  `tui::app::App::select_all_stale` (`[A]`) excludes `ResourceKind::
+  Repository` explicitly, and `commands::clean::select` returns `false` for
+  it unconditionally — no `--archive` flag exists, or is planned. This is
+  the first time the product refuses an entire resource *family* headlessly,
+  not just a tier or a single protected instance. An already-archived
+  repository, or one this token cannot administer, is not individually
+  tickable either (`tui::app::App::toggle_repo_selected`) — a harder
+  refusal than a protected tag or a live branch, which stay tickable one row
+  at a time.
+- **The repository is the one candidate that lives in the tree itself, not
+  the resource list.** `model::RepoSummary` carries its own `age_days` and
+  `repos::RepoClass` (`Archivable` / `AlreadyArchived` / `NoAdminRights`),
+  rendered by `tui::views::orgs::repo_row_spans` as either an age (`"775
+  j"`) or the class name — the same "classification replaces the age" shape
+  a `Branch` row already has.
 - **A release is never deletable — only its assets are, permanently out of
   scope beyond that.** `ResourceKind` has no `Release` variant and never
   will: a release is a point in the repository's history (a tag, notes, a
@@ -66,8 +100,10 @@ and the TUI) + `bondebarras` (binary, thin shim).
   `delete:packages` cover everything bondebarras does, including the Billing
   tab's usage report (a 403 there just means the token's owner isn't an org
   owner). Branches, tags, and release assets (v0.4) need no scope beyond
-  `repo`, already in that list. Repository *deletion* is permanently out of
-  scope, so `delete_repo` is never needed.
+  `repo`, already in that list — neither does repository archiving (v0.5):
+  same `repo`-scoped endpoint, gated by the token's admin rights on that one
+  repository rather than a scope to grant. Repository *deletion* is
+  permanently out of scope, so `delete_repo` is never needed.
 - User-facing strings (CLI/TUI output) may be in **French** (e.g.
   `Erreur : …`); code identifiers and documentation stay in English.
 
@@ -84,7 +120,9 @@ and the TUI) + `bondebarras` (binary, thin shim).
 | Artifact endpoints | `crates/bondebarras-core/src/api/artifacts.rs` |
 | Workflow run endpoints | `crates/bondebarras-core/src/api/runs.rs` |
 | Closed pull request listing (also carries merged `head.ref`s, for dead branches) | `crates/bondebarras-core/src/api/prs.rs` |
-| Repository listing | `crates/bondebarras-core/src/api/repos.rs` |
+| Repository listing (name, `private`, `archived`, admin rights, `pushed_at` age) | `crates/bondebarras-core/src/api/repos.rs` |
+| Repository archiving endpoint (`PATCH .../repos/{owner}/{repo}`) | `crates/bondebarras-core/src/api/archive.rs` |
+| Repository archiving classification (pure): archivable / already-archived / no admin rights | `crates/bondebarras-core/src/repos.rs` |
 | Billing usage-report fetch (403 degrades to `None`, not an error) | `crates/bondebarras-core/src/api/billing.rs` |
 | Package version endpoints (list, delete) | `crates/bondebarras-core/src/api/packages.rs` |
 | Package version classification: untagged, orphaned attestation, tagged (pure) | `crates/bondebarras-core/src/packages.rs` |

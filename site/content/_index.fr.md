@@ -72,7 +72,8 @@ cta2 = "Installer"
 <li>Versions de packages vérifiées : sans tag, ou attestation orpheline</li>
 <li>Branches proposées mortes dès qu'une pull request les merge — zéro requête en plus, une PR fermée sans merge laisse sa branche tranquille</li>
 <li>Assets de releases mesurés en octets : <strong>7,3 Go</strong> sur quatre orgs, la release elle-même jamais supprimée, seulement ses binaires</li>
-<li>Une touche sélectionne toutes les lignes marquées</li>
+<li>Dépôts dormants repérés par l'âge du dernier push — une douzaine sans push depuis 500 à 775 jours sur cinq orgs — mais jamais présélectionnés : l'âge seul ne prouve jamais qu'un dépôt est mort</li>
+<li>Une touche sélectionne toutes les lignes marquées, dépôts exclus exprès</li>
 </ul>
 </div>
 
@@ -96,6 +97,7 @@ cta2 = "Installer"
 <li>S'exécute en tâche de fond, le TUI reste réactif</li>
 <li>Espacé et retenté face à la limite de débit de GitHub</li>
 <li>Chaque élément annonce <span class="kbd">✓</span> ou <span class="kbd">✗</span> une fois terminé</li>
+<li>L'archivage d'un dépôt est la seule exception à « ne revient jamais » — réversible, ne libère aucun octet, coupe juste les Actions qui remplissent tout le reste</li>
 </ul>
 </div>
 

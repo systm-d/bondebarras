@@ -231,4 +231,70 @@ mod tests {
         // name is to leave it room, not just to look tidy.
         assert!(line.contains("1 j"), "got: {line}");
     }
+
+    /// v0.3 shipped rows correct in code and clipped on screen, and its
+    /// follow-up modal defect (`tui::views::confirm`) recurred at exactly
+    /// one height per width — three sampled sizes missed it. This sweeps
+    /// rather than samples, the same technique
+    /// `tui::views::repo::tests::a_branch_and_an_asset_row_stay_legible_across_swept_widths`
+    /// uses: `render` is called directly with the whole `TestBackend`
+    /// frame, bypassing the real layout's fixed 26-column split
+    /// (`tui::views::mod::render`), so this proves the row's own rendering
+    /// degrades gracefully as width shrinks — not that 26 columns happens to
+    /// be enough for it (it is not, for the longest class name).
+    ///
+    /// The fixture carries all three classes at once: an `Archivable` repo's
+    /// age, an `AlreadyArchived` one's class name, and a `NoAdminRights`
+    /// one's — `déjà archivé` (12 characters) is the widest of the three and
+    /// the one that actually determines the floor.
+    #[test]
+    fn a_repository_row_stays_legible_across_swept_widths() {
+        let mut app = App::new(vec![crate::model::OrgSummary {
+            login: "maxds-lyon".into(),
+            cache_bytes: 0,
+            cache_count: 0,
+            repos: vec![
+                repo("lokiprint", RepoClass::Archivable, 685),
+                repo(".github", RepoClass::AlreadyArchived, 775),
+                repo("private-thing", RepoClass::NoAdminRights, 42),
+            ],
+            billing: None,
+        }]);
+
+        // Floor: the smallest width at which all three status markers are on
+        // screen at once, determined empirically by probing every width from
+        // 20 to 60 with this exact fixture and recording the first one all
+        // three appeared at (33, one below, clips "déjà archivé" to "déjà
+        // archiv" — confirming this is the real floor, not just a width
+        // that happens to work). Checked up to 150 with no regression above
+        // it: the row is left-anchored, so widening it further never
+        // re-clips anything.
+        const FLOOR: u16 = 34;
+        for width in FLOOR..=150 {
+            let backend = ratatui::backend::TestBackend::new(width, 10);
+            let mut terminal = ratatui::Terminal::new(backend).unwrap();
+            terminal.draw(|f| render(&mut app, f, f.area())).unwrap();
+
+            let rendered: String = terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .map(|c| c.symbol())
+                .collect();
+
+            assert!(
+                rendered.contains("685 j"),
+                "the archivable repo's age clipped at width {width}: {rendered}"
+            );
+            assert!(
+                rendered.contains("déjà archivé"),
+                "the already-archived class clipped at width {width}: {rendered}"
+            );
+            assert!(
+                rendered.contains("sans droits"),
+                "the no-admin-rights class clipped at width {width}: {rendered}"
+            );
+        }
+    }
 }
