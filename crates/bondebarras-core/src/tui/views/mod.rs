@@ -47,7 +47,7 @@ pub fn render(app: &mut App, f: &mut Frame, pending: Option<&Plan>) {
         View::Orgs => {
             let cols = Layout::default()
                 .direction(Direction::Horizontal)
-                .constraints([Constraint::Length(26), Constraint::Min(20)])
+                .constraints([Constraint::Length(orgs::PANE_WIDTH), Constraint::Min(20)])
                 .split(rows[1]);
             orgs::render(app, f, cols[0]);
             repo::render(app, f, cols[1]);

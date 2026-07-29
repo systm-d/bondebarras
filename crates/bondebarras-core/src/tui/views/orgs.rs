@@ -10,15 +10,26 @@ use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem};
 
+/// How wide the left tree pane is, in the real layout
+/// (`tui::views::mod::render`, which reads this constant rather than
+/// hardcoding its own — the two must never be able to drift apart the way
+/// they did for Finding 2 of the final review).
+///
+/// Wide enough for the repository row's four columns — checkbox, name,
+/// status, cache — at their own widths below, plus the block's left/right
+/// border. Finding 2: the row used to be squeezed to fit a bare 26 columns
+/// by dropping the cache-byte column outright, in a tool whose entire point
+/// is volume; this widens the pane instead, past what the checkbox, the
+/// widest status (`déjà archivé`, 12 characters) and the cache column
+/// together actually need.
+pub(crate) const PANE_WIDTH: u16 = 38;
+
 /// Widest a repository name renders as before this truncates it with a
-/// trailing `…`. Narrower than `tui::views::repo::LABEL_WIDTH`: this pane is
-/// a fixed 26 columns wide in the real layout (`tui::views::mod::render`),
-/// against the right pane's much larger share, and the archiving status this
-/// task adds (`déjà archivé`, 12 characters) needs room to survive next to
-/// the name, not just the name on its own — the exact "correct in code,
-/// clipped on screen" trap v0.3 shipped once already (see this row's own
-/// width-sweep test).
-const REPO_NAME_WIDTH: usize = 16;
+/// trailing `…`. Narrower than `tui::views::repo::LABEL_WIDTH`, and than this
+/// pane's own previous width: reduced from 16 to make room for the
+/// cache-byte column Finding 2 restores, per that finding's own suggested
+/// fix — a repository name is not the only thing this row has to show.
+const REPO_NAME_WIDTH: usize = 10;
 
 fn display_repo_name(name: &str) -> String {
     let chars: Vec<char> = name.chars().collect();
@@ -52,6 +63,11 @@ fn display_repo_name(name: &str) -> String {
 ///   both outright), and a checkbox that can never be checked would be a UI
 ///   lie of its own — unlike a protected tag or a live branch, which stay
 ///   individually tickable even though bulk selection refuses them.
+/// - **It carries the repo's own cache footprint**, right-aligned like the
+///   org row's own total. Finding 2 of the final review: an earlier version
+///   of this row dropped that column outright to fit a too-narrow pane — in
+///   a tool whose whole point is showing where the volume is, the repo tree
+///   is exactly where a single repo's own share of it belongs on screen.
 pub fn repo_row_spans(repo: &RepoSummary, checked: bool) -> Vec<Span<'static>> {
     let checkbox = match repo.class {
         RepoClass::Archivable if checked => "[x] ",
@@ -63,11 +79,22 @@ pub fn repo_row_spans(repo: &RepoSummary, checked: bool) -> Vec<Span<'static>> {
         RepoClass::AlreadyArchived => "déjà archivé".to_string(),
         RepoClass::NoAdminRights => "sans droits".to_string(),
     };
+    // Padded to a fixed width, unlike every other status this pane or the
+    // resource pane shows: it sits mid-row here, with the cache column
+    // after it, rather than trailing the line the way every other
+    // classification does — without the padding a short status (an age
+    // like "5 j") would butt straight up against the cache figure with no
+    // visual gap between them.
+    let status_col = format!("{status:<12}");
 
     vec![
         Span::styled(checkbox.to_string(), theme::text_style()),
         Span::styled(display_repo_name(&repo.name), theme::text_style()),
-        Span::styled(status, theme::muted()),
+        Span::styled(status_col, theme::muted()),
+        Span::styled(
+            format!("{:>8}", human_size(repo.cache_bytes)),
+            theme::muted(),
+        ),
     ]
 }
 
@@ -235,18 +262,23 @@ mod tests {
     /// v0.3 shipped rows correct in code and clipped on screen, and its
     /// follow-up modal defect (`tui::views::confirm`) recurred at exactly
     /// one height per width — three sampled sizes missed it. This sweeps
-    /// rather than samples, the same technique
-    /// `tui::views::repo::tests::a_branch_and_an_asset_row_stay_legible_across_swept_widths`
-    /// uses: `render` is called directly with the whole `TestBackend`
-    /// frame, bypassing the real layout's fixed 26-column split
-    /// (`tui::views::mod::render`), so this proves the row's own rendering
-    /// degrades gracefully as width shrinks — not that 26 columns happens to
-    /// be enough for it (it is not, for the longest class name).
+    /// rather than samples.
+    ///
+    /// Finding 2 of the final review: the previous version of this test
+    /// called `render` directly against the whole `TestBackend` frame,
+    /// bypassing the real layout's fixed-width split
+    /// (`tui::views::mod::render`) entirely — the row always had the whole
+    /// frame's width to itself, so this could never fail no matter how wide
+    /// its own content grew, the ninth test of that kind on this project.
+    /// Re-anchored here on the actual `Rect` the pane receives in
+    /// production: the same horizontal split `tui::views::mod::render`
+    /// performs, at the same [`PANE_WIDTH`] the two share, with `render`
+    /// handed only `cols[0]` — never the frame.
     ///
     /// The fixture carries all three classes at once: an `Archivable` repo's
     /// age, an `AlreadyArchived` one's class name, and a `NoAdminRights`
     /// one's — `déjà archivé` (12 characters) is the widest of the three and
-    /// the one that actually determines the floor.
+    /// the one that actually determines whether the row fits.
     #[test]
     fn a_repository_row_stays_legible_across_swept_widths() {
         let mut app = App::new(vec![crate::model::OrgSummary {
@@ -261,19 +293,29 @@ mod tests {
             billing: None,
         }]);
 
-        // Floor: the smallest width at which all three status markers are on
-        // screen at once, determined empirically by probing every width from
-        // 20 to 60 with this exact fixture and recording the first one all
-        // three appeared at (33, one below, clips "déjà archivé" to "déjà
-        // archiv" — confirming this is the real floor, not just a width
-        // that happens to work). Checked up to 150 with no regression above
-        // it: the row is left-anchored, so widening it further never
-        // re-clips anything.
-        const FLOOR: u16 = 34;
-        for width in FLOOR..=150 {
+        // Floor: the smallest total frame width at which the horizontal
+        // split still hands this pane its full `PANE_WIDTH` — below it,
+        // `Constraint::Min(20)` on the resource pane starts eating into the
+        // `Length(PANE_WIDTH)` request. Swept well past it (to 300, checked
+        // empirically with no regression) since the pane's own width is
+        // constant once the split has room to honour it in full — the sweep
+        // proves that stays true, rather than assuming it.
+        const FLOOR: u16 = PANE_WIDTH + 20;
+        for width in FLOOR..=300 {
             let backend = ratatui::backend::TestBackend::new(width, 10);
             let mut terminal = ratatui::Terminal::new(backend).unwrap();
-            terminal.draw(|f| render(&mut app, f, f.area())).unwrap();
+            terminal
+                .draw(|f| {
+                    let cols = ratatui::layout::Layout::default()
+                        .direction(ratatui::layout::Direction::Horizontal)
+                        .constraints([
+                            ratatui::layout::Constraint::Length(PANE_WIDTH),
+                            ratatui::layout::Constraint::Min(20),
+                        ])
+                        .split(f.area());
+                    render(&mut app, f, cols[0]);
+                })
+                .unwrap();
 
             let rendered: String = terminal
                 .backend()
