@@ -54,3 +54,15 @@ fn clean_help_documents_the_packages_flag() {
         .success()
         .stdout(contains("--packages"));
 }
+
+#[test]
+fn clean_help_documents_the_v04_family_flags() {
+    Command::cargo_bin("bondebarras")
+        .unwrap()
+        .args(["clean", "--help"])
+        .assert()
+        .success()
+        .stdout(contains("--branches"))
+        .stdout(contains("--tags"))
+        .stdout(contains("--assets"));
+}

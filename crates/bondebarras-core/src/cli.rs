@@ -46,6 +46,19 @@ pub enum Command {
         /// pas la taille : aucun octet n'est promis pour cette famille.
         #[arg(long)]
         packages: bool,
+        /// Inclut les branches mergées. Une branche vivante — par défaut,
+        /// protégée, ou sans PR mergée derrière elle — n'est jamais prise en
+        /// masse, drapeau ou pas.
+        #[arg(long)]
+        branches: bool,
+        /// Inclut les tags. Un tag n'est jamais présélectionnable en masse :
+        /// c'est ce sur quoi pointent les releases, `go get`, `Cargo.toml`.
+        #[arg(long)]
+        tags: bool,
+        /// Inclut les assets de releases. La release elle-même n'est jamais
+        /// supprimée — seuls ses binaires le sont.
+        #[arg(long)]
+        assets: bool,
         /// Restreint aux ressources rattachées à une PR fermée.
         #[arg(long = "stale-pr")]
         stale_pr: bool,
@@ -81,5 +94,41 @@ mod tests {
         // Like every other family flag, naming no family must select
         // nothing — `--packages` is not an exception that defaults to true.
         assert!(!clean_packages_flag(&[]));
+    }
+
+    fn clean_v04_flags(args: &[&str]) -> (bool, bool, bool) {
+        let mut full = vec!["bondebarras", "clean", "--org", "o", "--repo", "r"];
+        full.extend_from_slice(args);
+        match Cli::try_parse_from(full).unwrap().command {
+            Some(Command::Clean {
+                branches,
+                tags,
+                assets,
+                ..
+            }) => (branches, tags, assets),
+            other => panic!("expected Command::Clean, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn branches_tags_and_assets_join_the_family_flags() {
+        assert_eq!(clean_v04_flags(&["--branches"]), (true, false, false));
+        assert_eq!(clean_v04_flags(&["--tags"]), (false, true, false));
+        assert_eq!(clean_v04_flags(&["--assets"]), (false, false, true));
+    }
+
+    #[test]
+    fn branches_tags_and_assets_absent_default_to_false() {
+        // Like every other family flag, naming none of the three must select
+        // nothing — not "everything v0.4 added".
+        assert_eq!(clean_v04_flags(&[]), (false, false, false));
+    }
+
+    #[test]
+    fn branches_tags_and_assets_are_cumulative_with_each_other() {
+        assert_eq!(
+            clean_v04_flags(&["--branches", "--assets"]),
+            (true, false, true)
+        );
     }
 }

@@ -75,6 +75,9 @@ async fn run_async() -> anyhow::Result<ExitCode> {
             artifacts,
             runs,
             packages,
+            branches,
+            tags,
+            assets,
             stale_pr,
             older_than,
             yes,
@@ -84,10 +87,9 @@ async fn run_async() -> anyhow::Result<ExitCode> {
                 artifacts,
                 runs,
                 packages,
-                // Wired to real `--branches`/`--tags`/`--assets` flags next.
-                branches: false,
-                tags: false,
-                assets: false,
+                branches,
+                tags,
+                assets,
                 stale_pr,
                 older_than,
             };
