@@ -27,6 +27,9 @@ pub async fn usage_by_repository(client: &Client, org: &str) -> Result<Vec<RepoS
                         name: full.split_once('/').map_or(full, |(_, r)| r).to_string(),
                         cache_bytes: item["active_caches_size_in_bytes"].as_u64().unwrap_or(0),
                         cache_count: item["active_caches_count"].as_u64().unwrap_or(0) as u32,
+                        // This report carries no visibility field; `scan::overview`
+                        // fills the real value in from `repos::list`.
+                        private: false,
                     }
                 })
                 .collect()

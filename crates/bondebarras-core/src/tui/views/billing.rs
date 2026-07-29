@@ -10,6 +10,7 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
+use std::collections::HashSet;
 
 /// The breakdown is the tab's reason to exist, but the area is bounded: past
 /// this many rows the tail is noise the user came here to avoid, not signal.
@@ -94,6 +95,17 @@ pub fn render(app: &mut App, f: &mut Frame, area: Rect) {
         theme::title_style(),
     ))];
 
+    // The only signal that separates "public, free forever" from "private,
+    // covered by the allowance": GitHub's usage report discounts both
+    // identically, so the repo listing stage 1 already fetched is the sole
+    // place this distinction survives.
+    let private: HashSet<String> = org
+        .repos
+        .iter()
+        .filter(|r| r.private)
+        .map(|r| r.name.clone())
+        .collect();
+
     match &org.billing {
         None => lines.push(Line::from(Span::styled(
             "⚠ facturation illisible — vous n'êtes pas propriétaire de cette organisation",
@@ -113,7 +125,10 @@ pub fn render(app: &mut App, f: &mut Frame, area: Rect) {
                 theme::text_style(),
             )));
             lines.push(Line::from(Span::styled(
-                gauge_line(report.included_minutes(&month), FREE_MINUTES_PER_MONTH),
+                gauge_line(
+                    report.included_minutes(&month, &private),
+                    FREE_MINUTES_PER_MONTH,
+                ),
                 theme::text_style(),
             )));
 
@@ -121,7 +136,7 @@ pub fn render(app: &mut App, f: &mut Frame, area: Rect) {
             // part of the tab — which repository to go and fix. Minutes
             // cannot be reclaimed retroactively, so naming the offender is
             // not decoration, it is the tab's reason to exist.
-            let minute_lines = report.minute_lines(&month);
+            let minute_lines = report.minute_lines(&month, &private);
             for minute_line in minute_lines.iter().take(MAX_MINUTE_LINES) {
                 lines.push(minute_line_row(minute_line));
             }
@@ -177,8 +192,8 @@ mod tests {
 
     #[test]
     fn the_gauge_reports_overshoot_rather_than_capping_at_full() {
-        // 818 % is the real figure measured on systm-d in July 2026. Clamping
-        // it to 100 % would hide exactly the thing the tab exists to show.
+        // An illustrative figure, not a measured one — clamping overshoot to
+        // 100 % would hide exactly the thing the tab exists to show.
         let line = gauge_line(16_369, 2_000);
         assert!(line.contains("818"), "got: {line}");
         assert!(

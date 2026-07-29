@@ -364,6 +364,7 @@ mod tests {
             name: name.to_string(),
             cache_bytes: 0,
             cache_count: 0,
+            private: false,
         };
         let mut a = App::new(vec![OrgSummary {
             login: "systm-d".into(),
@@ -390,6 +391,7 @@ mod tests {
             name: name.to_string(),
             cache_bytes: 0,
             cache_count: 0,
+            private: false,
         };
         let mut a = App::new(vec![
             OrgSummary {
@@ -442,6 +444,7 @@ mod tests {
             name: name.to_string(),
             cache_bytes: bytes,
             cache_count: count,
+            private: false,
         };
         let mut a = App::new(vec![OrgSummary {
             login: "systm-d".into(),

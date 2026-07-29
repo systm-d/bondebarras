@@ -50,10 +50,16 @@ again by anything.
   with a per-item result — the TUI stays responsive throughout.
 - **Billing tab** — per-organization Actions-minutes usage against the free
   allowance, month by month, with a per-repository breakdown of what is
-  burning it. On the author's own account, `systm-d` sat at **818%** of its
-  included minutes in July 2026 (16,369 Linux-equivalent minutes against a
-  2,000-minute allowance) — exactly the kind of runaway usage the tab exists
-  to surface, since minutes cannot be reclaimed after the fact.
+  burning it. The gauge counts **private repositories only**: GitHub's usage
+  report discounts a private repo still inside its allowance exactly like a
+  public one, so visibility — not the discount fields — is the only signal
+  that tells them apart, and a public repo's Actions runs are free and
+  unlimited regardless of volume. On the author's own account,
+  `SecondBrain-io`'s `monolith-back` burnt **24,632 private
+  Linux-equivalent minutes in July 2026** — exactly the kind of runaway usage
+  the tab exists to surface, since minutes cannot be reclaimed after the
+  fact. (That org is on a different plan, so no allowance percentage is
+  given here.)
 - **Headless CLI** — `bondebarras scan --json` for a machine-readable
   overview, and `bondebarras clean` for non-interactive cleanup, e.g. from a
   cron job.

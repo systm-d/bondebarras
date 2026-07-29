@@ -5,6 +5,8 @@
 //! this module can do is say *where they went*, which is the only useful
 //! answer for the Actions-minutes axis of the problem.
 
+use std::collections::HashSet;
+
 /// One line of GitHub's usage report: a month × a repository × a SKU.
 #[derive(Debug, Clone)]
 pub struct UsageItem {
@@ -66,14 +68,18 @@ impl BillingReport {
 
     /// Minutes charged against the free allowance, in Linux equivalents.
     ///
-    /// Fully discounted items are excluded: a public repository bills nothing
-    /// and consumes no allowance, so counting it would make an open-source
-    /// project look like it had blown the quota.
-    pub fn included_minutes(&self, month: &str) -> u64 {
+    /// Only private repos are counted: a public repository's Actions runs are
+    /// free and unlimited, so it never draws on the allowance. `gross <=
+    /// discount` is *not* the right test for that — GitHub's usage report
+    /// discounts a private repo still inside its allowance exactly the same
+    /// way it discounts a public repo, so that filter dropped every
+    /// in-allowance private minute along with the public ones and made the
+    /// gauge read 0 % until the org had actually started being billed.
+    pub fn included_minutes(&self, month: &str, private_repos: &HashSet<String>) -> u64 {
         self.items
             .iter()
             .filter(|i| i.month == month && i.unit_type == "Minutes")
-            .filter(|i| i.gross > i.discount)
+            .filter(|i| private_repos.contains(&i.repo))
             .map(|i| {
                 let mult = sku_multiplier(&i.sku).unwrap_or(1) as f64;
                 (i.quantity * mult).round() as u64
@@ -97,14 +103,15 @@ impl BillingReport {
     /// only useful answer is *which repository burnt them* — an aggregate says
     /// the quota is blown without saying what to go and fix.
     ///
-    /// Same two filters as `included_minutes`: minute-typed items only, and
-    /// fully discounted ones excluded, so a public repo never appears here.
-    pub fn minute_lines(&self, month: &str) -> Vec<MinuteLine> {
+    /// Same filter as `included_minutes`: minute-typed items belonging to a
+    /// private repo, so a public repo — free and unlimited — never appears
+    /// here.
+    pub fn minute_lines(&self, month: &str, private_repos: &HashSet<String>) -> Vec<MinuteLine> {
         let mut out: Vec<MinuteLine> = self
             .items
             .iter()
             .filter(|i| i.month == month && i.unit_type == "Minutes")
-            .filter(|i| i.gross > i.discount)
+            .filter(|i| private_repos.contains(&i.repo))
             .map(|i| {
                 let mult = sku_multiplier(&i.sku).unwrap_or(1);
                 MinuteLine {
@@ -152,6 +159,10 @@ mod tests {
         }
     }
 
+    fn private_repos(names: &[&str]) -> HashSet<String> {
+        names.iter().map(|s| s.to_string()).collect()
+    }
+
     #[test]
     fn multipliers_follow_githubs_billing_ratios() {
         assert_eq!(sku_multiplier("Actions Linux"), Some(1));
@@ -172,20 +183,51 @@ mod tests {
             ],
         };
         // 100 + 100x2 + 10x10 = 400
-        assert_eq!(r.included_minutes("2026-07"), 400);
+        assert_eq!(r.included_minutes("2026-07", &private_repos(&["a"])), 400);
     }
 
     #[test]
-    fn a_fully_discounted_item_does_not_consume_the_allowance() {
-        // Public repos bill nothing: gross == discount. Counting them would
-        // make an open-source project look like it had blown the quota.
+    fn a_public_repo_is_excluded_regardless_of_its_discount() {
+        // Visibility decides membership now, not the discount fields — the
+        // public item keeps `gross == discount` here to show the exclusion
+        // holds on its own, without relying on that coincidence.
         let r = BillingReport {
             items: vec![
                 item("2026-07", "Actions Linux", 5000.0, 30.0, 30.0, "public"),
                 item("2026-07", "Actions Linux", 100.0, 0.6, 0.0, "private"),
             ],
         };
-        assert_eq!(r.included_minutes("2026-07"), 100);
+        assert_eq!(
+            r.included_minutes("2026-07", &private_repos(&["private"])),
+            100
+        );
+    }
+
+    /// Locks finding 1 (critical): GitHub discounts a private repo still
+    /// inside its free allowance exactly like a public repo — `gross ==
+    /// discount` for both. The old `.filter(|i| i.gross > i.discount)`
+    /// therefore dropped this item too, and `included_minutes` read 0 right
+    /// up until GitHub actually started billing. Figures are the real ones
+    /// measured on SecondBrain-io/monolith-back in July 2026. Proved RED
+    /// against the old filter: it returns 0 here, where the fix returns
+    /// 24 632.
+    #[test]
+    fn a_private_repo_within_its_allowance_still_consumes_it() {
+        let r = BillingReport {
+            items: vec![item(
+                "2026-07",
+                "Actions Linux",
+                24_632.0,
+                147.792,
+                147.792,
+                "monolith-back",
+            )],
+        };
+        assert_eq!(
+            r.included_minutes("2026-07", &private_repos(&["monolith-back"])),
+            24_632,
+            "a private repo inside its allowance must still count"
+        );
     }
 
     #[test]
@@ -198,7 +240,7 @@ mod tests {
             vec!["Actions Quantum".to_string()]
         );
         // It still counts, at x1, rather than vanishing from the total.
-        assert_eq!(r.included_minutes("2026-07"), 42);
+        assert_eq!(r.included_minutes("2026-07", &private_repos(&["a"])), 42);
     }
 
     #[test]
@@ -254,7 +296,7 @@ mod tests {
                 storage,
             ],
         };
-        assert_eq!(r.included_minutes("2026-07"), 100);
+        assert_eq!(r.included_minutes("2026-07", &private_repos(&["a"])), 100);
         assert!(r.unknown_skus("2026-07").is_empty());
     }
 
@@ -276,7 +318,7 @@ mod tests {
     #[test]
     fn an_empty_month_yields_zeroes_not_a_panic() {
         let r = BillingReport { items: vec![] };
-        assert_eq!(r.included_minutes("2026-07"), 0);
+        assert_eq!(r.included_minutes("2026-07", &HashSet::new()), 0);
         assert_eq!(r.cost("2026-07"), (0.0, 0.0, 0.0));
         assert!(r.months().is_empty());
     }
@@ -301,9 +343,9 @@ mod tests {
                 ),
             ],
         };
-        let lines = r.minute_lines("2026-07");
+        let lines = r.minute_lines("2026-07", &private_repos(&["josephine", "claudine"]));
 
-        assert_eq!(lines.len(), 2, "the fully discounted repo must not appear");
+        assert_eq!(lines.len(), 2, "the public repo must not appear");
         assert_eq!(
             lines[0].repo, "claudine",
             "ranking must follow allowance cost"
@@ -313,5 +355,33 @@ mod tests {
         assert_eq!(lines[1].repo, "josephine");
         assert_eq!(lines[1].quantity, 8000);
         assert_eq!(lines[1].equivalent, 8000);
+    }
+
+    /// Same bug as `included_minutes`, for the breakdown: a private repo
+    /// still covered by the free allowance is fully discounted just like a
+    /// public one, so the old `gross > discount` filter hid it from the one
+    /// view meant to name the repository burning the allowance. Figures are
+    /// the real ones measured on SecondBrain-io/monolith-back in July 2026.
+    #[test]
+    fn minute_lines_includes_a_private_repo_within_its_allowance() {
+        let r = BillingReport {
+            items: vec![item(
+                "2026-07",
+                "Actions Linux",
+                24_632.0,
+                147.792,
+                147.792,
+                "monolith-back",
+            )],
+        };
+        let lines = r.minute_lines("2026-07", &private_repos(&["monolith-back"]));
+
+        assert_eq!(
+            lines.len(),
+            1,
+            "a private repo inside its allowance must still appear"
+        );
+        assert_eq!(lines[0].repo, "monolith-back");
+        assert_eq!(lines[0].quantity, 24_632);
     }
 }
