@@ -85,11 +85,11 @@ where
                     app.status = format!("Erreur : suppression de {id} — {reason}");
                 }
                 Progress::Finished { freed, failures } => {
-                    // The purge this guard was watching over is done: a
-                    // fresh `q` press must quit outright again, not still
-                    // need a second confirmation for a purge that no longer
-                    // exists.
-                    app.quit_armed = false;
+                    // One purge is done. `purge_finished` only disarms the
+                    // quit guard once every in-flight purge has settled — a
+                    // second purge started before this one landed must keep
+                    // `q` guarded.
+                    app.purge_finished();
                     app.status = if failures == 0 {
                         format!("Bon débarras ! {} libérés.", human_size(freed))
                     } else {
@@ -137,6 +137,7 @@ where
                 // Captured now, not read from `loaded` when `Finished` lands:
                 // the user can navigate to a different org while this runs.
                 app.purging_org = Some(plan.owner.clone());
+                app.purges_in_flight += 1;
                 // Spawned, not awaited: the loop keeps drawing and draining
                 // `rx` while the purge runs.
                 let tx = tx.clone();
@@ -274,10 +275,38 @@ where
 /// Say so once and let a second press through — an unattended quit must not
 /// silently cut an irreversible operation short.
 fn request_quit(app: &mut App) {
-    if app.purging_org.is_some() && !app.quit_armed {
+    if app.purges_in_flight > 0 && !app.quit_armed {
         app.quit_armed = true;
         app.status = "Purge en cours — [q] à nouveau pour quitter sans l'achever.".into();
     } else {
         app.should_quit = true;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn request_quit_arms_the_guard_while_a_purge_is_in_flight_then_quits_on_a_second_press() {
+        let mut app = App::new(vec![]);
+        app.purges_in_flight = 1;
+
+        request_quit(&mut app);
+        assert!(app.quit_armed, "first press must warn, not quit");
+        assert!(!app.should_quit);
+
+        request_quit(&mut app);
+        assert!(
+            app.should_quit,
+            "a second press must go through despite the purge"
+        );
+    }
+
+    #[test]
+    fn request_quit_quits_immediately_with_no_purge_running() {
+        let mut app = App::new(vec![]);
+        request_quit(&mut app);
+        assert!(app.should_quit);
     }
 }
