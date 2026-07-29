@@ -125,6 +125,29 @@ Le palier 2 était défini depuis la v0.1 sans qu'aucune ressource n'y soit ratt
 v0.3 est la première à l'utiliser, et sa modale — récapitulatif chiffré avant confirmation
 — reste à écrire.
 
+> **Note du 2026-07-29, après implémentation.** Le tableau ci-dessus, écrit avant
+> l'implémentation, distingue attestation orpheline (palier 1) de version sans tag /
+> taguée (palier 2). Cette répartition par classe a été spécifiée avant de remarquer que
+> `risk_tier` prend un `ResourceKind`, pas une `VersionClass` : il ne peut pas distinguer
+> une attestation d'une couche sans tag, les deux étant `ResourceKind::PackageVersion`.
+> En pratique, toute version de package relève donc du palier 2, attestation orpheline
+> comprise — la ligne « Attestation orpheline | 1 | … » ci-dessus ne reflète pas le
+> comportement livré.
+>
+> C'est une correction de la spec, pas un défaut de l'implémentation. Scinder le palier
+> par classe aurait exigé que `risk_tier` connaisse autre chose que le type de la
+> ressource, ce qui casse la propriété qui rend le `match` exhaustif utile : il devient
+> impossible d'ajouter une famille destructive sans lui assigner consciemment un palier
+> précisément parce que le palier est une fonction du type, et rien d'autre. Céder cette
+> garantie pour épargner une ligne d'avertissement sur un plan rare n'en valait pas la
+> peine.
+>
+> Conséquence assumée : l'avertissement multi-arch de la modale palier 2 (§6) s'affiche
+> aussi sur un plan qui ne contient que des attestations orphelines, alors qu'une
+> attestation ne peut par construction pas être une couche d'image multi-architecture.
+> Un faux positif occasionnel, sur la ressource la plus sûre du lot — pas une ressource
+> qui en avait besoin et ne l'a pas reçu.
+
 ## 6. Ce que l'interface doit dire
 
 Le drill-down d'un repo gagne les versions de son package homonyme, s'il existe.

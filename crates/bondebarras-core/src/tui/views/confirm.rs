@@ -7,7 +7,9 @@
 //! re-run, a package version does not — the layer leaves the registry for
 //! good. So tier 2 lists what will go and says plainly that it will not come
 //! back, instead of the tier-1 line that would be false for it. Tier 3
-//! (repository deletion) lands in v0.5 with its own name-typing flow.
+//! exists and is deliberately unused: repository deletion, the operation it
+//! was conceived for, is permanently out of scope for this tool — no
+//! resource maps to tier 3 today, and that name-typing flow has no owner.
 
 use crate::clean::Plan;
 use crate::model::RiskTier;
@@ -29,8 +31,9 @@ pub enum ModalKind {
 
 /// Which modal a plan's tier calls for.
 ///
-/// Tier 3 has no resource mapped to it yet — repository deletion is out of
-/// scope until v0.5, and `commands::clean::run` already refuses that tier
+/// Tier 3 has no resource mapped to it yet, and none is planned: the
+/// operation it was conceived for, repository deletion, is permanently out
+/// of scope for this tool. `commands::clean::run` already refuses this tier
 /// outright, so this arm is never reached today. It falls back to the more
 /// cautious `Itemised` rather than `Simple`, so a future tier-3 resource
 /// added without updating this modal degrades to "too much friction," never
