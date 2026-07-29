@@ -74,6 +74,22 @@ régulièrement, et un multiplicateur muet fausserait la jauge sans prévenir.
 apparaissent avec `discountAmount == grossAmount`. La jauge doit donc se calculer sur les
 minutes **facturables**, sinon un projet open source ferait paraître le quota explosé.
 
+> **Note du 2026-07-29 (revue finale de branche) :** cette règle s'est révélée fausse pour
+> moitié, et la moitié fausse rendait la jauge inutile. Vérifié contre l'API réelle : un
+> repo **privé** encore dans son forfait gratuit est remisé exactement comme un repo
+> public — `discountAmount == grossAmount` dans les deux cas. `discountAmount` ne
+> distingue donc pas « public, gratuit à vie » de « privé, couvert par le forfait » ; se
+> caler sur les minutes facturables faisait disparaître **toute** consommation privée tant
+> que GitHub n'avait pas commencé à facturer, précisément la plage que la jauge existe
+> pour montrer. Le mockup du §5 ci-dessous et son « 818 % » en héritent : ce chiffre était
+> une estimation manuelle, non reproductible par le code, et fondée sur la même hypothèse
+> erronée.
+>
+> Remplacé par un filtre sur la **visibilité du repo** (`private`, renvoyé par
+> `GET /orgs/{org}/repos` et déjà récupéré à l'étage 1) plutôt que sur les champs de
+> remise. Détails et tests dans `crates/bondebarras-core/src/billing.rs` ; rapport complet
+> dans `.superpowers/sdd/2026-07-29-bondebarras-v0.2/final-fix-report.md`.
+
 ## 5. L'onglet Billing
 
 Vue strictement diagnostique : **aucune action destructive**.

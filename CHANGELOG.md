@@ -11,7 +11,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Billing tab: per-organization Actions-minutes usage against the free
   allowance, with a per-repository breakdown of what is burning it and the
-  monthly cost split into gross / covered / billed. Navigate months with
+  monthly cost split into gross / covered / billed. The allowance gauge and
+  breakdown count **private repositories only** — a public repo's Actions
+  runs are free and unlimited regardless of volume. Navigate months with
   `←`/`→`; a 403 (not an org owner) degrades to an "unreadable" notice
   instead of blocking the rest of the tool.
 - `bondebarras scan --json` for a machine-readable overview — pure JSON on
