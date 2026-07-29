@@ -141,12 +141,15 @@ pub fn render(app: &mut App, f: &mut Frame, area: Rect) {
                 lines.push(minute_line_row(minute_line));
             }
             // The cap keeps the block compact, but a truncation that leaves
-            // no trace would hide the count of repositories the user cannot
-            // see — the one number a diagnostic view must never bury.
+            // no trace would hide the count of rows the user cannot see —
+            // the one number a diagnostic view must never bury. Counted in
+            // rows, not repositories: one repo can contribute several rows
+            // (one per SKU), so "dépôt(s)" here would overstate how many
+            // distinct repositories are actually hidden.
             if minute_lines.len() > MAX_MINUTE_LINES {
                 lines.push(Line::from(Span::styled(
                     format!(
-                        "   … et {} autre(s) dépôt(s)",
+                        "   … et {} autre(s) ligne(s)",
                         minute_lines.len() - MAX_MINUTE_LINES
                     ),
                     theme::muted(),
