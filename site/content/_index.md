@@ -72,7 +72,8 @@ cta2 = "Install"
 <li>Package versions checked for missing tags and orphaned attestations</li>
 <li>Branches offered dead the moment a pull request merges them — zero extra requests, a PR closed without merging leaves its branch alone</li>
 <li>Release assets measured in bytes: <strong>7.3 GB</strong> across four orgs, the release itself never deleted, only its binaries</li>
-<li>One keystroke selects every flagged row</li>
+<li>Stale repositories surfaced by push age — a dozen with no push in 500–775 days across five orgs — but never auto-selected: age alone is never proof a repository is dead</li>
+<li>One keystroke selects every flagged row, repositories excluded on purpose</li>
 </ul>
 </div>
 
@@ -96,6 +97,7 @@ cta2 = "Install"
 <li>Runs in the background, TUI stays responsive</li>
 <li>Spaced out and retried on GitHub's rate limit</li>
 <li>Every item reports <span class="kbd">✓</span> or <span class="kbd">✗</span> when it's done</li>
+<li>Repository archiving is the one exception to "never comes back" — reversible, frees no bytes, just turns off the Actions that keep refilling everything above</li>
 </ul>
 </div>
 

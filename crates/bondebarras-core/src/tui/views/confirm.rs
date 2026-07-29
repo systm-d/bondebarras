@@ -10,6 +10,13 @@
 //! exists and is deliberately unused: repository deletion, the operation it
 //! was conceived for, is permanently out of scope for this tool — no
 //! resource maps to tier 3 today, and that name-typing flow has no owner.
+//!
+//! v0.5's repository archiving also lands at tier 2, but for the opposite
+//! reason every other tier-2 family is there: it is *reversible* — see
+//! `model::risk_tier`'s own doc comment — so this modal's usual "ne
+//! reviendront pas" would be false for it. `archive_warning_line` and
+//! `prompt_line`'s `is_archive` flag exist so an archive plan gets its own,
+//! honest wording instead of inheriting a deletion's.
 
 use crate::clean::Plan;
 use crate::model::{ResourceKind, RiskTier};
@@ -154,13 +161,36 @@ fn regen_line() -> Line<'static> {
     ))
 }
 
-fn prompt_line() -> Line<'static> {
-    Line::from(Span::styled("Supprimer ?   [y/N]", theme::title_style()))
+/// `is_archive` picks the verb: nothing here is deleted, so "Supprimer"
+/// would be a lie for the one tier-2 family that only ever archives — see
+/// `Plan::is_archive`'s own doc comment.
+fn prompt_line(is_archive: bool) -> Line<'static> {
+    let text = if is_archive {
+        "Archiver ?   [y/N]"
+    } else {
+        "Supprimer ?   [y/N]"
+    };
+    Line::from(Span::styled(text, theme::title_style()))
 }
 
 fn warning_line() -> Line<'static> {
     Line::from(Span::styled(
         "Ces éléments ne reviendront pas : une fois supprimés, ils quittent le registre pour de bon.",
+        theme::status_warn(),
+    ))
+}
+
+/// The archive path's own version of `warning_line`: unlike every other
+/// tier-2 family, archiving a repository is reversible — un-archiving
+/// restores it (see `model::risk_tier`'s doc comment on why `Repository`
+/// sits at `Medium`, not `Nuclear`, precisely because of this). Reusing
+/// `warning_line`'s "ne reviendront pas" here would be the opposite of the
+/// truth; this says what actually happens instead — Actions turn off, the
+/// repository turns read-only — and says plainly that it is reversible.
+fn archive_warning_line() -> Line<'static> {
+    Line::from(Span::styled(
+        "Ce dépôt passera en lecture seule et ses Actions seront désactivées — réversible en \
+         désarchivant sur GitHub.",
         theme::status_warn(),
     ))
 }
@@ -201,25 +231,41 @@ fn caveat_lines() -> [Line<'static>; 2] {
 /// `render` finds that even the full version does not fit the frame at
 /// all. Nothing past that is negotiable: if the footer still does not fit
 /// after that, the frame is simply too small for it, full stop.
-fn footer(kind: ModalKind, compact: bool, has_packages: bool) -> Vec<Line<'static>> {
+fn footer(
+    kind: ModalKind,
+    compact: bool,
+    has_packages: bool,
+    is_archive: bool,
+) -> Vec<Line<'static>> {
     match kind {
-        ModalKind::Simple => vec![regen_line(), prompt_line()],
+        // `Repository` is `RiskTier::Medium` (see `model::risk_tier`), never
+        // `Low`, so an archive plan never reaches this arm — `is_archive`
+        // only matters below.
+        ModalKind::Simple => vec![regen_line(), prompt_line(false)],
         ModalKind::Itemised => {
             let mut lines = if compact {
                 vec![]
             } else {
                 vec![Line::from("")]
             };
-            lines.push(warning_line());
-            if has_packages {
-                let [caveat1, caveat2] = caveat_lines();
-                lines.push(caveat1);
-                lines.push(caveat2);
+            if is_archive {
+                lines.push(archive_warning_line());
+            } else {
+                lines.push(warning_line());
+                // An archive plan is always exactly one `Repository` item
+                // (see `Plan::is_archive`'s own doc comment) and so never
+                // triggers this — the multi-arch caveat is about container
+                // image layers, which archiving has nothing to do with.
+                if has_packages {
+                    let [caveat1, caveat2] = caveat_lines();
+                    lines.push(caveat1);
+                    lines.push(caveat2);
+                }
             }
             if !compact {
                 lines.push(Line::from(""));
             }
-            lines.push(prompt_line());
+            lines.push(prompt_line(is_archive));
             lines
         }
     }
@@ -283,6 +329,7 @@ pub fn render(plan: &Plan, f: &mut Frame, area: Rect) {
         .items
         .iter()
         .any(|i| i.kind == ResourceKind::PackageVersion);
+    let is_archive = plan.is_archive();
 
     // Width: itemised carries a recap list plus, when relevant, the
     // multi-arch caveat, and gets more of the frame than the bare tier-1 box
@@ -297,10 +344,10 @@ pub fn render(plan: &Plan, f: &mut Frame, area: Rect) {
 
     // `compact` drops the footer's blank spacer lines once the full version
     // does not fit `available` at all — see `footer`'s own doc comment.
-    let mut footer_lines = footer(kind, false, has_packages);
+    let mut footer_lines = footer(kind, false, has_packages, is_archive);
     let mut footer_rows = wrapped_row_count(&footer_lines, inner_width);
     if footer_rows > available {
-        footer_lines = footer(kind, true, has_packages);
+        footer_lines = footer(kind, true, has_packages, is_archive);
         footer_rows = wrapped_row_count(&footer_lines, inner_width);
     }
 
@@ -412,7 +459,7 @@ mod tests {
             .iter()
             .any(|i| i.kind == ResourceKind::PackageVersion);
         let mut lines = recap(plan, kind, u16::MAX, u16::MAX);
-        lines.extend(footer(kind, false, has_packages));
+        lines.extend(footer(kind, false, has_packages, plan.is_archive()));
         lines
     }
 
@@ -486,6 +533,83 @@ mod tests {
         );
         assert!(!t.contains("multi-arch"), "got: {t}");
         assert!(!t.contains("manifeste"), "got: {t}");
+    }
+
+    /// The honesty check task 4 exists for: archiving is reversible —
+    /// un-archiving restores it — so `warning_line`'s "ne reviendront pas"
+    /// ("these will not come back") would be false here, the exact opposite
+    /// of a deliberate design decision (`model::risk_tier`'s own doc comment
+    /// on why `Repository` sits at `Medium`, not `Nuclear`, precisely
+    /// because it is reversible). The prompt must say "Archiver", not
+    /// "Supprimer" either: nothing here is deleted.
+    #[test]
+    fn an_archive_plan_never_claims_irreversibility_and_prompts_to_archive() {
+        let p = Plan {
+            items: vec![item(ResourceKind::Repository, 1, "lokiprint")],
+            owner: "maxds-lyon".into(),
+            repo: "lokiprint".into(),
+        };
+        assert!(
+            p.is_archive(),
+            "the fixture must actually be an archive plan"
+        );
+
+        let t = text(&body(&p));
+        assert!(!t.contains("ne reviendront pas"), "got: {t}");
+        assert!(!t.to_lowercase().contains("supprimer"), "got: {t}");
+        assert!(t.contains("Archiver"), "got: {t}");
+        assert!(
+            t.to_lowercase().contains("réversible"),
+            "the modal must say plainly that archiving is reversible: got: {t}"
+        );
+    }
+
+    /// The multi-arch caveat is about container image layers; an archive
+    /// plan never contains a package version (see `Plan::is_archive`'s own
+    /// doc comment: always exactly one `Repository` item), so it must not
+    /// leak in here either — same reasoning as the branch/tag case above,
+    /// applied to the other family that reaches `Itemised` without a
+    /// package version in it.
+    #[test]
+    fn an_archive_plan_has_no_multi_arch_caveat() {
+        let p = Plan {
+            items: vec![item(ResourceKind::Repository, 1, "lokiprint")],
+            owner: "maxds-lyon".into(),
+            repo: "lokiprint".into(),
+        };
+        let t = text(&body(&p)).to_lowercase();
+        assert!(!t.contains("multi-arch"), "got: {t}");
+        assert!(!t.contains("manifeste"), "got: {t}");
+    }
+
+    /// Rendered, not stringly — the same proof
+    /// `the_tier_two_modal_shows_its_prompt_and_caveat_at_eighty_columns`
+    /// gives the ordinary deletion path, for the archive path: a real
+    /// `render()` pass at a realistic terminal size must not show
+    /// "Supprimer" or the irreversibility claim anywhere on screen.
+    #[test]
+    fn a_rendered_archive_modal_never_shows_the_deletion_wording() {
+        let backend = ratatui::backend::TestBackend::new(80, 24);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let p = Plan {
+            items: vec![item(ResourceKind::Repository, 1, "lokiprint")],
+            owner: "maxds-lyon".into(),
+            repo: "lokiprint".into(),
+        };
+        terminal.draw(|f| render(&p, f, f.area())).unwrap();
+
+        let rendered: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+
+        assert!(rendered.contains("[y/N]"), "the prompt must be on screen");
+        assert!(rendered.contains("Archiver"), "got: {rendered}");
+        assert!(!rendered.contains("ne reviendront pas"), "got: {rendered}");
+        assert!(!rendered.contains("Supprimer"), "got: {rendered}");
     }
 
     #[test]

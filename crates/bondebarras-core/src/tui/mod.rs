@@ -6,7 +6,7 @@ pub mod views;
 
 use crate::api::{Client, caches};
 use crate::clean::{self, Plan, Progress};
-use crate::model::OrgSummary;
+use crate::model::{OrgSummary, ResourceKind};
 use crate::scan;
 use anyhow::Result;
 use app::{App, Focus, View};
@@ -76,31 +76,69 @@ where
         // Drain deletion progress without blocking the draw.
         while let Ok(msg) = rx.try_recv() {
             match msg {
-                Progress::Done { kind, id } => {
-                    app.resources.retain(|r| !(r.kind == kind && r.id == id));
-                    app.selected.remove(&(kind, id));
+                Progress::Done {
+                    kind,
+                    id,
+                    owner,
+                    repo,
+                } => {
+                    if kind == ResourceKind::Repository {
+                        // Not a deletion: the repository stays in the tree,
+                        // now read-only. `owner`/`repo` name the archive
+                        // this message is actually about — Findings 3 and 4
+                        // of the final review: reading `app.selected_repo`
+                        // here instead, as an earlier version did, updated
+                        // whatever the tree currently had ticked, which a
+                        // second archive started before this one landed
+                        // could easily have replaced.
+                        app.archive_done(&owner, &repo);
+                    } else {
+                        app.resources.retain(|r| !(r.kind == kind && r.id == id));
+                        app.selected.remove(&(kind, id));
+                    }
                 }
-                Progress::Failed { kind, id, reason } => {
-                    app.selected.remove(&(kind, id));
-                    app.status = format!("Erreur : suppression de {id} — {reason}");
+                Progress::Failed {
+                    kind,
+                    id,
+                    reason,
+                    owner,
+                    repo,
+                } => {
+                    if kind == ResourceKind::Repository {
+                        app.archive_failed(&owner, &repo);
+                        app.status = format!("Erreur : archivage de {repo} refusé — {reason}");
+                    } else {
+                        app.selected.remove(&(kind, id));
+                        app.status = format!("Erreur : suppression de {id} — {reason}");
+                    }
                 }
                 Progress::Finished {
                     freed,
                     failures,
                     deleted,
                     deleted_sizeless,
+                    archived_repo,
                 } => {
                     // One purge is done. `purge_finished` only disarms the
                     // quit guard once every in-flight purge has settled — a
                     // second purge started before this one landed must keep
                     // `q` guarded.
                     app.purge_finished();
-                    let recap = clean::finished_recap(freed, deleted, deleted_sizeless);
-                    app.status = if failures == 0 {
-                        format!("Bon débarras ! {recap}.")
-                    } else {
-                        format!("Bon débarras ! {recap}, {failures} échec(s).")
-                    };
+                    // `archived_repo` comes straight off this message —
+                    // `clean::execute` computed it from its own `Plan` — not
+                    // from a shared `archiving_target` local the way an
+                    // earlier version of this loop did: a second archive
+                    // confirmed before this `Finished` landed could
+                    // overwrite that local before this one ever read it. See
+                    // `Progress::Finished`'s own doc comment (Findings 3 and
+                    // 4 of the final review).
+                    app.status = purge_finished_status(
+                        archived_repo.as_deref(),
+                        freed,
+                        failures,
+                        deleted,
+                        deleted_sizeless,
+                    );
 
                     // The recap above talks about bytes freed; the left pane
                     // must agree on the same frame, not show the pre-purge
@@ -136,7 +174,16 @@ where
         // The confirmation modal swallows every key while it is up.
         if let Some(plan) = pending.take() {
             if matches!(key.code, KeyCode::Char('y') | KeyCode::Char('Y')) {
-                app.status = format!("Suppression de {} …", plan.summary());
+                if plan.is_archive() {
+                    // Not a deletion — say so. `plan.repo` is the whole
+                    // plan here: an archive plan is always exactly one
+                    // Repository item (see `Plan::is_archive`'s own doc
+                    // comment), so there is nothing an itemised summary
+                    // would add.
+                    app.status = format!("Archivage de {} …", plan.repo);
+                } else {
+                    app.status = format!("Suppression de {} …", plan.summary());
+                }
                 // Captured now, not read from `loaded` when `Finished` lands:
                 // the user can navigate to a different org while this runs.
                 app.purging_org = Some(plan.owner.clone());
@@ -235,30 +282,38 @@ where
                 // Stage 2: load the selected repository on demand. The target
                 // is cloned out first — holding a borrow on `app.orgs` while
                 // assigning `app.status` would not compile.
+                //
+                // Calls `repo_detail_with_warnings` directly, not the
+                // `repo_detail` stderr wrapper: Finding 5 of the final
+                // review needs the failed family names as data so
+                // `App::finish_loading` can put them where the user is
+                // actually looking, `app.status` — the wrapper's `eprintln!`
+                // writes to a stream the alternate screen hides.
                 if let Some((org, repo)) = app.current_target() {
                     app.status = format!("Chargement de {org}/{repo} …");
-                    match scan::repo_detail(&client, &org, &repo).await {
-                        Ok(items) => {
-                            app.resources = items;
-                            app.res_cursor = 0;
-                            app.selected.clear();
-                            // A filter typed for the previous repository must
-                            // not silently keep hiding rows in this one.
-                            app.filter.clear();
-                            app.filter_mode = false;
-                            app.loaded = Some((org, repo));
-                            app.focus = Focus::Resources;
-                            app.status.clear();
-                        }
+                    match scan::repo_detail_with_warnings(&client, &org, &repo).await {
+                        Ok((items, failed)) => app.finish_loading(org, repo, items, failed),
                         Err(e) => app.status = format!("Erreur : {e}"),
                     }
                 }
             }
-            KeyCode::Char(' ') => app.toggle_selected(),
+            // The tree's own row (`Focus::Repos`) ticks a repository for
+            // archiving; every other focus keeps ticking a resource, as
+            // before. Two different guards, two different storage slots —
+            // see `App::toggle_repo_selected`'s own doc comment for why a
+            // repository cannot share `toggle_selected`'s.
+            KeyCode::Char(' ') => match app.focus {
+                Focus::Repos => app.toggle_repo_selected(),
+                _ => app.toggle_selected(),
+            },
             KeyCode::Char('s') => app.cycle_sort(),
             KeyCode::Char('A') => app.select_all_stale(),
+            // Dispatches on focus, not on preferring a ticked repository
+            // unconditionally — see `App::take_focused_plan`'s own doc
+            // comment for Finding 1 of the final review, which this used to
+            // get wrong.
             KeyCode::Char('d') => {
-                if let Some(plan) = app.take_plan()
+                if let Some(plan) = app.take_focused_plan()
                     && !plan.items.is_empty()
                 {
                     pending = Some(plan);
@@ -269,6 +324,41 @@ where
         }
     }
     Ok(())
+}
+
+/// The status line's wording once a purge — or a repository archive —
+/// finishes.
+///
+/// A repository archive is not a deletion: nothing is freed, and the
+/// repository is simply turned read-only, not removed from anywhere.
+/// Reusing `clean::finished_recap`'s "N libérés"/"N élément(s) supprimé(s) ·
+/// taille inconnue" wording for it would call an archived repository
+/// "supprimé" — false, and this project treats a false status line the same
+/// as any other lie to the user. `archived_repo` — the repo name, captured
+/// at the moment a `clean::Plan::is_archive` plan was confirmed — is what
+/// lets this tell the two cases apart; `None` falls back to exactly the
+/// ordinary recap, unchanged.
+fn purge_finished_status(
+    archived_repo: Option<&str>,
+    freed: u64,
+    failures: usize,
+    deleted: usize,
+    deleted_sizeless: usize,
+) -> String {
+    if let Some(repo) = archived_repo {
+        if failures == 0 {
+            format!("Dépôt {repo} archivé.")
+        } else {
+            format!("Erreur : archivage de {repo} refusé.")
+        }
+    } else {
+        let recap = clean::finished_recap(freed, deleted, deleted_sizeless);
+        if failures == 0 {
+            format!("Bon débarras ! {recap}.")
+        } else {
+            format!("Bon débarras ! {recap}, {failures} échec(s).")
+        }
+    }
 }
 
 /// Handle a `q`/`Esc` press, from either top-level view.
@@ -289,6 +379,42 @@ fn request_quit(app: &mut App) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn purge_finished_status_names_the_repo_when_archiving_succeeds() {
+        // A repository archive is not a deletion — nothing is freed, the
+        // repository just turns read-only. Reusing `finished_recap`'s
+        // "supprimé" wording for it would be a lie: the whole point of this
+        // helper is that the two paths never share text.
+        let s = purge_finished_status(Some("lokiprint"), 0, 0, 1, 1);
+        assert!(s.contains("lokiprint"), "got: {s}");
+        assert!(s.contains("archivé"), "got: {s}");
+        assert!(!s.to_lowercase().contains("supprimé"), "got: {s}");
+        assert!(!s.contains("Bon débarras"), "got: {s}");
+    }
+
+    #[test]
+    fn purge_finished_status_names_the_repo_when_archiving_fails() {
+        let s = purge_finished_status(Some("lokiprint"), 0, 1, 0, 0);
+        assert!(s.contains("lokiprint"), "got: {s}");
+        assert!(s.to_lowercase().contains("erreur"), "got: {s}");
+    }
+
+    /// Without `archived_repo`, this must fall back to exactly
+    /// `clean::finished_recap`'s own wording — the ordinary deletion path
+    /// must not change at all.
+    #[test]
+    fn purge_finished_status_falls_back_to_the_ordinary_recap_when_nothing_was_archived() {
+        let s = purge_finished_status(None, 3_000_000, 0, 2, 0);
+        assert!(s.contains("Bon débarras"), "got: {s}");
+        assert!(s.contains("3.0 Mo"), "got: {s}");
+    }
+
+    #[test]
+    fn purge_finished_status_reports_failure_count_for_an_ordinary_purge() {
+        let s = purge_finished_status(None, 0, 2, 3, 0);
+        assert!(s.contains("2 échec"), "got: {s}");
+    }
 
     #[test]
     fn request_quit_arms_the_guard_while_a_purge_is_in_flight_then_quits_on_a_second_press() {

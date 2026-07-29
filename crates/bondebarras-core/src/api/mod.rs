@@ -4,6 +4,7 @@
 //! rest of the crate never learns which responses octocrab models and which
 //! we deserialise by hand.
 
+pub mod archive;
 pub mod artifacts;
 pub mod billing;
 pub mod caches;
@@ -182,6 +183,34 @@ impl Client {
             sleep(wait).await;
         }
     }
+
+    /// PATCH with a JSON body, ignoring the response body, on the model of
+    /// `delete`.
+    ///
+    /// `Octocrab::patch` would try to deserialise the response as `R` — for
+    /// `api::archive::archive` there is nothing worth naming that type for,
+    /// GitHub's archive response just echoes the whole repository object
+    /// back — so this goes through the raw `_patch` and reads the status
+    /// ourselves instead, exactly as `delete` reads `_delete`'s.
+    ///
+    /// No retry loop, unlike `delete`: that one exists because a purge is a
+    /// burst of many deletions hitting GitHub's secondary rate limit: one
+    /// archive call is not a burst, and nothing in this crate calls `patch`
+    /// more than once per user action.
+    pub async fn patch(&self, path: &str, body: &serde_json::Value) -> Result<()> {
+        let _permit = self.sem.acquire().await.expect("semaphore never closed");
+        let response = self
+            .gh
+            ._patch(path, Some(body))
+            .await
+            .with_context(|| format!("PATCH {path}"))?;
+
+        let status = response.status();
+        if status.is_success() {
+            return Ok(());
+        }
+        bail!("PATCH {path} a échoué : {status}");
+    }
 }
 
 /// The delay GitHub asked us to wait, when it named one in `Retry-After`.
@@ -307,6 +336,50 @@ mod tests {
             .delete("/repos/systm-d/claudine/actions/caches/9")
             .await
             .unwrap();
+    }
+
+    /// GitHub's real archive response echoes the full, updated repository
+    /// object — `patch` must ignore it rather than try to deserialise it,
+    /// the same reasoning as `delete` ignoring its usually-empty body.
+    #[tokio::test]
+    async fn patch_ignores_the_response_body_on_success() {
+        let server = MockServer::start().await;
+        Mock::given(method("PATCH"))
+            .and(path("/repos/systm-d/claudine"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": 1, "archived": true
+            })))
+            .mount(&server)
+            .await;
+
+        let client = Client::with_base("t0ken", &server.uri()).unwrap();
+        client
+            .patch(
+                "/repos/systm-d/claudine",
+                &serde_json::json!({ "archived": true }),
+            )
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn patch_surfaces_a_failing_status() {
+        let server = MockServer::start().await;
+        Mock::given(method("PATCH"))
+            .and(path("/repos/systm-d/claudine"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+
+        let client = Client::with_base("t0ken", &server.uri()).unwrap();
+        let err = client
+            .patch(
+                "/repos/systm-d/claudine",
+                &serde_json::json!({ "archived": true }),
+            )
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("404"));
     }
 
     #[test]

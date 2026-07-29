@@ -1,8 +1,11 @@
 //! Core data model: resources, risk tiers, and display formatting.
 
-/// A deletable GitHub resource family. v0.1 covers the three regenerable ones;
-/// v0.3 adds container package versions, the first irreversible one; v0.4
-/// adds branches, tags and release assets.
+/// A deletable — or, since v0.5, archivable — GitHub resource family. v0.1
+/// covers the three regenerable ones; v0.3 adds container package versions,
+/// the first irreversible one; v0.4 adds branches, tags and release assets;
+/// v0.5 adds the repository itself, archived rather than deleted (see
+/// `repos::classify_repo` and `api::archive`) — repository *deletion* stays
+/// permanently out of scope.
 ///
 /// `Hash` matters as much as `Eq` here: GitHub numbers caches, artifacts,
 /// workflow runs and package versions in independent namespaces, so a
@@ -19,11 +22,12 @@ pub enum ResourceKind {
     Branch,
     Tag,
     ReleaseAsset,
+    Repository,
 }
 
 impl ResourceKind {
     /// Every variant, so tests can assert the `risk_tier` match stays exhaustive.
-    pub const ALL: [ResourceKind; 7] = [
+    pub const ALL: [ResourceKind; 8] = [
         ResourceKind::Cache,
         ResourceKind::Artifact,
         ResourceKind::WorkflowRun,
@@ -31,34 +35,57 @@ impl ResourceKind {
         ResourceKind::Branch,
         ResourceKind::Tag,
         ResourceKind::ReleaseAsset,
+        ResourceKind::Repository,
     ];
 
     /// Whether GitHub reports a real size for this family.
     ///
-    /// `false` for the three sizeless kinds: a package version (no size
-    /// field exists, under any name — see `api::packages`), a branch and a
-    /// tag (a ref carries no size of its own). `true` for every other kind,
-    /// whose `size_bytes` is a real GitHub-reported number, zero included.
-    /// One place to update when a family is added — before this existed,
-    /// `size_display`, `Plan::summary` and the sizeless-deletion count in
-    /// `clean::execute` each spelled out their own `kind == PackageVersion`
-    /// check, and only one of the three was ever updated when branches and
-    /// tags joined the sizeless set: a branch rendered a bare "0 o", the
-    /// exact "reads as empty" defect v0.3 spent a whole fix wave on.
+    /// `false` for the four sizeless kinds: a package version (no size field
+    /// exists, under any name — see `api::packages`), a branch and a tag (a
+    /// ref carries no size of its own), and a repository (archiving frees no
+    /// bytes — the repository's size is unchanged, only its Actions are
+    /// disabled). `true` for every other kind, whose `size_bytes` is a real
+    /// GitHub-reported number, zero included.
+    ///
+    /// An exhaustive `match`, not the `matches!` shorthand this used to be:
+    /// that version, `!matches!(self, PackageVersion | Branch | Tag)`,
+    /// silently defaulted every kind absent from its list to `true` — the
+    /// wrong direction for a sizeless family added later, since nothing
+    /// forced a decision when `Repository` joined `ResourceKind` in v0.5.
+    /// Debt 1 of the v0.4 final review; closed here rather than carried into
+    /// v0.5 as a fifth debt. One place to update when a family is added —
+    /// before this existed, `size_display`, `Plan::summary` and the
+    /// sizeless-deletion count in `clean::execute` each spelled out their own
+    /// `kind == PackageVersion` check, and only one of the three was ever
+    /// updated when branches and tags joined the sizeless set: a branch
+    /// rendered a bare "0 o", the exact "reads as empty" defect v0.3 spent a
+    /// whole fix wave on.
     pub fn has_known_size(self) -> bool {
-        !matches!(
-            self,
-            ResourceKind::PackageVersion | ResourceKind::Branch | ResourceKind::Tag
-        )
+        match self {
+            ResourceKind::Cache
+            | ResourceKind::Artifact
+            | ResourceKind::WorkflowRun
+            | ResourceKind::ReleaseAsset => true,
+            ResourceKind::PackageVersion
+            | ResourceKind::Branch
+            | ResourceKind::Tag
+            | ResourceKind::Repository => false,
+        }
     }
 }
 
-/// How much friction a deletion must go through. Ordered by severity.
+/// How much friction a deletion — or, since v0.5, an archive — must go
+/// through. Ordered by severity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum RiskTier {
     /// Regenerable by re-running a workflow: a single confirmation.
     Low,
-    /// Irreversible but rarely critical: itemised recap plus confirmation.
+    /// Not undoable by a re-run: either the change is irreversible outright
+    /// (a package version, a branch, a tag, a release asset — the layer or
+    /// ref is gone for good), or, since v0.5, it turns a whole repository
+    /// read-only (reversible on GitHub's side, but not by anything this
+    /// re-run-shaped tool can trigger). Either way: itemised recap plus
+    /// confirmation.
     Medium,
     /// Definitive destruction: the user must type the target's name.
     Nuclear,
@@ -81,6 +108,14 @@ pub fn risk_tier(kind: ResourceKind) -> RiskTier {
         | ResourceKind::Branch
         | ResourceKind::Tag
         | ResourceKind::ReleaseAsset => RiskTier::Medium,
+        // Reversible, unlike every other kind at this tier — un-archiving
+        // restores it — but not a re-run away either, and it turns the whole
+        // repository read-only in the meantime. Medium, not Low: the blast
+        // radius is bigger than one cache key even though nothing here is
+        // permanent. Not Nuclear: repository *deletion*, the operation that
+        // tier exists for, is permanently out of scope (see
+        // `tui::views::confirm`'s module doc).
+        ResourceKind::Repository => RiskTier::Medium,
     }
 }
 
@@ -156,6 +191,20 @@ pub struct RepoSummary {
     /// appears in the cache report (never in the repo listing) defaults to
     /// `false` — see `scan::overview`.
     pub private: bool,
+    /// Days since the last push. Not proof of abandonment on its own — a
+    /// finished, stable library does not move for two years without being
+    /// dead — which is exactly why nothing in this crate ever preselects a
+    /// repository from it (see `tui::app::App::select_all_stale`'s own guard
+    /// and `commands::clean::select`'s permanent refusal). Shown to the human
+    /// who decides, on the repository's own row in the tree.
+    pub age_days: i64,
+    /// Whether this repository is a genuine archiving candidate, already
+    /// archived, or off-limits to this token — see `repos::classify_repo`.
+    /// A repo that only appears in the cache report (never in the repo
+    /// listing) defaults to `RepoClass::NoAdminRights`: the safe direction
+    /// when this token's real rights are unknown is to offer nothing, not to
+    /// invite a tick the API might refuse.
+    pub class: crate::repos::RepoClass,
 }
 
 /// Stage-1 view of one organization.
@@ -197,20 +246,43 @@ mod tests {
         }
     }
 
-    /// A wrong implementation returning `true` for every kind, `false` for
-    /// every kind, or excluding only `PackageVersion` (the pre-v0.4 set)
-    /// each fail a different arm of this sweep — enumerating `ALL` rather
-    /// than asserting the three sizeless kinds and the four sized ones
-    /// separately is what catches "only `PackageVersion` was updated," the
-    /// exact gap Finding 3 names.
+    /// Debt 1 of the v0.4 final review: the old version of this test
+    /// recomputed `has_known_size`'s own `!matches!(...)` expression to
+    /// build `expected`, so both sides of the assertion always agreed no
+    /// matter which kinds the predicate actually covered — a sizeless family
+    /// added later, `Repository` among them, would default to `true` on
+    /// both sides and this "test" would stay green regardless. Every arm is
+    /// typed out by hand here instead, one per `ResourceKind::ALL` entry, so
+    /// the table and the predicate are two independent sources of truth.
     #[test]
-    fn has_known_size_is_false_only_for_the_three_sizeless_kinds() {
+    fn has_known_size_matches_a_hardcoded_table() {
+        let expected: [(ResourceKind, bool); 8] = [
+            (ResourceKind::Cache, true),
+            (ResourceKind::Artifact, true),
+            (ResourceKind::WorkflowRun, true),
+            (ResourceKind::PackageVersion, false),
+            (ResourceKind::Branch, false),
+            (ResourceKind::Tag, false),
+            (ResourceKind::ReleaseAsset, true),
+            // Archiving frees no bytes — the repository's own size is
+            // unchanged — so this reads `—` like the other three sizeless
+            // kinds, not a misleading "0 o".
+            (ResourceKind::Repository, false),
+        ];
+        // Every `ResourceKind::ALL` entry must appear in the table exactly
+        // once — otherwise a variant added to the enum but forgotten here
+        // would silently fall out of this sweep instead of failing it.
+        assert_eq!(
+            expected.len(),
+            ResourceKind::ALL.len(),
+            "the hardcoded table must cover every ResourceKind variant"
+        );
         for kind in ResourceKind::ALL {
-            let expected = !matches!(
-                kind,
-                ResourceKind::PackageVersion | ResourceKind::Branch | ResourceKind::Tag
-            );
-            assert_eq!(kind.has_known_size(), expected, "wrong answer for {kind:?}");
+            let (_, expect) = expected
+                .iter()
+                .find(|(k, _)| *k == kind)
+                .unwrap_or_else(|| panic!("{kind:?} is missing from the hardcoded table"));
+            assert_eq!(kind.has_known_size(), *expect, "wrong answer for {kind:?}");
         }
     }
 

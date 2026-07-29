@@ -23,6 +23,9 @@ pub struct CleanFilter {
     pub assets: bool,
     pub stale_pr: bool,
     pub older_than: Option<i64>,
+    // Deliberately no `repositories` field. Archiving a whole repository is
+    // not a cron decision, and there is no flag, present or planned, that
+    // could ask `clean` to do it — see `select`'s own `Repository` arm.
 }
 
 /// Resources matching the filter.
@@ -36,6 +39,13 @@ pub struct CleanFilter {
 /// has no human at the other end of a cron to notice a broken deployment.
 /// The TUI's individual `espace` selection is the only path left to it — see
 /// `tui::app::App::toggle_selected`.
+///
+/// A `Repository` is never returned either, unconditionally — see the arm
+/// below. That refusal is total rather than conditional on `protected`
+/// because archiving has no notion of an individually-safe instance the way
+/// a merged branch or an untagged package version does: every repository
+/// this could ever reach turns fully read-only, and none of that is a call
+/// headless is allowed to make.
 pub fn select(items: &[Resource], filter: &CleanFilter) -> Vec<Resource> {
     items
         .iter()
@@ -55,6 +65,24 @@ pub fn select(items: &[Resource], filter: &CleanFilter) -> Vec<Resource> {
             ResourceKind::Branch => filter.branches,
             ResourceKind::Tag => filter.tags,
             ResourceKind::ReleaseAsset => filter.assets,
+            // Archiving turns a whole repository read-only; that is not a
+            // cron decision. Every family before this one still had *some*
+            // headless path — a flag, `older_than`, `stale_pr` — that could
+            // reach it; a `Repository` gets none of them, on purpose:
+            // `CleanFilter` has deliberately gained no `repositories` field.
+            // This is the first time the product refuses an entire *family*
+            // headlessly, not just a tier or a protected instance.
+            //
+            // `false`, not `unreachable!()`: an `unreachable!()` stub here
+            // was tried twice already on this project (v0.3's
+            // `PackageVersion`, v0.4's `Branch`/`Tag`/`ReleaseAsset`) and
+            // both times stopped being unreachable the moment `scan::
+            // repo_detail` started producing that kind — headless `clean`
+            // then panicked against any real repository holding one. Here
+            // the correct behaviour actually *is* refusal, so it is encoded
+            // directly as a `filter` result instead, which stays correct
+            // even if a future caller ever does pass a `Repository` in.
+            ResourceKind::Repository => false,
         })
         // A protected resource is never taken in bulk. Headless has no human
         // to override that, so this is not a default — it is the rule.
@@ -125,6 +153,7 @@ pub async fn run(
                 failures: f,
                 deleted,
                 deleted_sizeless,
+                ..
             } => {
                 failures = f;
                 eprintln!(
@@ -226,6 +255,47 @@ mod tests {
                 ..filter()
             }),
             vec![7]
+        );
+    }
+
+    /// Task 3's own named test. Archiving turns a whole repository
+    /// read-only; that is not a cron decision, and unlike every family
+    /// before it, there is no flag at all that could ask for it —
+    /// `CleanFilter` gained no `repositories` field, deliberately (see the
+    /// struct's own doc comment). This is the first time the product refuses
+    /// an entire *family* headlessly: v0.2's package versions and v0.4's
+    /// branches/tags/release assets each still had per-instance flags
+    /// (`protected`) or per-item selection; a `Repository` never gets even
+    /// that path headlessly.
+    ///
+    /// The fixture carries a `Repository` item on purpose — a fixture
+    /// missing the kind is exactly how this arm went unreachable-in-tests
+    /// twice already on this project, once for `PackageVersion` in v0.3 and
+    /// once for `Branch`/`Tag`/`ReleaseAsset` in v0.4. Both times the
+    /// `unreachable!()` stub stopped being unreachable the instant
+    /// production code started producing that kind, and headless `clean`
+    /// panicked against the next real repository it touched.
+    #[test]
+    fn headless_select_never_returns_a_repository() {
+        let items = vec![res(ResourceKind::Repository, 1, 775, false)];
+
+        // Every flag on at once: the point is that none of them is the
+        // right one to ask for archiving, because none of them means
+        // archiving at all.
+        let f = CleanFilter {
+            caches: true,
+            artifacts: true,
+            runs: true,
+            packages: true,
+            branches: true,
+            tags: true,
+            assets: true,
+            stale_pr: false,
+            older_than: None,
+        };
+        assert!(
+            select(&items, &f).is_empty(),
+            "a Repository must never be selected headlessly, no matter which flags are set"
         );
     }
 

@@ -49,6 +49,13 @@ pub fn row_spans(r: &Resource, checked: bool) -> Vec<Span<'static>> {
         ResourceKind::Branch => "branc",
         ResourceKind::Tag => "tag  ",
         ResourceKind::ReleaseAsset => "asset",
+        // Never actually reaches this list in production — a repository
+        // lives in the left tree (`tui::views::orgs`), not this right-pane
+        // resource list (task 3) — but the match must stay exhaustive
+        // regardless, and a real label costs nothing (same reasoning v0.3
+        // and v0.4 gave every other kind here: this function is pure
+        // display, with no dependency on later tasks).
+        ResourceKind::Repository => "repo ",
     };
 
     // `size_display` shows `—` rather than "0 o" for a package version:
@@ -106,16 +113,22 @@ pub fn row_spans(r: &Resource, checked: bool) -> Vec<Span<'static>> {
 }
 
 /// The list block's title: item count and byte tally, plus — when the
-/// visible list holds at least one package version — the caveat that GitHub
-/// exposes no size for that family.
+/// visible list holds at least one resource `ResourceKind::has_known_size`
+/// says GitHub exposes no size for — the caveat that some rows' size is
+/// unknown.
 ///
-/// Not optional when `has_packages` is true: a column of `—` in a tool that
+/// Not optional when `has_sizeless` is true: a column of `—` in a tool that
 /// shows bytes on every other screen reads as "these are empty", which is
-/// the opposite of the truth.
-fn list_title(count: usize, bytes: u64, has_packages: bool) -> String {
-    if has_packages {
+/// the opposite of the truth. Debt 2 of the v0.4 final review: this used to
+/// take `has_packages`, fed by `render`'s own `kind ==
+/// ResourceKind::PackageVersion` check — so a list whose only sizeless rows
+/// were branches or tags carried the same `—` markers with no banner to
+/// explain them. Generalised to whatever `has_known_size` calls sizeless,
+/// the one place that already enumerates every such kind.
+fn list_title(count: usize, bytes: u64, has_sizeless: bool) -> String {
+    if has_sizeless {
         format!(
-            " {count} éléments · {} · ⚠ GitHub n'expose pas la taille des versions de packages ",
+            " {count} éléments · {} · ⚠ GitHub n'expose pas la taille de certaines ressources ",
             human_size(bytes)
         )
     } else {
@@ -131,10 +144,10 @@ pub fn render(app: &mut App, f: &mut Frame, area: Rect) {
     // Read before `items` is built, from the same shared borrow, so both can
     // draw from `app.visible_resources()` before anything is borrowed
     // mutably below.
-    let has_packages = app
+    let has_sizeless = app
         .visible_resources()
         .iter()
-        .any(|r| r.kind == ResourceKind::PackageVersion);
+        .any(|r| !r.kind.has_known_size());
 
     // Built first, from a shared borrow of `app` only: the items own their
     // strings (`ListItem<'static>`), so the borrow ends here, before
@@ -148,7 +161,7 @@ pub fn render(app: &mut App, f: &mut Frame, area: Rect) {
         })
         .collect();
 
-    let title = list_title(items.len(), app.selection_bytes(), has_packages);
+    let title = list_title(items.len(), app.selection_bytes(), has_sizeless);
 
     app.res_state.select(if items.is_empty() {
         None
@@ -269,6 +282,28 @@ mod tests {
 
     fn text(spans: &[Span<'static>]) -> String {
         spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    /// `ResourceKind::Repository` never actually reaches `row_spans` in
+    /// production — task 3 keeps a repository in the left tree, never in
+    /// `app.resources` — but the match on `r.kind` must stay exhaustive
+    /// regardless, and this locks the label it was given rather than leaving
+    /// it unverified.
+    #[test]
+    fn a_repository_row_shows_its_kind_label() {
+        let r = Resource {
+            kind: ResourceKind::Repository,
+            id: 1,
+            label: "claudine".into(),
+            size_bytes: 0,
+            age_days: 0,
+            git_ref: None,
+            stale_pr: false,
+            protected: false,
+            branch_class: None,
+        };
+        let line = text(&row_spans(&r, false));
+        assert!(line.contains("repo"), "got: {line}");
     }
 
     #[test]
@@ -579,5 +614,40 @@ mod tests {
         let title = list_title(3, 100, false);
         assert!(!title.contains("GitHub"), "got: {title}");
         assert!(title.contains("100 o"), "got: {title}");
+    }
+
+    /// Debt 2 of the v0.4 final review: `render` computed the flag it hands
+    /// `list_title` from `r.kind == ResourceKind::PackageVersion` alone, so a
+    /// repository whose only sizeless rows were branches or tags — no
+    /// package version anywhere — rendered a column of `—` with no banner
+    /// explaining it, the exact "reads as empty" defect this whole title
+    /// exists to prevent. `has_known_size` is the one place that already
+    /// knows every sizeless kind; `render`'s predicate must ask it, not
+    /// re-derive its own narrower list. Exercised through `render` itself,
+    /// not `list_title` in isolation: `list_title` only takes an
+    /// already-computed bool and cannot prove which kinds fed it — a
+    /// regression back to `kind == PackageVersion` would still pass every
+    /// `list_title` unit test above unchanged.
+    #[test]
+    fn the_title_warns_when_the_visible_list_holds_a_branch_with_no_package_present() {
+        let mut app = App::new(vec![]);
+        app.resources = vec![branch("claude/landing-3jbqk4", BranchClass::Merged)];
+
+        let backend = ratatui::backend::TestBackend::new(100, 10);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|f| render(&mut app, f, f.area())).unwrap();
+
+        let rendered: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+
+        assert!(
+            rendered.contains("GitHub"),
+            "a branch-only list must still warn that its size is unknown: {rendered}"
+        );
     }
 }
