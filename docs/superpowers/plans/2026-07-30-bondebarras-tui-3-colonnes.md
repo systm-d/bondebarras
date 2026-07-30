@@ -581,6 +581,218 @@ Pendant le chargement, la colonne affiche `(chargement…)`. Une colonne vide se
 
 Commit : `feat(tui): chargement apres pause, cache de depots, annulation`.
 
+---
+
+### Task 6: La barre de progression du pied
+
+**Files:** Create `crates/bondebarras-core/src/tui/views/progress.rs` ; modify `tui/app.rs`, `tui/views/mod.rs`, `tui/mod.rs`, `scan.rs`
+
+Demande utilisateur : « pour les chargements des dépôts et caches, ajoute une barre de
+chargement. Et pour la suppression et etc ajoute des barres de progression également, tu n'as
+qu'à ajouter cela dans une barre en footer de la fenêtre. »
+
+**Une ligne à elle, qui n'existe que pendant un travail.** La disposition passe de quatre
+rangées à cinq : en-tête, corps, ligne d'état, **progression**, pied.
+
+```
+Constraint::Length(1)                                    en-tête
+Constraint::Min(1)                                       corps
+Constraint::Length(1)                                    ligne d'état
+Constraint::Length(if app.progress.is_some() {1} else {0})   progression
+Constraint::Length(1)                                    pied
+```
+
+Elle ne remplace **ni** le pied **ni** la ligne d'état, et c'est le point important :
+
+- Le pied porte les déplacements. Les lui prendre pendant une purge rejouerait le défaut du
+  §1 — l'utilisateur qui ne voit plus comment naviguer — au pire moment.
+- La ligne d'état porte les erreurs (`Erreur : suppression de 9 — 404`). Une barre qui les
+  recouvre ferait disparaître l'échec derrière la progression de l'échec.
+
+À `Length(0)` ratatui ne dessine rien : la rangée n'existe pas quand rien ne tourne.
+
+**Interfaces :**
+
+```rust
+/// A unit of work in flight, and how far along it is.
+///
+/// Both denominators are counted, never estimated: a purge knows its item
+/// count from its own `Plan`, and a repository load knows it makes exactly
+/// nine calls. This project has twice published a percentage its data could
+/// not support — the "818 %" of v0.2 and the "890 Mo" of v0.3 — and a bar
+/// that animates without measuring anything would be the same lie in a
+/// prettier shape.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Work {
+    pub label: String,
+    pub done: usize,
+    pub total: usize,
+}
+
+impl Work {
+    /// Ratio in 0..=1. `total == 0` yields 0, never a division by zero.
+    pub fn ratio(&self) -> f64 { … }
+}
+```
+
+`App` gagne **deux** créneaux, pas un :
+
+```rust
+    /// The purge or archive in flight, if any.
+    pub purge: Option<Work>,
+    /// The repository drill-down in flight, if any.
+    pub loading: Option<Work>,
+```
+
+Deux, parce que les deux se chevauchent réellement : le curseur reste libre pendant une
+purge, donc un chargement peut partir alors qu'une suppression court. Un créneau unique
+ferait écraser l'un par l'autre, et la barre annoncerait la fin d'un travail qui tourne
+encore. **La purge l'emporte à l'affichage** — c'est celle qui détruit des données.
+
+`fn shown(app: &App) -> Option<&Work>` rend `purge` d'abord, `loading` sinon.
+
+- [ ] **Step 1: Écrire les tests qui échouent**
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_empty_plan_does_not_divide_by_zero() {
+        // A plan can be empty — `[A]` on a repository whose every resource
+        // is protected selects nothing. 0/0 must be 0, not NaN, and NaN
+        // reaches ratatui's Gauge as a panic in debug.
+        let w = Work { label: "purge".into(), done: 0, total: 0 };
+        assert_eq!(w.ratio(), 0.0);
+    }
+
+    #[test]
+    fn a_finished_work_is_exactly_one() {
+        let w = Work { label: "purge".into(), done: 9, total: 9 };
+        assert_eq!(w.ratio(), 1.0);
+    }
+
+    #[test]
+    fn a_purge_outranks_a_load_that_started_under_it() {
+        // The cursor stays live during a purge, so a drill-down can start
+        // while deletions are still landing. With one slot the load would
+        // overwrite the purge and the bar would report the wrong work as
+        // finished. The fixture needs BOTH present, or it proves nothing.
+        let mut app = App::default();
+        app.purge = Some(Work { label: "suppression".into(), done: 2, total: 7 });
+        app.loading = Some(Work { label: "chargement".into(), done: 8, total: 9 });
+        let shown = shown(&app).unwrap();
+        assert_eq!(shown.label, "suppression");
+        assert_eq!(shown.done, 2);
+    }
+
+    #[test]
+    fn a_load_shows_when_no_purge_runs() {
+        let mut app = App::default();
+        app.loading = Some(Work { label: "chargement".into(), done: 3, total: 9 });
+        assert_eq!(shown(&app).unwrap().label, "chargement");
+    }
+
+    #[test]
+    fn nothing_running_draws_no_row() {
+        assert!(shown(&App::default()).is_none());
+    }
+
+    /// The row must appear and disappear, and taking it must never cost the
+    /// footer its keys — that footer is what this whole plan exists to fix.
+    #[test]
+    fn the_progress_row_never_costs_the_footer_its_keys() {
+        for height in 6u16..=40 {
+            for width in [72u16, 100, 140] {
+                let mut app = App::default();
+                app.purge = Some(Work { label: "suppression".into(), done: 1, total: 4 });
+                let buf = render_to_backend(&mut app, width, height);
+                let text = buffer_text(&buf);
+                assert!(
+                    text.contains("[q] quitter"),
+                    "footer lost its keys at {width}x{height} with the bar shown"
+                );
+            }
+        }
+    }
+}
+```
+
+- [ ] **Step 2: Lancer les tests**
+
+Run: `cargo test -p bondebarras-core progress:: > /tmp/t6-red.txt 2>&1; cat /tmp/t6-red.txt`
+Expected: FAIL — `cannot find type Work`.
+
+⚠️ Le filtre `progress` est une **sous-chaîne littérale** : il attrapera aussi les tests
+existants qui nomment `Progress` dans `clean.rs`. `progress::` restreint au module neuf.
+
+- [ ] **Step 3: Alimenter les deux compteurs**
+
+**La purge.** Tout est déjà là. `clean::execute` envoie un `Progress::Done` ou
+`Progress::Failed` par élément, et la boucle de `tui/mod.rs` les draine déjà. Poser
+`app.purge = Some(Work { total: plan.items.len(), done: 0, … })` au lancement, incrémenter
+`done` sur chaque `Done` **et** chaque `Failed` — un échec est un élément traité, pas un
+élément en attente — et remettre à `None` sur `Finished`, qui écrit déjà son récapitulatif
+dans `app.status`.
+
+⚠️ `total: 0` ne doit pas poser de barre du tout : une purge vide se termine avant d'être
+dessinée, et une barre à 0 % qui disparaît aussitôt est un clignotement, pas une information.
+
+**Le chargement.** Les neuf appels de `repo_detail_with_warnings` partent dans un
+`futures::join!` et ne rendent la main qu'ensemble : sans changement, il n'y a rien à compter
+entre 0 et 9. Ajouter un canal de tics :
+
+```rust
+/// `repo_detail_with_warnings`, plus one tick per completed call.
+///
+/// The nine listings are joined, so without this the caller sees nothing
+/// between "started" and "all nine done" — a bar over that has two states
+/// and is worth less than the `(chargement…)` text it would replace.
+/// Each future sends its tick as it lands; ticks arrive in completion
+/// order, which is the order the user is actually waiting on.
+pub async fn repo_detail_ticking(
+    client: &Client,
+    owner: &str,
+    repo: &str,
+    tick: UnboundedSender<()>,
+) -> Result<(Vec<Resource>, Vec<&'static str>)>
+```
+
+Chaque future est enveloppée dans un `async { let r = fut.await; let _ = tick.send(()); r }`.
+Le `let _` est délibéré : un canal fermé signifie que l'utilisateur a quitté l'écran, et une
+erreur d'envoi de tic ne doit pas faire échouer un chargement qui, lui, a réussi.
+
+`TOTAL_CALLS = 9`, en constante nommée à côté du `join!`, avec un commentaire disant qu'elle
+doit suivre le nombre de futures. Un test l'ancre : compter les tics reçus sur un
+`repo_detail_ticking` complet et vérifier qu'il en arrive exactement `TOTAL_CALLS`. Sans lui,
+ajouter une dixième famille laisserait la barre plafonner à 90 %.
+
+⚠️ **L'annulation par génération de la Task 5 s'applique aussi aux tics.** Un chargement
+abandonné continue d'émettre : ses tics doivent être ignorés comme l'est son résultat, sinon
+la barre du dépôt regardé avance au rythme de celui qu'on a quitté. Faire porter la
+génération au créneau `loading` et la comparer à chaque tic.
+
+- [ ] **Step 4: Dessiner**
+
+`ratatui::widgets::Gauge`, `ratatui_unicode` non requis. Étiquette à gauche, ratio à droite :
+
+```
+ suppression  ████████████░░░░░░░░░░░░░░  4/11
+```
+
+Le libellé est **user-facing, donc en français** : `suppression`, `archivage`, `chargement`.
+Le compte `done/total` est écrit en clair à côté de la barre — un pourcentage seul ne dit pas
+s'il reste deux éléments ou deux cents.
+
+Couleurs : `theme::` existant, comme les jauges de la Task 3. Ne pas introduire de palette.
+
+- [ ] **Step 5: Vérifier et commiter**
+
+`cargo fmt --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace`
+
+Commit : `feat(tui): barre de progression en pied pour les purges et les chargements`.
+
 ## Self-Review
 
 **Couverture de la spec**
@@ -596,12 +808,15 @@ Commit : `feat(tui): chargement apres pause, cache de depots, annulation`.
 | §4.1 branche disparue et PR mergée sans coût | 1, 2 |
 | §4.3 `Safety` ≠ `protected` | 1 |
 | §5 les deux jauges, plafond codé en dur annoncé | 3 |
-| §7 tests, dont le balayage de largeurs | 1-5 |
+| §7 tests, dont le balayage de largeurs | 1-6 |
+| barre de progression (demande hors spec initiale) | 6 |
 
 **Cohérence des types**
 
 - `Safety` : défini en 1, champ en 2, lu en 4.
 - `RepoContext` : construit en 2 depuis les listes de `repo_detail`, consommé en 1.
+- `Work` : défini en 6, alimenté depuis `Progress` (v0.5, inchangé) et depuis les tics de
+  `repo_detail_ticking` (6). La génération de la Task 5 le borne — d'où l'ordre 5 puis 6.
 - `Columns` / `columns_for` : 4 seulement.
 - `begin_load` / `accepts_load` / `remember` / `cached` / `forget` : 5 seulement.
 
