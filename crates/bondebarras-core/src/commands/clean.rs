@@ -188,6 +188,7 @@ mod tests {
             stale_pr: stale,
             protected: false,
             branch_class: None,
+            safety: crate::safety::Safety::Keep,
         }
     }
 

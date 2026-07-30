@@ -160,6 +160,8 @@ pub struct Resource {
     /// lets the TUI's individual-selection guard (`tui::app::App::
     /// toggle_selected`) tell "GitHub-backed" apart from "merely unmerged".
     pub branch_class: Option<crate::refs::BranchClass>,
+    /// How safe this resource is to delete — see `safety::classify`.
+    pub safety: crate::safety::Safety,
 }
 
 /// A resource's size, formatted for display.
@@ -243,6 +245,7 @@ mod tests {
             stale_pr: false,
             protected: false,
             branch_class: None,
+            safety: crate::safety::Safety::Keep,
         }
     }
 

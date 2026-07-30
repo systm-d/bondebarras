@@ -239,6 +239,7 @@ fn version_resources(versions: Vec<PackageVersion>) -> Vec<Resource> {
             protected: class == VersionClass::Tagged,
             // Only a `Branch` row carries a classification.
             branch_class: None,
+            safety: crate::safety::Safety::Keep,
         })
         .collect()
 }
@@ -322,6 +323,7 @@ fn branch_resources(
                 stale_pr: false,
                 protected: class != BranchClass::Merged,
                 branch_class: Some(class),
+                safety: crate::safety::Safety::Keep,
             }
         })
         .collect()
@@ -345,6 +347,7 @@ fn tag_resources(tags: Vec<String>) -> Vec<Resource> {
             protected: true,
             // Only a `Branch` row carries a classification.
             branch_class: None,
+            safety: crate::safety::Safety::Keep,
         })
         .collect()
 }
@@ -371,6 +374,7 @@ fn asset_resources(assets: Vec<ReleaseAsset>) -> Vec<Resource> {
             protected: false,
             // Only a `Branch` row carries a classification.
             branch_class: None,
+            safety: crate::safety::Safety::Keep,
         })
         .collect()
 }
@@ -399,6 +403,7 @@ mod tests {
             stale_pr: false,
             protected: false,
             branch_class: None,
+            safety: crate::safety::Safety::Keep,
         }
     }
 

@@ -198,6 +198,7 @@ mod tests {
             stale_pr: stale,
             protected: false,
             branch_class: None,
+            safety: crate::safety::Safety::Keep,
         }
     }
 
@@ -225,6 +226,7 @@ mod tests {
             stale_pr: false,
             protected: false,
             branch_class: None,
+            safety: crate::safety::Safety::Keep,
         }
     }
 
@@ -242,6 +244,7 @@ mod tests {
             stale_pr: false,
             protected: class != BranchClass::Merged,
             branch_class: Some(class),
+            safety: crate::safety::Safety::Keep,
         }
     }
 
@@ -258,6 +261,7 @@ mod tests {
             stale_pr: false,
             protected: true,
             branch_class: None,
+            safety: crate::safety::Safety::Keep,
         }
     }
 
@@ -277,6 +281,7 @@ mod tests {
             stale_pr: false,
             protected: false,
             branch_class: None,
+            safety: crate::safety::Safety::Keep,
         }
     }
 
@@ -301,6 +306,7 @@ mod tests {
             stale_pr: false,
             protected: false,
             branch_class: None,
+            safety: crate::safety::Safety::Keep,
         };
         let line = text(&row_spans(&r, false));
         assert!(line.contains("repo"), "got: {line}");

@@ -284,6 +284,7 @@ mod tests {
             stale_pr: false,
             protected: false,
             branch_class: None,
+            safety: crate::safety::Safety::Keep,
         }
     }
 

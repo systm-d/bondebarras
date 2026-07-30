@@ -259,6 +259,7 @@ impl App {
                 stale_pr: false,
                 protected: false,
                 branch_class: None,
+                safety: crate::safety::Safety::Keep,
             }],
             owner,
             repo,
@@ -529,6 +530,7 @@ mod tests {
             stale_pr: stale,
             protected: false,
             branch_class: None,
+            safety: crate::safety::Safety::Keep,
         }
     }
 
@@ -585,6 +587,7 @@ mod tests {
                 stale_pr: true,
                 protected: false,
                 branch_class: None,
+                safety: crate::safety::Safety::Keep,
             },
             Resource {
                 kind: ResourceKind::Repository,
@@ -596,6 +599,7 @@ mod tests {
                 stale_pr: true,
                 protected: false,
                 branch_class: None,
+                safety: crate::safety::Safety::Keep,
             },
             Resource {
                 kind: ResourceKind::Repository,
@@ -607,6 +611,7 @@ mod tests {
                 stale_pr: true,
                 protected: false,
                 branch_class: None,
+                safety: crate::safety::Safety::Keep,
             },
         ];
 
@@ -638,6 +643,7 @@ mod tests {
                 stale_pr: false,
                 protected: false,
                 branch_class: None,
+                safety: crate::safety::Safety::Keep,
             },
             Resource {
                 kind: ResourceKind::Artifact,
@@ -649,6 +655,7 @@ mod tests {
                 stale_pr: false,
                 protected: false,
                 branch_class: None,
+                safety: crate::safety::Safety::Keep,
             },
         ];
         // Default sort is by size descending, so the artifact (200) is row 0
@@ -725,6 +732,7 @@ mod tests {
             stale_pr: false,
             protected: class != crate::refs::BranchClass::Merged,
             branch_class: Some(class),
+            safety: crate::safety::Safety::Keep,
         }
     }
 
@@ -819,6 +827,7 @@ mod tests {
             stale_pr: false,
             protected: true,
             branch_class: None,
+            safety: crate::safety::Safety::Keep,
         }];
         a.res_cursor = 0;
 

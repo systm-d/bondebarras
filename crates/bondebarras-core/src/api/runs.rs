@@ -40,6 +40,7 @@ pub async fn list(client: &Client, owner: &str, repo: &str) -> Result<Vec<Resour
                         protected: false,
                         // Only a `Branch` row carries a classification.
                         branch_class: None,
+                        safety: crate::safety::Safety::Keep,
                     })
                 })
                 .collect()
