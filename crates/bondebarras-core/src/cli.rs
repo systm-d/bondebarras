@@ -69,6 +69,15 @@ pub enum Command {
         #[arg(long)]
         yes: bool,
     },
+    /// Vérifie s'il existe une version plus récente, et propose ou applique
+    /// la mise à jour selon la manière dont bondebarras a été installé. Ne
+    /// requiert aucun jeton GitHub : le dépôt est public.
+    Update {
+        /// N'affiche que la disponibilité d'une nouvelle version ; n'installe
+        /// et ne propose rien.
+        #[arg(long)]
+        check: bool,
+    },
 }
 
 #[cfg(test)]
@@ -130,5 +139,24 @@ mod tests {
             clean_v04_flags(&["--branches", "--assets"]),
             (true, false, true)
         );
+    }
+
+    fn update_check_flag(args: &[&str]) -> bool {
+        let mut full = vec!["bondebarras", "update"];
+        full.extend_from_slice(args);
+        match Cli::try_parse_from(full).unwrap().command {
+            Some(Command::Update { check }) => check,
+            other => panic!("expected Command::Update, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn update_check_defaults_to_false() {
+        assert!(!update_check_flag(&[]));
+    }
+
+    #[test]
+    fn update_check_flag_is_parsed() {
+        assert!(update_check_flag(&["--check"]));
     }
 }

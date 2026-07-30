@@ -66,3 +66,20 @@ fn clean_help_documents_the_v04_family_flags() {
         .stdout(contains("--tags"))
         .stdout(contains("--assets"));
 }
+
+#[test]
+fn update_is_listed_and_documents_its_check_flag() {
+    Command::cargo_bin("bondebarras")
+        .unwrap()
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(contains("update"));
+
+    Command::cargo_bin("bondebarras")
+        .unwrap()
+        .args(["update", "--help"])
+        .assert()
+        .success()
+        .stdout(contains("--check"));
+}
