@@ -111,6 +111,17 @@ Le dépôt n'est jamais marqué, à aucun niveau : la règle de la v0.5 tient �
 n'est pas une preuve d'abandon, et une bibliothèque finie ne bouge pas pendant deux ans
 sans être morte.
 
+⚠️ **Le cache et le workflow run ne partagent pas leurs règles**, malgré des lignes d'allure
+voisine. Un cache est une optimisation : rien ne casse quand il disparaît, donc une branche
+effacée suffit à le dire sûr. Un run est un **compte rendu** — le journal de ce qui s'est
+passé — et la disparition d'une branche ne dit rien de l'envie qu'on aura de le relire. Seul
+un fait positif le rend sûr : sa PR a mergé. Sinon, l'âge tranche.
+
+La première implémentation les a fait passer par la même fonction, et la revue de la tâche 1
+a mesuré ce que ça donnait : **un run d'un jour, sur une branche supprimée sans jamais
+merger, ressortait ⛑** — donc présélectionné par `[A]`, donc supprimable d'une frappe. Deux
+lignes du tableau qui se ressemblent ne sont pas la même règle.
+
 ### 4.1 Deux critères qui ne coûtent rien
 
 - **« branche disparue »** pour un cache croise la liste des branches, que la v0.4 récupère
@@ -138,8 +149,22 @@ coché par défaut**.
   et par `[A]` dans le TUI. Elle ne change pas.
 - `Safety` est un **affichage** et le critère de ce que `[A]` et `Maj+A` proposent.
 
-Une ressource `protected` n'est jamais ⛑. L'inverse n'est pas vrai : une branche vivante
-non mergée est • sans être `protected`, donc cochable individuellement.
+Une ressource `protected` n'est jamais ⛑ — et c'est **tout** ce que `protected` décide de
+son niveau. La première rédaction de ce paragraphe en tirait un exemple faux : « une branche
+vivante non mergée est • sans être `protected` ». Elle *est* `protected`, depuis la v0.4 —
+`scan::branch_resources` pose `protected: class != BranchClass::Merged` précisément pour
+qu'un cron ne supprime jamais de travail non mergé.
+
+La conséquence a été trouvée en revue de la tâche 1 : lire `protected` comme « donc rien à
+afficher » rendait le niveau • des branches **inatteignable**, et le rangeait avec la branche
+par défaut alors que les deux ne se ressemblent pas. La règle correcte est celle du haut,
+appliquée à la lettre — `protected` interdit le ⛑ et rien de plus. Chaque famille décide de
+son niveau par sa propre ligne du tableau du §4, et la branche le fait via `branch_class`
+(`Merged` / `Default` / `Protected` / `Live`), qui porte depuis la v0.4 la distinction à
+quatre voies que `protected` seul ne peut pas rendre.
+
+Ce qui reste vrai sans réserve : **la sélection individuelle (`espace`) n'est jamais bornée
+par `Safety`.** Une ligne visible est cochable, quel que soit son niveau.
 
 ## 5. Les deux jauges
 
