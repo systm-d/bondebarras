@@ -149,6 +149,21 @@ jobs:
         with:
           path: artifacts
 
+      # `bondebarras update` refuse d'installer un asset dont la somme n'est
+      # pas publiée (voir crates/bondebarras-core/src/commands/update.rs,
+      # `verify`/`verify_outcome`) : sans ce fichier, cette vérification
+      # échouait toujours ouverte plutôt que fermée. Une somme par artefact,
+      # au format `sha256sum` (`<hex>  <nom>`) que `parse_sha256_line`
+      # attend déjà, calculée dans le répertoire de chaque fichier pour que
+      # le second champ reste un simple nom de fichier plutôt qu'un chemin.
+      - name: Calculer les sommes sha256 de chaque artefact
+        shell: bash
+        run: |
+          set -euo pipefail
+          while IFS= read -r -d '' f; do
+            ( cd "$(dirname "$f")" && sha256sum "$(basename "$f")" > "$(basename "$f").sha256" )
+          done < <(find artifacts -mindepth 2 -maxdepth 2 -type f ! -name '*.sha256' -print0)
+
       # Rend la formule Homebrew et le PKGBUILD AUR à partir des gabarits
       # packaging/ : URL + sha256 du tarball source de ce tag. Les deux
       # recettes pointent sur la même archive, donc partagent le même sha256.

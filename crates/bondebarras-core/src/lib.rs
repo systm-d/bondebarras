@@ -13,6 +13,7 @@ pub mod repos;
 pub mod scan;
 pub mod stale;
 pub mod tui;
+pub mod update;
 
 use clap::Parser;
 use std::process::ExitCode;
@@ -56,12 +57,18 @@ async fn visible_orgs(client: &api::Client) -> anyhow::Result<Vec<String>> {
 
 async fn run_async() -> anyhow::Result<ExitCode> {
     let cli = cli::Cli::parse();
-    let token = auth::resolve_token()?;
-    // Shared: the TUI hands clones to the spawned deletion tasks.
-    let client = Arc::new(api::Client::new(&token)?);
 
     match cli.command {
+        // The repository `update` queries is public, and a version check
+        // must never require GitHub authentication (see the design doc,
+        // §2) — so this is the one arm that never calls
+        // `authenticated_client()`, unlike every other one below.
+        Some(cli::Command::Update { check }) => {
+            commands::update::run(check)?;
+            Ok(ExitCode::SUCCESS)
+        }
         Some(cli::Command::Scan { org, json }) => {
+            let client = authenticated_client().await?;
             let targets: Vec<String> = match org {
                 Some(o) => vec![o],
                 None => visible_orgs(&client).await?,
@@ -83,6 +90,7 @@ async fn run_async() -> anyhow::Result<ExitCode> {
             older_than,
             yes,
         }) => {
+            let client = authenticated_client().await?;
             let filter = commands::clean::CleanFilter {
                 caches,
                 artifacts,
@@ -97,10 +105,20 @@ async fn run_async() -> anyhow::Result<ExitCode> {
             commands::clean::run(&client, &org, &repo, &filter, yes).await
         }
         None => {
+            let client = authenticated_client().await?;
             let orgs = visible_orgs(&client).await?;
             let summaries = scan::overview(&client, &orgs).await;
             tui::run_tui(client, summaries).await?;
             Ok(ExitCode::SUCCESS)
         }
     }
+}
+
+/// Resolve a token and build the shared GitHub client. Called lazily by
+/// every command except `update`, which must work without either.
+///
+/// Shared: the TUI hands clones to the spawned deletion tasks.
+async fn authenticated_client() -> anyhow::Result<Arc<api::Client>> {
+    let token = auth::resolve_token()?;
+    Ok(Arc::new(api::Client::new(&token)?))
 }
