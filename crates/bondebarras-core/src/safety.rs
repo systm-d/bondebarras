@@ -152,10 +152,19 @@ mod tests {
 
     fn ctx() -> RepoContext {
         RepoContext {
-            merged_refs: ["claude/landing".to_string()].into_iter().collect(),
-            live_branches: ["main".to_string(), "wip".to_string()]
+            merged_refs: ["claude/landing".to_string(), "still-there".to_string()]
                 .into_iter()
                 .collect(),
+            // `still-there` also lives here: a ref this test's cache is on
+            // must find no vanished-branch fallback available, or a test
+            // reading it could not tell the `merged_refs` rule from that one.
+            live_branches: [
+                "main".to_string(),
+                "wip".to_string(),
+                "still-there".to_string(),
+            ]
+            .into_iter()
+            .collect(),
             default_branch: "main".to_string(),
             release_tags: vec!["v0.12.0".into(), "v0.11.0".into(), "v0.10.0".into()],
         }
@@ -182,9 +191,13 @@ mod tests {
     }
 
     #[test]
-    fn a_cache_on_a_closed_prs_ref_is_safe() {
+    fn a_cache_on_a_merged_branchs_ref_is_safe() {
+        // The branch still exists, so the vanished-branch fallback cannot
+        // fire — `merged_refs` is the only rule that can return Safe here.
+        // With the ref absent from `live_branches`, both rules would answer
+        // Safe and the test could not tell them apart.
         let mut c = res(ResourceKind::Cache, 12);
-        c.git_ref = Some("claude/landing".into());
+        c.git_ref = Some("refs/heads/still-there".into());
         assert_eq!(classify(&c, &ctx()), Safety::Safe);
     }
 
@@ -259,11 +272,20 @@ mod tests {
 
     #[test]
     fn a_protected_resource_is_never_safe() {
-        // `protected` is the bulk-selection gate and outranks every other
-        // signal. A tag carries it, and a tag is what releases point at.
-        let mut t = res(ResourceKind::Tag, 400);
-        t.protected = true;
-        assert_eq!(classify(&t, &ctx()), Safety::Keep);
+        // A merged branch is `Safe` on its own — so `protected` is the only
+        // thing standing between this fixture and `Safe`, and removing the
+        // early return flips the answer. A `Tag` would prove nothing here:
+        // it is `Keep` unconditionally, guard or no guard.
+        let mut b = res(ResourceKind::Branch, 40);
+        b.label = "claude/landing".into();
+        b.protected = true;
+        assert_eq!(classify(&b, &ctx()), Safety::Keep);
+
+        // Same branch without the flag: `Safe`. This is the half that proves
+        // the fixture reaches the branch arm at all.
+        let mut unguarded = res(ResourceKind::Branch, 40);
+        unguarded.label = "claude/landing".into();
+        assert_eq!(classify(&unguarded, &ctx()), Safety::Safe);
     }
 
     #[test]
