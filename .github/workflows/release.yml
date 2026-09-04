@@ -75,7 +75,7 @@ jobs:
           cp "target/${{ matrix.target }}/release/bondebarras.exe" "bondebarras-${{ matrix.name }}.exe"
 
       - name: Upload artefact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: bondebarras-${{ matrix.name }}
           path: |
@@ -102,7 +102,7 @@ jobs:
         run: cargo deb -p bondebarras
 
       - name: Upload artefact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: bondebarras-deb
           path: target/debian/*.deb
@@ -128,7 +128,7 @@ jobs:
         run: cargo generate-rpm -p crates/bondebarras
 
       - name: Upload artefact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: bondebarras-rpm
           path: target/generate-rpm/*.rpm
