@@ -5,10 +5,12 @@ use crate::refs::BranchClass;
 use crate::stale::pr_number_from_ref;
 use crate::tui::app::App;
 use crate::tui::theme;
+use crate::tui::views::gauges;
 use ratatui::Frame;
-use ratatui::layout::Rect;
+use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, List, ListItem};
+use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
+use std::collections::HashSet;
 
 /// Widest a label renders as before this truncates it with a trailing `…`.
 ///
@@ -136,11 +138,83 @@ fn list_title(count: usize, bytes: u64, has_sizeless: bool) -> String {
     }
 }
 
+/// Actions minutes this repository burnt in the most recent month its org's
+/// usage report carries, in Linux-equivalent minutes.
+///
+/// Reuses `BillingReport::included_minutes` rather than recomputing the
+/// per-SKU multiplier sum by hand — passing it a set containing only this
+/// one repository turns the same org-wide allowance sum it already computes
+/// (and is already unit-tested against) into a single repository's share.
+/// `0` when there is nothing to read: no billing report at all (a 403 — this
+/// token's owner is not an org owner), or no month in it yet — the same
+/// absent-data-reads-as-zero the caller already applies to a public repo.
+fn repo_minutes_used(org: &crate::model::OrgSummary, repo_name: &str) -> u64 {
+    let Some(report) = &org.billing else {
+        return 0;
+    };
+    let months = report.months();
+    let Some(month) = months.last() else {
+        return 0;
+    };
+    let mut only_this_repo = HashSet::new();
+    only_this_repo.insert(repo_name.to_string());
+    report.included_minutes(month, &only_this_repo)
+}
+
+/// The two gauges for the repository whose resources this pane currently
+/// shows (`app.loaded`, not wherever the tree cursor has since wandered —
+/// same reasoning as `App::take_plan`). Empty before anything has loaded, or
+/// if the loaded repository has since left the tree (an org refresh, say):
+/// there is nothing to gauge yet.
+fn repo_gauge_lines(app: &App, width: u16) -> Vec<Line<'static>> {
+    let Some((org_login, repo_name)) = app.loaded.as_ref() else {
+        return Vec::new();
+    };
+    let Some(org) = app.orgs.iter().find(|o| &o.login == org_login) else {
+        return Vec::new();
+    };
+    let Some(repo) = org.repos.iter().find(|r| &r.name == repo_name) else {
+        return Vec::new();
+    };
+
+    let mut lines = gauges::cache_gauge_line(repo.cache_bytes, width);
+    let minutes_used = if repo.private {
+        repo_minutes_used(org, &repo.name)
+    } else {
+        0
+    };
+    lines.extend(gauges::minutes_gauge_line(
+        minutes_used,
+        !repo.private,
+        width,
+    ));
+    lines
+}
+
 /// Renders the resource list as a stateful list so ratatui scrolls to keep
 /// the selection visible. On a 69-cache repo, an 80x24 terminal only fits
 /// about 19 rows without this — the plain `render_widget` used before left
 /// most of them unreachable.
+///
+/// Task 3 draws the repository's two gauges (see `tui::views::gauges`) at
+/// the head of this same area, above the resource list; task 4 keeps them at
+/// the head of column 3 once the three-column layout replaces this pane.
 pub fn render(app: &mut App, f: &mut Frame, area: Rect) {
+    let gauge_lines = repo_gauge_lines(app, area.width);
+    let (gauge_area, list_area) = if gauge_lines.is_empty() {
+        (None, area)
+    } else {
+        let chunks = Layout::vertical([
+            Constraint::Length(gauge_lines.len() as u16),
+            Constraint::Min(0),
+        ])
+        .split(area);
+        (Some(chunks[0]), chunks[1])
+    };
+    if let Some(gauge_area) = gauge_area {
+        f.render_widget(Paragraph::new(gauge_lines), gauge_area);
+    }
+
     // Read before `items` is built, from the same shared borrow, so both can
     // draw from `app.visible_resources()` before anything is borrowed
     // mutably below.
@@ -178,7 +252,7 @@ pub fn render(app: &mut App, f: &mut Frame, area: Rect) {
         )
         .highlight_style(theme::selection_style());
 
-    f.render_stateful_widget(list, area, &mut app.res_state);
+    f.render_stateful_widget(list, list_area, &mut app.res_state);
 }
 
 #[cfg(test)]
@@ -655,5 +729,128 @@ mod tests {
             rendered.contains("GitHub"),
             "a branch-only list must still warn that its size is unknown: {rendered}"
         );
+    }
+
+    /// A private repository, over its cache ceiling, with a nonzero minutes
+    /// figure — the fixture exercises every line either gauge can print (the
+    /// base line, plus the cache overshoot warning) at once, so a width that
+    /// clips any one of them shows up here rather than in only one of two
+    /// separate, narrower fixtures.
+    fn org_with_gauged_repo() -> crate::model::OrgSummary {
+        let report = crate::billing::BillingReport {
+            items: vec![crate::billing::UsageItem {
+                month: "2026-07".into(),
+                product: "actions".into(),
+                sku: "Actions Linux".into(),
+                quantity: 1_000.0,
+                unit_type: "Minutes".into(),
+                gross: 6.0,
+                discount: 0.0,
+                net: 6.0,
+                repo: "josephine".into(),
+            }],
+        };
+        crate::model::OrgSummary {
+            login: "systm-d".into(),
+            cache_bytes: 12_360_000_000,
+            cache_count: 3,
+            repos: vec![crate::model::RepoSummary {
+                name: "josephine".into(),
+                cache_bytes: 12_360_000_000,
+                cache_count: 3,
+                private: true,
+                age_days: 5,
+                class: crate::repos::RepoClass::Archivable,
+            }],
+            billing: Some(report),
+        }
+    }
+
+    /// Task 3: the two gauges (`tui::views::gauges`) are drawn at the head of
+    /// this pane, for the repository `app.loaded` names — not wherever the
+    /// tree cursor sits, and not through some separately-rendered widget the
+    /// real `render` never touches.
+    ///
+    /// Renders the *real* resource-pane `Rect`, not `f.area()` stood in for
+    /// it: `views::mod::render` never hands this pane the whole frame — it
+    /// first carves off the header/status/footer rows, then the fixed-width
+    /// orgs pane, and only the remainder reaches `repo::render`. Replicating
+    /// that same split here (rather than pretending the backend's full area
+    /// belongs to this pane) is what makes the sweep meaningful: at a given
+    /// overall terminal width, the resource pane is narrower than the
+    /// terminal by `orgs::PANE_WIDTH`, and a defect that only bites once that
+    /// real width is accounted for — this pane's own internal gauge/list
+    /// split included — would stay invisible to a test that skipped this
+    /// step and searched a much roomier fabricated area instead.
+    ///
+    /// `pane_width` (60 to 200, binding constraint §7's sweep range) is the
+    /// resource pane's own resulting width, not the outer terminal's — the
+    /// two differ by exactly `orgs::PANE_WIDTH`. The fixture is built so a
+    /// wrong implementation cannot pass by accident: capping the cache
+    /// percentage at 100 would drop "115" and the eviction warning; a
+    /// percent helper that divides by a genuinely zero ceiling would show
+    /// `u64::MAX` instead of "50"; never wiring the gauges into `render` at
+    /// all would show neither "Cache" nor "Minutes".
+    #[test]
+    fn the_two_gauges_render_at_the_head_of_the_real_resource_pane_across_swept_widths() {
+        let mut app = App::new(vec![]);
+        app.orgs = vec![org_with_gauged_repo()];
+        app.loaded = Some(("systm-d".to_string(), "josephine".to_string()));
+        app.resources = vec![res(false)];
+
+        for pane_width in 60..=200u16 {
+            let total_width = pane_width + super::super::orgs::PANE_WIDTH;
+            // 13 rows: the 3 fixed header/status/footer rows this crate's
+            // real layout always reserves, plus the same 10-row body height
+            // the file's other sweep tests use.
+            let backend = ratatui::backend::TestBackend::new(total_width, 13);
+            let mut terminal = ratatui::Terminal::new(backend).unwrap();
+            terminal
+                .draw(|f| {
+                    let body = ratatui::layout::Layout::vertical([
+                        ratatui::layout::Constraint::Length(1),
+                        ratatui::layout::Constraint::Min(1),
+                        ratatui::layout::Constraint::Length(1),
+                        ratatui::layout::Constraint::Length(1),
+                    ])
+                    .split(f.area())[1];
+                    let resource_area = ratatui::layout::Layout::horizontal([
+                        ratatui::layout::Constraint::Length(super::super::orgs::PANE_WIDTH),
+                        ratatui::layout::Constraint::Min(20),
+                    ])
+                    .split(body)[1];
+                    render(&mut app, f, resource_area);
+                })
+                .unwrap();
+
+            let rendered: String = terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .map(|c| c.symbol())
+                .collect();
+
+            assert!(
+                rendered.contains("Cache"),
+                "cache gauge missing at pane width {pane_width}: {rendered}"
+            );
+            assert!(
+                rendered.contains("Minutes"),
+                "minutes gauge missing at pane width {pane_width}: {rendered}"
+            );
+            assert!(
+                rendered.contains("115"),
+                "cache overshoot percent clipped at pane width {pane_width}: {rendered}"
+            );
+            assert!(
+                rendered.contains("évince"),
+                "cache eviction warning clipped at pane width {pane_width}: {rendered}"
+            );
+            assert!(
+                rendered.contains("50"),
+                "minutes percent clipped at pane width {pane_width}: {rendered}"
+            );
+        }
     }
 }

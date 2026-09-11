@@ -3,6 +3,7 @@
 
 pub mod billing;
 pub mod confirm;
+pub mod gauges;
 pub mod orgs;
 pub mod repo;
 
