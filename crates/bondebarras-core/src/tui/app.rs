@@ -1227,6 +1227,49 @@ mod tests {
         assert!(selected_levels(&a).is_empty());
     }
 
+    /// A live, unmerged branch as production builds it: `protected`, since no
+    /// merged pull request proves it dead (`scan::branch_resources`), and •
+    /// (`safety::classify`) — the one protected row at a level a bulk key
+    /// takes.
+    fn protected_live_branch(id: u64) -> Resource {
+        Resource {
+            safety: Safety::Check,
+            ..branch(id, "feature/wip", crate::refs::BranchClass::Live)
+        }
+    }
+
+    /// Fix round 1, review finding: the protected guard was only tested on a
+    /// protected ⛑ row, which `safety::classify` never produces, and every
+    /// other fixture `[V]` ran on was unprotected — a guard letting protected
+    /// • rows through passed the whole suite. `[V]` is the first key to reach
+    /// •, and the protected • row production does produce is every live,
+    /// unmerged branch: taking it in bulk deletes work nobody merged, for
+    /// good. Beside it, an unprotected • cache `[V]` must take, so a guard
+    /// that simply refused every • row fails too.
+    #[test]
+    fn select_safe_and_check_never_takes_a_protected_live_branch() {
+        let mut a = App::new(vec![]);
+        a.resources = vec![
+            Resource {
+                safety: Safety::Check,
+                ..res(1, "cache-on-a-feature-branch", 100, 10, false)
+            },
+            protected_live_branch(2),
+        ];
+
+        a.select_safe_and_check();
+
+        assert!(
+            a.selected.contains(&(ResourceKind::Cache, 1)),
+            "[V] must take the unprotected • cache"
+        );
+        assert!(
+            !a.selected.contains(&(ResourceKind::Branch, 2)),
+            "[V] took a live branch nobody merged: {:?}",
+            a.selected
+        );
+    }
+
     /// THE test of this whole version, per the task-4 brief's own
     /// self-review: without this, a future extension of `[A]` would flip a
     /// whole organisation to read-only on one keystroke. Neither `[A]` nor

@@ -558,6 +558,10 @@ mod tests {
     /// sits on the third — the biggest, first under the default size sort —
     /// so `espace` would tick it whatever its level. A key that reaches the
     /// resource list from the wrong column has something to change.
+    ///
+    /// Plus a live, unmerged branch, as production builds it: • and
+    /// `protected` (fix round 1). `V` reaches its level and must still leave
+    /// it unticked; sizeless, it sorts last and never sits under the cursor.
     fn app_with_loaded_resources() -> App {
         let mut app = App::new(vec![crate::model::OrgSummary {
             login: "systm-d".into(),
@@ -591,6 +595,18 @@ mod tests {
             cache(1, "refs/pull/32/merge", true, Safety::Safe),
             cache(2, "refs/heads/feature/x", false, Safety::Check),
             cache(3, "refs/heads/main", false, Safety::Keep),
+            crate::model::Resource {
+                kind: ResourceKind::Branch,
+                id: 4,
+                label: "feature/wip".into(),
+                size_bytes: 0,
+                age_days: 3,
+                git_ref: None,
+                stale_pr: false,
+                protected: true,
+                branch_class: Some(crate::refs::BranchClass::Live),
+                safety: Safety::Check,
+            },
         ];
         app
     }
