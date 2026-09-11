@@ -400,6 +400,8 @@ Adapter aux noms réels des variables locales de `repo_detail`.
 
 `feat(scan): le niveau de sureté est calculé au scan`
 
+**Amendement (2026-09-11, contrôleur).** Le champ `Resource.safety` existe déjà : la Task 1 (`99c9b14`) l'a ajouté et posé à `Safety::Keep` sur chaque site de construction. Cette tâche se réduit au câblage — construire le `RepoContext` à la fin de `repo_detail` et reclasser — et à son test wiremock. Le reclassement vit dans **le seul chemin de code** qui assemble les neuf listes : la Task 6 ajoutera `repo_detail_ticking`, qui devra passer par ce chemin, pas le recopier.
+
 ---
 
 ### Task 3: Les deux jauges
@@ -464,6 +466,13 @@ mod tests {
 
 Implémenter sur le modèle de `views/billing.rs`'s `gauge_line`, qui ne plafonne déjà pas. La ligne d'avertissement n'apparaît qu'au-dessus de 100 %. Commit : `feat(tui): jauges de cache et de minutes`.
 
+**Amendements (2026-09-11, contrôleur).**
+
+- `CACHE_CEILING_BYTES` reste `10 * 1024 * 1024 * 1024` : le §2 de la spec montre josephine à **115 %** pour 11,5 Gio. Le test `the_cache_gauge_reports_overshoot_rather_than_capping` attend donc `"115"` pour 12 360 000 000 octets, pas `"123"` — 123 % supposerait un plafond décimal de 10 000 000 000, contraire à la constante imposée.
+- Le pourcentage passe par une fonction pure qui prend `(used, ceiling)`. `a_zero_ceiling_does_not_divide_by_zero` l'appelle avec un plafond **nul** : tel qu'écrit plus haut, il passait un usage nul contre un plafond constant et ne pouvait pas échouer sur la propriété qu'il nomme.
+- Le plafond de minutes vient de `billing::FREE_MINUTES_PER_MONTH`, sans nouveau littéral : l'issue #11 remplacera cette source unique par le quota de la formule de l'organisation.
+- La colonne 3 n'existe qu'à la Task 4 : dessiner les deux lignes en tête du panneau de ressources actuel (`views/repo.rs`) ; la Task 4 les garde en tête de la colonne 3.
+
 ---
 
 ### Task 4: Trois colonnes et disposition responsive
@@ -518,12 +527,9 @@ Plus un test de rendu **balayant les largeurs de 60 à 200**, rendant le vrai `R
 
 `orgs.rs` perd le dépliage — plus de dépôts indentés. `repos.rs` rend la colonne 2 depuis `app.orgs[app.org_cursor].repos`. `views::render` compose selon `columns_for(f.area().width)` et met le contexte manquant dans l'en-tête quand une colonne disparaît.
 
-`←`/`→` changent de colonne, `Tab` reste synonyme cyclique. **Le pied annonce les déplacements** — c'est la correction du défaut d'origine :
+`←`/`→` changent de colonne, `Tab` reste synonyme cyclique. **Le pied annonce les déplacements** — c'est la correction du défaut d'origine.
 
-```rust
-const FOOTER_NAV: &str = " [←/→] colonne  [↑/↓] ligne  [espace] cocher  \
-                          [A] sûrs  [Maj+A] +à vérifier  [d] supprimer  [q] quitter";
-```
+**Amendement (2026-09-11, contrôleur) — le pied dépend de la colonne active** (spec §2), au lieu d'une constante unique. Chaque variante annonce `[←/→] colonne` et `[↑/↓] ligne`, puis les actions valables dans cette colonne, et se termine par `[q] quitter` (le test de la Task 6 s'y ancre). Le pied n'annonce **que des touches qui existent** : `[A]` garde son libellé actuel jusqu'à la Task 7, qui introduit `[V]`. Un pied qui promet une touche absente est exactement le défaut que ce plan corrige.
 
 Commit : `feat(tui): trois colonnes repliables, navigation annoncée`.
 
@@ -793,6 +799,79 @@ Couleurs : `theme::` existant, comme les jauges de la Task 3. Ne pas introduire 
 
 Commit : `feat(tui): barre de progression en pied pour les purges et les chargements`.
 
+---
+
+### Task 7: Marqueurs ⛑ / • et sélection par niveau
+
+Ajoutée le 2026-09-11 : la spec §4.2 et §7 exigent que `[A]` coche les ⛑ et qu'une seconde touche ajoute les •, et le §2 montre les marqueurs dans les lignes ; aucune tâche ne les portait.
+
+**Files:** `crates/bondebarras-core/src/tui/app.rs`, `tui/mod.rs`, le module qui rend la colonne des ressources après la Task 4, `tui/views/mod.rs` (pied)
+
+**Interfaces:**
+- Consumes: `Resource.safety` (Task 2) ; pied par colonne (Task 4)
+- Produces: `App::select_safe()` derrière `[A]` (remplace `select_all_stale`), `App::select_safe_and_check()` derrière `[V]`
+
+**Touches.** Dans un terminal, `KeyCode::Char('A')` *est* Maj+a : la « Maj+A » de la spec n'est pas une frappe distincte de `[A]`. `[A]` garde sa touche et ne prend que les ⛑ (les caches ⚑ en font partie : `stale_pr` rend `Safe`). « + à vérifier » passe sur `[V]` — vérifier dans `tui/mod.rs` que `V` est libre, sinon s'arrêter et le signaler.
+
+**Règles inchangées.** Un `Repository` n'est jamais pris, ni par `[A]` ni par `[V]`. Une ressource `protected` n'est jamais prise en masse, quel que soit son niveau. Les lignes masquées par le filtre ne sont pas prises (la propriété de `select_all_stale_does_not_select_rows_hidden_by_the_filter` reste vraie sous le nouveau nom). La sélection individuelle (`espace`) n'est jamais bornée par `Safety`. La CLI headless n'est pas touchée.
+
+**Marqueurs.** Dans chaque ligne de ressource : `⛑` pour `Safe`, `•` pour `Check`, une espace pour `Keep`, dans une colonne de largeur fixe pour que les libellés restent alignés.
+
+- [ ] **Step 1: Écrire les tests qui échouent**
+
+```rust
+    #[test]
+    fn select_safe_takes_only_the_safe_rows() {
+        // One row of each level: a key that also took Check would pass a
+        // fixture holding only Safe rows.
+        let mut a = app_with_levels(&[Safety::Safe, Safety::Check, Safety::Keep]);
+        a.select_safe();
+        assert_eq!(selected_levels(&a), vec![Safety::Safe]);
+    }
+
+    #[test]
+    fn select_safe_and_check_adds_check_and_nothing_else() {
+        let mut a = app_with_levels(&[Safety::Safe, Safety::Check, Safety::Keep]);
+        a.select_safe_and_check();
+        assert_eq!(selected_levels(&a), vec![Safety::Safe, Safety::Check]);
+    }
+
+    #[test]
+    fn a_protected_row_is_never_taken_in_bulk_even_if_marked_safe() {
+        // classify never returns Safe for a protected row today; this pins the
+        // selection's own guard, so a future classifier bug cannot reach a
+        // bulk delete.
+        let mut a = app_with_levels(&[Safety::Safe]);
+        protect_all_resources(&mut a);
+        a.select_safe_and_check();
+        assert!(selected_levels(&a).is_empty());
+    }
+```
+
+`app_with_levels`, `selected_levels` et `protect_all_resources` sont des helpers de test à écrire dans le même module, sur le modèle des fixtures de `select_all_stale_takes_only_flagged_items`. Ajouter un test de rendu qui trouve `⛑` et `•` dans le `Rect` réel de la colonne des ressources, et un test que le pied de cette colonne annonce `[V]`.
+
+- [ ] **Step 2: Lancer les tests**
+
+Run: `cargo test -p bondebarras-core select_safe > /tmp/t7-red.txt 2>&1; cat /tmp/t7-red.txt`
+Expected: FAIL — `no method named select_safe`.
+
+- [ ] **Step 3: Implémenter** — renommer `select_all_stale` en `select_safe` (critère : `safety == Safety::Safe`), ajouter `select_safe_and_check`, brancher `[V]`, dessiner les marqueurs, annoncer `[A] sûrs  [V] +à vérifier` dans le pied de la colonne des ressources.
+
+- [ ] **Step 4 et 5 : relancer, commiter** — `feat(tui): marqueurs de surete, [A] surs et [V] a verifier`.
+
+---
+
+### Task 8: Documentation
+
+Ajoutée le 2026-09-11 : aucune tâche ne mettait à jour la documentation, alors que la disposition, les touches et le sens de `[A]` changent.
+
+**Files:** `README.md`, `CHANGELOG.md`, `CLAUDE.md`
+
+- [ ] **Step 1:** `README.md` — l'usage du TUI décrit les trois colonnes et leur repli (≥ 100 / 72–99 / < 72), les touches `←`/`→`/`Tab`/`↑`/`↓`/`Entrée`, les marqueurs ⛑ / •, `[A]` (sûrs) et `[V]` (+ à vérifier), les deux jauges et la barre de progression. Aucune capture inventée : décrire, ou reprendre le schéma du §2 de la spec.
+- [ ] **Step 2:** `CHANGELOG.md` — section `## [Unreleased]` au format Keep a Changelog : *Added* (trois colonnes, marquage de sûreté, jauges, chargement après pause, barre de progression, `[V]`), *Changed* (`[A]` prend les ⛑ au lieu des ⚑).
+- [ ] **Step 3:** `CLAUDE.md` — table « Where to change what » : `safety.rs`, `tui/views/gauges.rs`, `tui/views/repos.rs`, `tui/views/progress.rs` ; la ligne du panneau gauche devient la colonne 1 ; la règle produit qui cite `select_all_stale` (`[A]`) suit le nouveau nom.
+- [ ] **Step 4:** `cargo fmt --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace && cargo build --release`, puis commit `docs: trois colonnes, marquage de surete et nouvelles touches`.
+
 ## Self-Review
 
 **Couverture de la spec**
@@ -810,6 +889,8 @@ Commit : `feat(tui): barre de progression en pied pour les purges et les chargem
 | §5 les deux jauges, plafond codé en dur annoncé | 3 |
 | §7 tests, dont le balayage de largeurs | 1-6 |
 | barre de progression (demande hors spec initiale) | 6 |
+| §4.2 `[A]` ⛑ seuls, seconde touche + •, marqueurs dans les lignes | 7 |
+| documentation (README, CHANGELOG, CLAUDE.md) | 8 |
 
 **Cohérence des types**
 
