@@ -873,6 +873,12 @@ Expected: FAIL — `no method named select_safe`.
 
 - [ ] **Step 4 et 5 : relancer, commiter** — `feat(tui): marqueurs de surete, [A] surs et [V] a verifier`.
 
+**Amendement (2026-09-11, contrôleur) — ce que la Task 4 laisse ouvert.**
+
+- **Ligne compacte.** Dans la colonne des ressources, les champs fixes d'une ligne (case, genre, taille, âge, drapeau) prennent aujourd'hui 33 cellules : à 80 colonnes (colonne des ressources de 42), il reste 7 caractères de libellé, et le marqueur de cette tâche en prendrait 2 de plus. Compacter ces champs en ajoutant le marqueur — le schéma du §2 de la spec montre des tailles courtes (`467 M`) et pas d'âge à côté d'un drapeau — de sorte qu'**à 80 colonnes chaque ligne garde au moins 12 caractères de libellé**, et qu'**une version de paquet montre son suffixe de classe complet**, `(sans tag)` comme `(attestation orpheline)`. Si la classe la plus longue ne peut pas tenir, s'arrêter et le signaler plutôt que de raccourcir un libellé de classe.
+- **Test.** `a_package_row_survives_at_eighty_columns` (nom conservé : `scan.rs` le cite) redevient une garantie à 80 colonnes : il affirme `(sans tag)` **et** `(attestation orpheline)` dans le `Rect` réel de la colonne des ressources à une largeur de terminal de 80, en plus du balayage 60..=200. Un test de balayage vérifie les 12 caractères de libellé minimum à 80 colonnes et au-delà.
+- **Touches.** Depuis `f6ab57d`, `espace`, `A`, `f` et `s` n'agissent que dans la colonne active. `[A]` et `[V]` suivent la même règle : ils n'agissent que lorsque le focus est sur la colonne des ressources, et le pied de cette colonne seule annonce `[A] sûrs  [V] +à vérifier`.
+
 ---
 
 ### Task 8: Documentation
@@ -884,6 +890,7 @@ Ajoutée le 2026-09-11 : aucune tâche ne mettait à jour la documentation, alor
 - [ ] **Step 1:** `README.md` — l'usage du TUI décrit les trois colonnes et leur repli (≥ 100 / 72–99 / < 72), les touches `←`/`→`/`Tab`/`↑`/`↓`/`Entrée`, les marqueurs ⛑ / •, `[A]` (sûrs) et `[V]` (+ à vérifier), les deux jauges et la barre de progression. Aucune capture inventée : décrire, ou reprendre le schéma du §2 de la spec.
 - [ ] **Step 2:** `CHANGELOG.md` — section `## [Unreleased]` au format Keep a Changelog : *Added* (trois colonnes, marquage de sûreté, jauges, chargement après pause, barre de progression, `[V]`), *Changed* (`[A]` prend les ⛑ au lieu des ⚑).
 - [ ] **Step 3:** `CLAUDE.md` — table « Where to change what » : `safety.rs`, `tui/views/gauges.rs`, `tui/views/repos.rs`, `tui/views/progress.rs` ; la ligne du panneau gauche devient la colonne 1 ; la règle produit qui cite `select_all_stale` (`[A]`) suit le nouveau nom.
+- [ ] **Step 3 bis:** les noms rendus faux par la Task 4 — `CLAUDE.md` cite `orgs::repo_row_spans` (désormais `repos::repo_row_spans`) et « Left pane » / « Right pane » (désormais les colonnes 1 à 3) ; quelques commentaires d'`app.rs` et un nom de test disent encore qu'un dépôt « vit dans l'arbre » ; le doc comment de `scan.rs` qui cite `a_package_row_survives_at_eighty_columns` doit rester vrai après la Task 7.
 - [ ] **Step 4:** `cargo fmt --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace && cargo build --release`, puis commit `docs: trois colonnes, marquage de surete et nouvelles touches`.
 
 ## Self-Review
