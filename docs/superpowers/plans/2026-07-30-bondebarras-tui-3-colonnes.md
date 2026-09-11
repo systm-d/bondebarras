@@ -531,6 +531,20 @@ Plus un test de rendu **balayant les largeurs de 60 à 200**, rendant le vrai `R
 
 **Amendement (2026-09-11, contrôleur) — le pied dépend de la colonne active** (spec §2), au lieu d'une constante unique. Chaque variante annonce `[←/→] colonne` et `[↑/↓] ligne`, puis les actions valables dans cette colonne, et se termine par `[q] quitter` (le test de la Task 6 s'y ancre). Le pied n'annonce **que des touches qui existent** : `[A]` garde son libellé actuel jusqu'à la Task 7, qui introduit `[V]`. Un pied qui promet une touche absente est exactement le défaut que ce plan corrige.
 
+**Amendement 2 (2026-09-11, contrôleur) — largeur de la colonne des dépôts.** La ligne de dépôt de la v0.5 (case 4, nom ≥ 10, âge ou classe jusqu'à ` déjà archivé` 13, taille 8) demande 35 cellules ; `Length(26)` n'en laisse que 24, et `a_repository_row_stays_legible_across_swept_widths` — issu de la revue v0.5, qui a refusé un panneau de 26 amputé de sa taille — échoue à 26. La colonne 2 prend donc la largeur du panneau v0.5 : **`Length(38)`** (`orgs::PANE_WIDTH`). La colonne des ressources garde **`Min(40)` dans tous les modes à plusieurs colonnes**, et les seuils en découlent au lieu d'être posés à la main :
+
+- `Three` si `width >= 22 + 38 + 40` (= 100) ;
+- `Two` si `width >= 38 + 40` (= 78) ;
+- `One` sinon.
+
+Les tests de bornes deviennent : `columns_for(100) == Three`, `columns_for(99) == Two`, `columns_for(78) == Two`, `columns_for(77) == One`, `columns_for(40) == One`. Un terminal de 80 colonnes garde ses deux colonnes.
+
+En mode deux colonnes, la colonne de gauche suit le focus : orgs + ressources quand le focus est sur les orgs, dépôts + ressources sinon ; l'en-tête rappelle le contexte masqué. `←`/`→`/`Tab` parcourent les trois colonnes dans tous les modes. En mode une colonne, seule la colonne active est dessinée : le balayage de largeurs place le focus sur les ressources, et un test séparé vérifie que c'est bien la colonne active qui est montrée.
+
+Le pied s'adapte à la largeur : `[←/→] colonne`, `[↑/↓] ligne` et `[q] quitter` toujours visibles, les actions de la colonne ajoutées dans un ordre fixe tant qu'elles tiennent. Les libellés de ressources se raccourcissent à la largeur de la colonne pour que taille et drapeau ne soient jamais coupés.
+
+`a_repository_row_stays_legible_across_swept_widths` garde sa propriété (âge ou classe **et** taille visibles) ; seul le calcul de son `Rect` suit la disposition en colonnes.
+
 Commit : `feat(tui): trois colonnes repliables, navigation annoncée`.
 
 ---

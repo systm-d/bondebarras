@@ -71,6 +71,13 @@ est sortie s'applique ici : **on balaie les largeurs, on n'en échantillonne pas
 La dégradation se fait en retirant les colonnes de **gauche**, jamais celle de droite : les
 ressources sont ce qu'on vient supprimer, et le contexte se rappelle dans l'en-tête.
 
+> **Amendement (2026-09-11).** La colonne des dépôts prend `Length(38)`, la largeur du panneau
+> v0.5, et non `Length(26)` : la ligne de dépôt de la v0.5 (âge ou classe, taille) demande 35
+> cellules, et la revue v0.5 a refusé un panneau qui l'amputait. La colonne des ressources garde
+> `Min(40)` dès qu'elle partage l'écran ; les seuils du tableau ci-dessus en découlent : **trois
+> colonnes dès 100, deux dès 78, une en dessous**. En deux colonnes, la colonne de gauche suit le
+> focus (orgs ou dépôts), pour qu'on puisse encore changer d'organisation à 80 colonnes.
+
 ## 3. Chargement de la colonne 3
 
 Charger le détail d'un dépôt coûte **neuf appels** (caches, artifacts, runs, packages, PR,
