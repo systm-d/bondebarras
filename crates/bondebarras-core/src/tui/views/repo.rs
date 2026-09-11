@@ -156,28 +156,78 @@ pub fn row_spans(r: &Resource, checked: bool, label_width: usize) -> Vec<Span<'s
     spans
 }
 
-/// The resources column's title: the column's name, then item count and
-/// byte tally, plus — when the visible list holds at least one resource
-/// `ResourceKind::has_known_size` says GitHub exposes no size for — the
-/// caveat that some rows' size is unknown.
+/// Why some rows show `—` instead of a size, as the user reads it.
 ///
-/// Not optional when `has_sizeless` is true: a column of `—` in a tool that
-/// shows bytes on every other screen reads as "these are empty", which is
-/// the opposite of the truth. Debt 2 of the v0.4 final review: this used to
-/// take `has_packages`, fed by `render`'s own `kind ==
+/// Not optional when the visible list holds at least one resource
+/// `ResourceKind::has_known_size` says GitHub exposes no size for: a column
+/// of `—` in a tool that shows bytes on every other screen reads as "these
+/// are empty", which is the opposite of the truth.
+const SIZELESS_WARNING: &str = "⚠ GitHub n'expose pas la taille de certaines ressources";
+
+/// The resources column's title: the column's name, then item count and
+/// byte tally, plus `SIZELESS_WARNING` when `with_warning` is true.
+///
+/// Debt 2 of the v0.4 final review: the warning used to hang on
+/// `has_packages`, fed by `render`'s own `kind ==
 /// ResourceKind::PackageVersion` check — so a list whose only sizeless rows
 /// were branches or tags carried the same `—` markers with no banner to
 /// explain them. Generalised to whatever `has_known_size` calls sizeless,
 /// the one place that already enumerates every such kind.
-fn list_title(count: usize, bytes: u64, has_sizeless: bool) -> String {
-    if has_sizeless {
-        format!(
-            " RESSOURCES · {count} éléments · {} · ⚠ GitHub n'expose pas la taille de certaines ressources ",
-            human_size(bytes)
-        )
+fn list_title(count: usize, bytes: u64, with_warning: bool) -> String {
+    let size = human_size(bytes);
+    if with_warning {
+        format!(" RESSOURCES · {count} éléments · {size} · {SIZELESS_WARNING} ")
     } else {
-        format!(" RESSOURCES · {count} éléments · {} ", human_size(bytes))
+        format!(" RESSOURCES · {count} éléments · {size} ")
     }
+}
+
+/// The column's title, and the lines to draw at the head of the column when
+/// the title cannot hold `SIZELESS_WARNING` whole.
+///
+/// CLAUDE.md: a package version shows `—` "with a header line spelling out
+/// why". The title sits on a top border `room` cells wide, and ratatui clips
+/// whatever overflows it from the right — the warning, its last part, is
+/// what went. So the warning rides in the title only when the whole title
+/// fits; otherwise the title drops it and it becomes lines of its own inside
+/// the column, broken at spaces (`wrap_words`) so every word stays on screen.
+fn column_head(
+    count: usize,
+    bytes: u64,
+    has_sizeless: bool,
+    room: u16,
+) -> (String, Vec<Line<'static>>) {
+    let room = usize::from(room);
+    let title = list_title(count, bytes, has_sizeless);
+    if !has_sizeless || views::cells(&title) <= room {
+        return (title, Vec::new());
+    }
+    let lines = wrap_words(SIZELESS_WARNING, room)
+        .into_iter()
+        .map(|line| Line::from(Span::styled(line, theme::status_warn())))
+        .collect();
+    (list_title(count, bytes, false), lines)
+}
+
+/// `text` broken at spaces into lines at most `width` cells wide. A word
+/// wider than `width` still gets a line of its own, and clips there; no word
+/// of `SIZELESS_WARNING` is that wide at any width this column is drawn at.
+fn wrap_words(text: &str, width: usize) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut line = String::new();
+    for word in text.split(' ') {
+        if !line.is_empty() && views::cells(&line) + 1 + views::cells(word) > width {
+            lines.push(std::mem::take(&mut line));
+        }
+        if !line.is_empty() {
+            line.push(' ');
+        }
+        line.push_str(word);
+    }
+    if !line.is_empty() {
+        lines.push(line);
+    }
+    lines
 }
 
 /// Actions minutes this repository burnt in the most recent month its org's
@@ -233,12 +283,13 @@ fn repo_gauge_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     lines
 }
 
-/// Renders the resources column: its block, the repository's two gauges
-/// (`tui::views::gauges`) at its head (spec §5), and under them the resource
-/// list, as a stateful list so ratatui scrolls to keep the selection
-/// visible. On a 69-cache repo, an 80x24 terminal only fits about 19 rows
-/// without this — the plain `render_widget` used before left most of them
-/// unreachable.
+/// Renders the resources column: its block, at its head the repository's
+/// two gauges (`tui::views::gauges`, spec §5) and then — when the title
+/// cannot hold it — the sizeless warning (`column_head`), and under them the
+/// resource list, as a stateful list so ratatui scrolls to keep the
+/// selection visible. On a 69-cache repo, an 80x24 terminal only fits about
+/// 19 rows without this — the plain `render_widget` used before left most of
+/// them unreachable.
 pub fn render(app: &mut App, f: &mut Frame, area: Rect) {
     let focused = app.focus == Focus::Resources;
 
@@ -247,22 +298,27 @@ pub fn render(app: &mut App, f: &mut Frame, area: Rect) {
     // those borrows end once the items are built.
     let visible = app.visible_resources();
     let has_sizeless = visible.iter().any(|r| !r.kind.has_known_size());
-    let title = list_title(visible.len(), app.selection_bytes(), has_sizeless);
+    // The title's room is the top border between its two corners.
+    let (title, warning_lines) = column_head(
+        visible.len(),
+        app.selection_bytes(),
+        has_sizeless,
+        area.width.saturating_sub(2),
+    );
 
     let block = views::column_block(title, focused);
     let inner = block.inner(area);
     f.render_widget(block, area);
 
-    let gauge_lines = repo_gauge_lines(app, inner.width);
-    let list_area = if gauge_lines.is_empty() {
+    let mut head = repo_gauge_lines(app, inner.width);
+    head.extend(warning_lines);
+    let list_area = if head.is_empty() {
         inner
     } else {
-        let [gauge_area, list_area] = Layout::vertical([
-            Constraint::Length(gauge_lines.len() as u16),
-            Constraint::Min(0),
-        ])
-        .areas(inner);
-        f.render_widget(Paragraph::new(gauge_lines), gauge_area);
+        let [head_area, list_area] =
+            Layout::vertical([Constraint::Length(head.len() as u16), Constraint::Min(0)])
+                .areas(inner);
+        f.render_widget(Paragraph::new(head), head_area);
         list_area
     };
 
@@ -490,31 +546,39 @@ mod tests {
     /// entirely, with no assertion here able to see it, since every other
     /// test in this module asserts on the spans, not on what a terminal
     /// would actually show.
+    ///
+    /// Read back from the resources column's real `Rect`
+    /// (`views::testing::focused_column`) at every terminal width from 60 to
+    /// 200, instead of `f.area()` at 80 × 24; the name stays because
+    /// `scan.rs` cites it. The `—` size marker must survive every width. The
+    /// `(sans tag)` suffix is asserted wherever `fit_label` has room to keep
+    /// it whole beside one head character — a column of `ROW_BESIDE_LABEL`
+    /// plus ` (sans tag)` plus 2, plus its two borders: 48. Below that the
+    /// three-column layout's minimum (40) and the column an 80-column
+    /// terminal gets (42) cannot hold the suffix with this row format: the
+    /// class suffix at exactly 80 columns is not guaranteed any more — see
+    /// the task 4 report's concern on narrow labels.
     #[test]
     fn a_package_row_survives_at_eighty_columns() {
         let mut app = App::new(vec![]);
         app.resources = vec![package_resource()];
+        let suffix_floor = ROW_BESIDE_LABEL + " (sans tag)".len() + 2 + 2;
 
-        let backend = ratatui::backend::TestBackend::new(80, 24);
-        let mut terminal = ratatui::Terminal::new(backend).unwrap();
-        terminal.draw(|f| render(&mut app, f, f.area())).unwrap();
-
-        let rendered: String = terminal
-            .backend()
-            .buffer()
-            .content()
-            .iter()
-            .map(|c| c.symbol())
-            .collect();
-
-        assert!(
-            rendered.contains('—'),
-            "the size marker must survive: {rendered}"
-        );
-        assert!(
-            rendered.contains("sans tag"),
-            "the class suffix must survive: {rendered}"
-        );
+        for width in 60..=200u16 {
+            let (rect, column) =
+                views::testing::focused_column(&mut app, Focus::Resources, width, 12);
+            assert!(
+                column.contains('—'),
+                "the size marker must survive at width {width}:\n{column}"
+            );
+            if usize::from(rect.width) >= suffix_floor {
+                assert!(
+                    column.contains("sans tag"),
+                    "the class suffix must survive at width {width} (column {}):\n{column}",
+                    rect.width
+                );
+            }
+        }
     }
 
     /// The dead-branch classification the design doc's mockup (§5) calls
@@ -751,27 +815,52 @@ mod tests {
     /// already-computed bool and cannot prove which kinds fed it — a
     /// regression back to `kind == PackageVersion` would still pass every
     /// `list_title` unit test above unchanged.
+    ///
+    /// Read back from the resources column's real `Rect`
+    /// (`views::testing::focused_column`) at every terminal width from 60 to
+    /// 200, and asserting the whole explanation rather than one word of it:
+    /// a title clipped at its border can keep "GitHub" and lose the rest.
     #[test]
     fn the_title_warns_when_the_visible_list_holds_a_branch_with_no_package_present() {
         let mut app = App::new(vec![]);
         app.resources = vec![branch("claude/landing-3jbqk4", BranchClass::Merged)];
 
-        let backend = ratatui::backend::TestBackend::new(100, 10);
-        let mut terminal = ratatui::Terminal::new(backend).unwrap();
-        terminal.draw(|f| render(&mut app, f, f.area())).unwrap();
+        for width in 60..=200u16 {
+            let (_, column) = views::testing::focused_column(&mut app, Focus::Resources, width, 12);
+            assert!(
+                views::testing::unwrapped(&column).contains(EXPLANATION),
+                "a branch-only list must still warn that its size is unknown at width \
+                 {width}:\n{column}"
+            );
+        }
+    }
 
-        let rendered: String = terminal
-            .backend()
-            .buffer()
-            .content()
-            .iter()
-            .map(|c| c.symbol())
-            .collect();
+    /// The explanation for `—`, word for word as the user reads it — typed
+    /// out here rather than read from the production constant, so a change
+    /// to what the screen says cannot pass unnoticed.
+    const EXPLANATION: &str = "⚠ GitHub n'expose pas la taille de certaines ressources";
 
-        assert!(
-            rendered.contains("GitHub"),
-            "a branch-only list must still warn that its size is unknown: {rendered}"
-        );
+    /// CLAUDE.md: a package version shows `—` "with a header line spelling
+    /// out why". That explanation rode in the column's title, and a title
+    /// that overflows its border is clipped from the right — the
+    /// explanation, its last part, is what went, at every width where the
+    /// column is narrower than the whole title. Swept over the resources
+    /// column's real `Rect` from 60 to 200 with a package version, asserting
+    /// the whole explanation is on screen in order: in the title where it
+    /// fits, otherwise on rows of its own inside the column, which
+    /// `views::testing::unwrapped` joins back together.
+    #[test]
+    fn the_sizeless_explanation_is_never_clipped_across_swept_widths() {
+        let mut app = App::new(vec![]);
+        app.resources = vec![package_resource()];
+
+        for width in 60..=200u16 {
+            let (_, column) = views::testing::focused_column(&mut app, Focus::Resources, width, 12);
+            assert!(
+                views::testing::unwrapped(&column).contains(EXPLANATION),
+                "the explanation for `—` is clipped at width {width}:\n{column}"
+            );
+        }
     }
 
     /// A private repository, over its cache ceiling, with a nonzero minutes

@@ -77,7 +77,6 @@ fn column_actions(focus: Focus) -> &'static [&'static str] {
 /// Below the movement keys and `[q] quitter` themselves (40 cells) the
 /// footer clips like any other line.
 fn footer_orgs(focus: Focus, width: u16) -> String {
-    let cells = |text: &str| Span::raw(text).width();
     let budget = usize::from(width);
     let mut footer = String::from(FOOTER_MOVES);
     for action in column_actions(focus) {
@@ -89,6 +88,12 @@ fn footer_orgs(focus: Focus, width: u16) -> String {
     }
     footer.push_str(FOOTER_QUIT);
     footer
+}
+
+/// How many terminal cells `text` takes, measured the way ratatui lays it
+/// out — for text fitted to a width before it is drawn.
+pub(crate) fn cells(text: &str) -> usize {
+    Span::raw(text).width()
 }
 
 /// How many columns `View::Orgs` draws side by side.
@@ -437,6 +442,26 @@ pub(crate) mod testing {
         }
         .expect("the focused column is on screen in every layout");
         (rect, text_in(&buf, rect))
+    }
+
+    /// A column's text as prose: each row stripped of its two side borders
+    /// and its padding, blank rows dropped, rows joined by single spaces.
+    /// A sentence `render` broke across rows at spaces reads back whole; one
+    /// clipped at a border — or split inside a word — does not.
+    pub(crate) fn unwrapped(column: &str) -> String {
+        column
+            .lines()
+            .map(|row| {
+                let cells: Vec<char> = row.chars().collect();
+                let inside: String = match cells.len() {
+                    0..=2 => String::new(),
+                    n => cells[1..n - 1].iter().collect(),
+                };
+                inside.trim().to_string()
+            })
+            .filter(|row| !row.is_empty())
+            .collect::<Vec<_>>()
+            .join(" ")
     }
 }
 
