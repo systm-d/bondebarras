@@ -225,14 +225,20 @@ async fn detail(
     // whenever `default_branch` is empty — see its own doc comment, and
     // `api::refs::default_branch`'s. Also not one of the seven families.
     let default_branch = default_branch_r.unwrap_or_default();
-    let branches = take(branches_r, "branches", &mut failed);
-    // Read off `branches` before it is moved into `branch_resources` below:
-    // the safety classification (this function's tail) also needs the set of
-    // branches that still exist, and this is the one place that can supply
-    // it without a second request.
-    let live_branches: HashSet<String> = branches.iter().map(|b| b.name.clone()).collect();
+    // A failed listing degrades to `BranchListing::default()`: no branch,
+    // and not complete.
+    let listing = take(branches_r, "branches", &mut failed);
+    // Read off the listing before its branches are moved into
+    // `branch_resources` below: the safety classification (this function's
+    // tail) also needs the set of branches that still exist, and this is the
+    // one place that can supply it without a second request. Kept only when
+    // the listing is whole — a failed or truncated one cannot say a branch is
+    // gone (final review I1).
+    let live_branches: Option<HashSet<String>> = listing
+        .complete
+        .then(|| listing.branches.iter().map(|b| b.name.clone()).collect());
     items.extend(branch_resources(
-        branches,
+        listing.branches,
         &default_branch,
         &closed.merged_refs,
     ));
@@ -1604,6 +1610,190 @@ mod tests {
             on_main.safety,
             crate::safety::Safety::Keep,
             "a cache on the default branch must be kept"
+        );
+    }
+
+    /// `systm-d/{repo}` holding four caches, one per way `safety::classify`
+    /// can judge a cache, with its branches listing and its default-branch
+    /// lookup answering `branches` and `default_branch`:
+    ///
+    /// - id 1, on closed pull request 54's merge ref: safe through
+    ///   `stale_pr`, a fact the closed-PR listing proves on its own;
+    /// - id 2, on `claude/landing`, the head of merged pull request 31: safe
+    ///   through `merged_refs`, same listing;
+    /// - id 3, on `wip`, a live branch no pull request merged;
+    /// - id 4, on `main`, the default branch.
+    ///
+    /// The last two are the caches only the branches listing and the
+    /// default-branch lookup can tell apart from a vanished branch's.
+    async fn mount_four_caches(
+        server: &MockServer,
+        repo: &str,
+        branches: ResponseTemplate,
+        default_branch: ResponseTemplate,
+    ) {
+        let cache = |id: u64, git_ref: &str| {
+            serde_json::json!({
+                "id": id, "key": format!("cache-{id}"), "ref": git_ref,
+                "size_in_bytes": 1000 * id, "last_accessed_at": "2026-06-01T00:00:00Z"
+            })
+        };
+        let empty = |body: serde_json::Value| ResponseTemplate::new(200).set_body_json(body);
+        let routes = [
+            (
+                format!("/repos/systm-d/{repo}/actions/caches"),
+                empty(serde_json::json!({ "actions_caches": [
+                    cache(1, "refs/pull/54/merge"),
+                    cache(2, "refs/heads/claude/landing"),
+                    cache(3, "refs/heads/wip"),
+                    cache(4, "refs/heads/main"),
+                ] })),
+            ),
+            (
+                format!("/repos/systm-d/{repo}/actions/artifacts"),
+                empty(serde_json::json!({ "artifacts": [] })),
+            ),
+            (
+                format!("/repos/systm-d/{repo}/actions/runs"),
+                empty(serde_json::json!({ "workflow_runs": [] })),
+            ),
+            (
+                format!("/orgs/systm-d/packages/container/{repo}/versions"),
+                ResponseTemplate::new(404),
+            ),
+            (
+                format!("/repos/systm-d/{repo}/pulls"),
+                empty(serde_json::json!([
+                    { "number": 54, "state": "closed", "merged_at": null,
+                      "head": { "ref": "feature/abandoned" } },
+                    { "number": 31, "state": "closed", "merged_at": "2026-07-24T13:33:32Z",
+                      "head": { "ref": "claude/landing" } }
+                ])),
+            ),
+            (format!("/repos/systm-d/{repo}/branches"), branches),
+            (
+                format!("/repos/systm-d/{repo}/tags"),
+                empty(serde_json::json!([])),
+            ),
+            (
+                format!("/repos/systm-d/{repo}/releases"),
+                empty(serde_json::json!([])),
+            ),
+            (format!("/repos/systm-d/{repo}"), default_branch),
+        ];
+        for (route, response) in routes {
+            Mock::given(method("GET"))
+                .and(path(route))
+                .respond_with(response)
+                .mount(server)
+                .await;
+        }
+    }
+
+    /// Each of `mount_four_caches`' caches' safety level, by id, as
+    /// `repo_detail` classified it.
+    async fn cache_levels(server: &MockServer, repo: &str) -> Vec<(u64, crate::safety::Safety)> {
+        let client = Client::with_base("t0ken", &server.uri()).unwrap();
+        let mut levels: Vec<(u64, crate::safety::Safety)> = repo_detail(&client, "systm-d", repo)
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|r| r.kind == ResourceKind::Cache)
+            .map(|r| (r.id, r.safety))
+            .collect();
+        levels.sort_by_key(|&(id, _)| id);
+        levels
+    }
+
+    /// Final review I1: a branches listing that failed used to degrade to an
+    /// empty set of live branches, and the vanished-branch rule then read
+    /// every cache on a live branch as a cache on a branch that no longer
+    /// exists — ⛑, taken by `[A]`. Absence of data is not proof of absence:
+    /// `wip`'s cache must fall to `Check`. The two caches made safe by the
+    /// closed-PR listing alone keep their level, and `main`'s stays kept.
+    #[tokio::test]
+    async fn safety_never_reads_a_failed_branches_listing_as_vanished_branches() {
+        use crate::safety::Safety;
+        let server = MockServer::start().await;
+        mount_four_caches(
+            &server,
+            "refusee",
+            ResponseTemplate::new(403),
+            ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({ "default_branch": "main" })),
+        )
+        .await;
+
+        assert_eq!(
+            cache_levels(&server, "refusee").await,
+            vec![
+                (1, Safety::Safe),
+                (2, Safety::Safe),
+                (3, Safety::Check),
+                (4, Safety::Keep)
+            ],
+            "(id, level) of the closed PR's, merged head's, live branch's and main's caches"
+        );
+    }
+
+    /// The other way the branch set is incomplete: `api::refs::branches`
+    /// stops after its page cap. Every page here is full, so the listing is
+    /// cut there, and `wip` — past the last page read — is absent from what
+    /// was read. Its cache must fall to `Check`, not read as a vanished
+    /// branch's.
+    #[tokio::test]
+    async fn safety_never_reads_a_truncated_branches_listing_as_vanished_branches() {
+        use crate::safety::Safety;
+        let server = MockServer::start().await;
+        let full_page: Vec<serde_json::Value> = (1..=100)
+            .map(|n| serde_json::json!({ "name": format!("branch-{n}"), "protected": false }))
+            .collect();
+        mount_four_caches(
+            &server,
+            "tronquee",
+            ResponseTemplate::new(200).set_body_json(full_page),
+            ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({ "default_branch": "main" })),
+        )
+        .await;
+
+        assert_eq!(
+            cache_levels(&server, "tronquee").await,
+            vec![
+                (1, Safety::Safe),
+                (2, Safety::Safe),
+                (3, Safety::Check),
+                (4, Safety::Keep)
+            ],
+            "(id, level) of the closed PR's, merged head's, live branch's and main's caches"
+        );
+    }
+
+    /// The final review's joint blip: both calls hit `/repos/{o}/{r}`'s
+    /// endpoint family. With no default branch and no branch set, `main`'s
+    /// cache used to read ⛑ too. Neither `wip`'s nor `main`'s may be `Safe`;
+    /// the closed PR's and the merged head's still are.
+    #[tokio::test]
+    async fn safety_never_marks_the_default_branchs_cache_safe_when_neither_listing_answers() {
+        use crate::safety::Safety;
+        let server = MockServer::start().await;
+        mount_four_caches(
+            &server,
+            "muette",
+            ResponseTemplate::new(403),
+            ResponseTemplate::new(403),
+        )
+        .await;
+
+        assert_eq!(
+            cache_levels(&server, "muette").await,
+            vec![
+                (1, Safety::Safe),
+                (2, Safety::Safe),
+                (3, Safety::Check),
+                (4, Safety::Check)
+            ],
+            "(id, level) of the closed PR's, merged head's, live branch's and main's caches"
         );
     }
 

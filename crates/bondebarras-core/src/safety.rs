@@ -27,8 +27,12 @@ pub enum Safety {
 pub struct RepoContext {
     /// `head.ref` of the pull requests that were actually merged.
     pub merged_refs: HashSet<String>,
-    /// Branches that still exist.
-    pub live_branches: HashSet<String>,
+    /// Every branch that still exists — `None` unless the branches listing
+    /// answered in full. A listing that failed, or stopped at its page cap
+    /// (`api::refs::BranchListing::complete`), says nothing about a name it
+    /// does not hold, so it is not kept at all (final review I1).
+    pub live_branches: Option<HashSet<String>>,
+    /// The repository's default branch; `""` when its lookup failed.
     pub default_branch: String,
     /// Release tags, newest first, as the API returns them.
     pub release_tags: Vec<String>,
@@ -148,7 +152,18 @@ fn classify_by_ref(r: &Resource, ctx: &RepoContext) -> Safety {
     }
     // A ref naming a branch that no longer exists: nothing pulls it by name,
     // and no pull request will bring it back.
-    if !ctx.live_branches.contains(name) && !name.starts_with("refs/pull/") {
+    //
+    // Only a whole branch listing can say a name is absent from it, and only
+    // a known default branch can say this ref is not the default one — both
+    // checks above read `""` as "no default branch", which no real branch is
+    // named. Without either, absence of data would pass for proof of
+    // absence, and a live branch's cache — `main`'s, when both calls failed
+    // — would read ⛑ (final review I1). Such a cache falls to `Check`.
+    if let Some(live) = &ctx.live_branches
+        && !ctx.default_branch.is_empty()
+        && !live.contains(name)
+        && !name.starts_with("refs/pull/")
+    {
         return Safety::Safe;
     }
     Safety::Check
@@ -226,13 +241,15 @@ mod tests {
             // `still-there` also lives here: a ref this test's cache is on
             // must find no vanished-branch fallback available, or a test
             // reading it could not tell the `merged_refs` rule from that one.
-            live_branches: [
-                "main".to_string(),
-                "wip".to_string(),
-                "still-there".to_string(),
-            ]
-            .into_iter()
-            .collect(),
+            live_branches: Some(
+                [
+                    "main".to_string(),
+                    "wip".to_string(),
+                    "still-there".to_string(),
+                ]
+                .into_iter()
+                .collect(),
+            ),
             default_branch: "main".to_string(),
             release_tags: vec!["v0.12.0".into(), "v0.11.0".into(), "v0.10.0".into()],
         }
@@ -292,6 +309,49 @@ mod tests {
         let mut c = res(ResourceKind::Cache, 12);
         c.git_ref = Some("gone-branch".into());
         assert_eq!(classify(&c, &ctx()), Safety::Safe);
+    }
+
+    /// Final review I1, at the rule itself: with no whole branch listing, a
+    /// ref missing from the set proves nothing, and `gone-branch`'s cache —
+    /// `Safe` in the sibling test above, where the listing is whole — falls
+    /// to `Check`. The caches the closed-PR listing makes safe on its own
+    /// keep their level.
+    #[test]
+    fn an_unknown_branch_set_never_makes_a_cache_safe_by_absence() {
+        let unknown = RepoContext {
+            live_branches: None,
+            ..ctx()
+        };
+        let mut vanished = res(ResourceKind::Cache, 12);
+        vanished.git_ref = Some("gone-branch".into());
+        assert_eq!(classify(&vanished, &unknown), Safety::Check);
+
+        let mut closed_pr = res(ResourceKind::Cache, 12);
+        closed_pr.git_ref = Some("refs/pull/54/merge".into());
+        closed_pr.stale_pr = true;
+        assert_eq!(classify(&closed_pr, &unknown), Safety::Safe);
+
+        let mut merged = res(ResourceKind::Cache, 12);
+        merged.git_ref = Some("refs/heads/still-there".into());
+        assert_eq!(classify(&merged, &unknown), Safety::Safe);
+    }
+
+    /// The rule's other precondition. A whole listing always holds the
+    /// default branch, so this fixture — `main` missing from a whole set —
+    /// has no producer today; artificial by construction, like
+    /// `a_protected_resource_is_never_safe`'s. It is the one case where the
+    /// default-branch guard alone decides: with `default_branch` unknown,
+    /// `main`'s cache is not called vanished.
+    #[test]
+    fn an_unknown_default_branch_never_makes_a_cache_safe_by_absence() {
+        let no_default = RepoContext {
+            live_branches: Some(["wip".to_string()].into_iter().collect()),
+            default_branch: String::new(),
+            ..ctx()
+        };
+        let mut on_main = res(ResourceKind::Cache, 12);
+        on_main.git_ref = Some("refs/heads/main".into());
+        assert_eq!(classify(&on_main, &no_default), Safety::Check);
     }
 
     #[test]

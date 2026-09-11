@@ -48,12 +48,30 @@ pub fn resource_id(name: &str) -> u64 {
     hasher.finish()
 }
 
+/// A repository's branches, and whether they are all of them.
+///
+/// `complete` is what lets a caller read the *absence* of a name as a fact:
+/// `safety::classify` calls a cache's branch vanished only when the listing
+/// it looks in is known whole. `Default` — no branch, not complete — is what
+/// a failed listing degrades to (`scan::take`), so a failure can never pass
+/// for a repository that simply has no branches.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BranchListing {
+    pub branches: Vec<BranchRef>,
+    pub complete: bool,
+}
+
 /// Every branch of a repository, across as many pages as it takes.
 ///
 /// `SecondBrain-io/monolith-back` alone crosses the 100-per-page ceiling, so
 /// a single page would silently hide branches — the same defect
 /// `prs::closed_prs` had before v0.1 fixed it.
-pub async fn branches(client: &Client, owner: &str, repo: &str) -> Result<Vec<BranchRef>> {
+///
+/// Complete only once a short page ends the listing. A listing still full at
+/// `MAX_PAGES` stops there and says so, as does a page that is not a JSON
+/// array: either way branches may exist that this never read (final review
+/// I1).
+pub async fn branches(client: &Client, owner: &str, repo: &str) -> Result<BranchListing> {
     let mut out = Vec::new();
 
     for page in 1..=MAX_PAGES {
@@ -77,11 +95,17 @@ pub async fn branches(client: &Client, owner: &str, repo: &str) -> Result<Vec<Br
 
         // A short page is the last one.
         if items.len() < PAGE_SIZE {
-            break;
+            return Ok(BranchListing {
+                branches: out,
+                complete: true,
+            });
         }
     }
 
-    Ok(out)
+    Ok(BranchListing {
+        branches: out,
+        complete: false,
+    })
 }
 
 /// Every tag name of a repository, across as many pages as it takes.
@@ -212,6 +236,8 @@ mod tests {
         let client = Client::with_base("t0ken", &server.uri()).unwrap();
         let out = branches(&client, "systm-d", "claudine").await.unwrap();
 
+        assert!(out.complete, "a short first page is the whole listing");
+        let out = out.branches;
         assert_eq!(out.len(), 2);
         assert_eq!(out[0].name, "main");
         assert!(out[0].protected);
@@ -249,8 +275,39 @@ mod tests {
             .await
             .unwrap();
 
+        assert!(out.complete, "a short second page ends the listing whole");
+        let out = out.branches;
         assert_eq!(out.len(), 101, "the second page must not be dropped");
         assert!(out.iter().any(|b| b.name == "main" && b.protected));
+    }
+
+    /// Final review I1: the listing stops after `MAX_PAGES` full pages, and
+    /// branches may remain past them. It must say so — `safety::classify`
+    /// would otherwise read every branch beyond the cap as vanished. Every
+    /// page answers full here; exactly `MAX_PAGES` are read.
+    #[tokio::test]
+    async fn branches_says_a_listing_cut_at_the_page_cap_is_incomplete() {
+        let server = MockServer::start().await;
+        let full: Vec<serde_json::Value> = (1..=PAGE_SIZE)
+            .map(|n| serde_json::json!({ "name": format!("branch-{n}"), "protected": false }))
+            .collect();
+        Mock::given(method("GET"))
+            .and(path("/repos/SecondBrain-io/monolith-back/branches"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(full))
+            .expect(u64::from(MAX_PAGES))
+            .mount(&server)
+            .await;
+
+        let client = Client::with_base("t0ken", &server.uri()).unwrap();
+        let out = branches(&client, "SecondBrain-io", "monolith-back")
+            .await
+            .unwrap();
+
+        assert!(
+            !out.complete,
+            "a listing still full at the cap is not whole"
+        );
+        assert_eq!(out.branches.len(), PAGE_SIZE * MAX_PAGES as usize);
     }
 
     #[tokio::test]
@@ -266,7 +323,10 @@ mod tests {
             .await;
 
         let client = Client::with_base("t0ken", &server.uri()).unwrap();
-        let out = branches(&client, "systm-d", "claudine").await.unwrap();
+        let out = branches(&client, "systm-d", "claudine")
+            .await
+            .unwrap()
+            .branches;
 
         assert_eq!(out.len(), 1, "the nameless entry must be dropped");
         assert_eq!(out[0].name, "main");
