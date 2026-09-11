@@ -196,7 +196,7 @@ pub struct RepoSummary {
     /// Days since the last push. Not proof of abandonment on its own — a
     /// finished, stable library does not move for two years without being
     /// dead — which is exactly why nothing in this crate ever preselects a
-    /// repository from it (see `tui::app::App::select_all_stale`'s own guard
+    /// repository from it (see `tui::app::App::select_safe`'s own guard
     /// and `commands::clean::select`'s permanent refusal). Shown to the human
     /// who decides, on the repository's own row in the tree.
     pub age_days: i64,

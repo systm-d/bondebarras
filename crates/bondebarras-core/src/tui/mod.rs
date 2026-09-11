@@ -234,17 +234,13 @@ where
                     spawn_load(&client, &landings_tx, &ticks_tx, load);
                 }
             }
-            // `espace`, `s`, `A` and `f` act on the focused column only — see
-            // `column_action`.
-            KeyCode::Char(' ' | 's' | 'A' | 'f') => column_action(&mut app, key.code),
-            // Dispatches on focus, not on preferring a ticked repository
-            // unconditionally — see `App::take_focused_plan`'s own doc
-            // comment for Finding 1 of the final review, which this used to
-            // get wrong.
+            // `espace`, `s`, `A`, `V` and `f` act on the focused column only —
+            // see `column_action`.
+            KeyCode::Char(' ' | 's' | 'A' | 'V' | 'f') => column_action(&mut app, key.code),
+            // The plan of the column `d` is pressed in, and none from the
+            // orgs column — see `plan_for_d`.
             KeyCode::Char('d') => {
-                if let Some(plan) = app.take_focused_plan()
-                    && !plan.items.is_empty()
-                {
+                if let Some(plan) = plan_for_d(&app) {
                     pending = Some(plan);
                 }
             }
@@ -503,15 +499,17 @@ fn request_quit(app: &mut App) {
     }
 }
 
-/// Applies `espace`, `s`, `A` or `f` to the column focus is on, and only to
-/// it.
+/// Applies `espace`, `s`, `A`, `V` or `f` to the column focus is on, and
+/// only to it.
 ///
-/// - The resources column: `espace` ticks the row under the cursor, `A`
-///   takes the ⚑ rows, `s` cycles the sort, `f` opens the filter.
+/// - The resources column: `espace` ticks the row under the cursor, whatever
+///   its safety level; `A` adds the ⛑ rows (`App::select_safe`), `V` the •
+///   rows too (`App::select_safe_and_check`); `s` cycles the sort, `f` opens
+///   the filter.
 /// - The repos column: `espace` ticks the repository for archiving, under
 ///   `App::toggle_repo_selected`'s own rules — a repository cannot share
 ///   `toggle_selected`'s guard or storage (see that method's doc comment).
-///   `A`, `s` and `f` do nothing.
+///   `A`, `V`, `s` and `f` do nothing.
 /// - The orgs column: nothing.
 ///
 /// These keys used to reach the resource list from every column. Once the
@@ -519,10 +517,15 @@ fn request_quit(app: &mut App) {
 /// or the repos have focus — `espace` and `A` then ticked resources the user
 /// could not see, and `d` deleted them. The per-column footer
 /// (`tui::views::column_actions`) announces these keys only where they act.
+///
+/// In a terminal `A` is Shift+a: spec §4.2's "Maj+A" is no keystroke of its
+/// own. So `[A]` keeps its key and its narrower meaning, and the • level
+/// takes a key of its own, `V`, rather than widening the one `A` has been.
 fn column_action(app: &mut App, code: KeyCode) {
     match (app.focus, code) {
         (Focus::Resources, KeyCode::Char(' ')) => app.toggle_selected(),
-        (Focus::Resources, KeyCode::Char('A')) => app.select_all_stale(),
+        (Focus::Resources, KeyCode::Char('A')) => app.select_safe(),
+        (Focus::Resources, KeyCode::Char('V')) => app.select_safe_and_check(),
         (Focus::Resources, KeyCode::Char('s')) => app.cycle_sort(),
         (Focus::Resources, KeyCode::Char('f')) => app.filter_mode = true,
         (Focus::Repos, KeyCode::Char(' ')) => app.toggle_repo_selected(),
@@ -530,14 +533,30 @@ fn column_action(app: &mut App, code: KeyCode) {
     }
 }
 
+/// The plan `d` asks to confirm, if any: the focused column's own
+/// (`App::take_focused_plan`) — the ticked resources from the resources
+/// column, the ticked repository from the repos column, nothing from the
+/// orgs column — and none when it holds nothing to do.
+///
+/// Split out of `event_loop` so what `d` opens can be asserted on without a
+/// terminal.
+fn plan_for_d(app: &App) -> Option<Plan> {
+    app.take_focused_plan()
+        .filter(|plan| !plan.items.is_empty())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::safety::Safety;
     use crate::tui::app::SortKey;
 
-    /// One org with one archivable repository, loaded, holding two caches a
-    /// closed pull request left behind — stale, so `A` would take both, and
-    /// the cursor on one, so `espace` would tick it. A key that reaches the
+    /// One org with one archivable repository, loaded, holding one cache of
+    /// each safety level, as `safety::classify` levels them: a closed pull
+    /// request's (⛑), one on another branch (•) and the default branch's (no
+    /// marker). `A` would take the first, `V` the second too, and the cursor
+    /// sits on the third — the biggest, first under the default size sort —
+    /// so `espace` would tick it whatever its level. A key that reaches the
     /// resource list from the wrong column has something to change.
     fn app_with_loaded_resources() -> App {
         let mut app = App::new(vec![crate::model::OrgSummary {
@@ -555,35 +574,47 @@ mod tests {
             billing: None,
         }]);
         app.loaded = Some(("systm-d".into(), "josephine".into()));
-        app.resources = (1..=2)
-            .map(|id| crate::model::Resource {
+        let cache =
+            |id: u64, git_ref: &str, stale_pr: bool, safety: Safety| crate::model::Resource {
                 kind: ResourceKind::Cache,
                 id,
                 label: format!("cache-{id}"),
                 size_bytes: 100 * id,
                 age_days: 40,
-                git_ref: Some("refs/pull/32/merge".into()),
-                stale_pr: true,
+                git_ref: Some(git_ref.into()),
+                stale_pr,
                 protected: false,
                 branch_class: None,
-                safety: crate::safety::Safety::Keep,
-            })
-            .collect();
+                safety,
+            };
+        app.resources = vec![
+            cache(1, "refs/pull/32/merge", true, Safety::Safe),
+            cache(2, "refs/heads/feature/x", false, Safety::Check),
+            cache(3, "refs/heads/main", false, Safety::Keep),
+        ];
         app
     }
 
-    /// Presses `espace`, `A`, `s` and `f`, in that order, through the same
-    /// dispatch the event loop uses. `f` goes last: once the filter is open
-    /// the loop hands every key to it instead.
+    /// The ids of the resources ticked, in increasing order.
+    fn ticked(app: &App) -> Vec<u64> {
+        let mut ids: Vec<u64> = app.selected.iter().map(|&(_, id)| id).collect();
+        ids.sort_unstable();
+        ids
+    }
+
+    /// Presses `espace`, `A`, `V`, `s` and `f`, in that order, through the
+    /// same dispatch the event loop uses. `f` goes last: once the filter is
+    /// open the loop hands every key to it instead.
     fn press_list_keys(app: &mut App) {
-        for key in [' ', 'A', 's', 'f'] {
+        for key in [' ', 'A', 'V', 's', 'f'] {
             column_action(app, KeyCode::Char(key));
         }
     }
 
-    /// The resources column keeps all four keys as they were: `espace` ticks
-    /// the row under the cursor, `A` takes the ⚑ rows, `s` cycles the sort,
-    /// `f` opens the filter. The positive control for the three tests below.
+    /// The resources column takes all five keys: `espace` ticks the row
+    /// under the cursor whatever its level, `A` adds the ⛑ rows, `V` the •
+    /// rows too, `s` cycles the sort, `f` opens the filter. The positive
+    /// control for the three tests below.
     #[test]
     fn list_keys_act_on_the_resource_list_in_the_resources_column() {
         let mut app = app_with_loaded_resources();
@@ -591,12 +622,18 @@ mod tests {
 
         column_action(&mut app, KeyCode::Char(' '));
         assert_eq!(
-            app.selected.len(),
-            1,
-            "espace must tick the row under the cursor"
+            ticked(&app),
+            vec![3],
+            "espace must tick the row under the cursor, whatever its level"
         );
         column_action(&mut app, KeyCode::Char('A'));
-        assert_eq!(app.selected.len(), 2, "A must take every ⚑ row");
+        assert_eq!(
+            ticked(&app),
+            vec![1, 3],
+            "A must add the ⛑ row, and it alone"
+        );
+        column_action(&mut app, KeyCode::Char('V'));
+        assert_eq!(ticked(&app), vec![1, 2, 3], "V must add the • row");
         column_action(&mut app, KeyCode::Char('s'));
         assert_eq!(app.sort, SortKey::Age, "s must cycle the sort");
         column_action(&mut app, KeyCode::Char('f'));
@@ -683,6 +720,43 @@ mod tests {
                 .is_none_or(|plan| plan.items.is_empty()),
             "d would delete resources the user never saw"
         );
+    }
+
+    /// `d` acts only from the column that owns its plan (Task 7): the
+    /// resources column deletes the ticked resources, the repos column
+    /// archives the ticked repository, the orgs column does nothing. One
+    /// column on screen, focus on the orgs, a resource ticked earlier from
+    /// the resources column and now off screen: `d` must take no plan. It
+    /// used to build one from that tick, and Tier 1's bare confirmation does
+    /// not list its items — the user would confirm deleting a row they
+    /// cannot see.
+    #[test]
+    fn d_takes_no_plan_from_the_orgs_column_even_with_resources_ticked_off_screen() {
+        let mut app = app_with_loaded_resources();
+        app.focus = Focus::Resources;
+        column_action(&mut app, KeyCode::Char(' '));
+        assert_eq!(ticked(&app), vec![3], "the fixture needs a resource ticked");
+        app.focus = Focus::Orgs;
+        let (_, columns) = views::testing::layout(&app, 70, 24);
+        assert!(
+            columns.resources.is_none(),
+            "the fixture must hide the resources column at width 70"
+        );
+
+        assert!(
+            app.take_focused_plan().is_none(),
+            "d took a plan from the orgs column"
+        );
+        assert!(
+            plan_for_d(&app).is_none(),
+            "d opened a confirmation from the orgs column"
+        );
+
+        // The positive control: from the resources column, the same tick is
+        // what `d` asks to confirm.
+        app.focus = Focus::Resources;
+        let plan = plan_for_d(&app).expect("d confirms the ticked resource");
+        assert_eq!(plan.items.iter().map(|r| r.id).collect::<Vec<_>>(), vec![3]);
     }
 
     #[test]

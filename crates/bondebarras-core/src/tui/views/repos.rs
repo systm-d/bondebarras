@@ -47,7 +47,7 @@ const REPO_NAME_WIDTH: usize = 10;
 ///   its age (`"775 j"`) — but `pushed_at` alone is not proof of
 ///   abandonment, so unlike a stale cache's flag this is never painted as
 ///   urgent, and it never drives any preselection (see
-///   `App::select_all_stale`'s own guard). `AlreadyArchived` and
+///   `App::select_safe`'s own guard). `AlreadyArchived` and
 ///   `NoAdminRights` show their class name instead (`"déjà archivé"`,
 ///   `"sans droits"`) — the same "classification replaces the age" shape a
 ///   `Branch` row already has (see `tui::views::repo::row_spans`), applied

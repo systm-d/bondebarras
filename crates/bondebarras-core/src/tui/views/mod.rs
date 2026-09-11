@@ -42,18 +42,21 @@ const FOOTER_QUIT: &str = "  [q] quitter";
 
 /// The actions `View::Orgs`'s footer offers in each column, in the order it
 /// keeps them when the width runs short. Only keys `tui::event_loop`
-/// actually handles: a footer promising a key that does nothing is the same
-/// defect as one hiding a key that works.
+/// actually handles, in the column they act in: a footer promising a key
+/// that does nothing is the same defect as one hiding a key that works.
 ///
 /// `[Entrée] charger` leads the orgs and repos columns: it loads the
 /// repository under the repos cursor at once, where resting the cursor there
-/// waits for the pause first (spec §3, `App::follow_cursor`). `[d]` keeps
-/// Finding 8 of the v0.5 final review: it archives from the repos column
-/// (`App::take_focused_plan`) and deletes from the other two, and each
-/// label says which.
+/// waits for the pause first (spec §3, `App::follow_cursor`). `[d]` is
+/// announced by the two columns that own its plan (`App::take_focused_plan`)
+/// and each label says which — Finding 8 of the v0.5 final review: it
+/// archives from the repos column and deletes from the resources column. It
+/// does nothing from the orgs column, whose footer does not announce it.
+/// `[A] sûrs` and `[V] +à vérifier` (spec §4.2) sit side by side in the
+/// resources column, the one column they act in.
 fn column_actions(focus: Focus) -> &'static [&'static str] {
     match focus {
-        Focus::Orgs => &["[Entrée] charger", "[d] supprimer", "[b] billing"],
+        Focus::Orgs => &["[Entrée] charger", "[b] billing"],
         Focus::Repos => &[
             "[Entrée] charger",
             "[espace] cocher",
@@ -62,7 +65,8 @@ fn column_actions(focus: Focus) -> &'static [&'static str] {
         ],
         Focus::Resources => &[
             "[espace] cocher",
-            "[A] tout ⚑",
+            "[A] sûrs",
+            "[V] +à vérifier",
             "[d] supprimer",
             "[f] filtrer",
             "[s] trier",
@@ -567,15 +571,51 @@ mod tests {
         assert!(!f.contains("supprimer"), "got: {f}");
     }
 
-    /// The negative case, for both other columns: `take_focused_plan` falls
-    /// back to an ordinary resource deletion everywhere `d` cannot archive
-    /// from, so the footer must keep that wording there, not the new one.
+    /// `d` acts only from the column that owns its plan (Task 7): it deletes
+    /// the ticked resources from the resources column, archives the ticked
+    /// repository from the repos column, and does nothing from the orgs
+    /// column — whose footer therefore never announces it, at any width. The
+    /// resources column keeps the deletion wording, never the archive one.
     #[test]
-    fn footer_orgs_says_supprimer_everywhere_d_cannot_archive_from() {
-        for focus in [Focus::Orgs, Focus::Resources] {
-            let f = footer_orgs(focus, u16::MAX);
-            assert!(f.contains("[d] supprimer"), "got: {f} for {focus:?}");
-            assert!(!f.contains("archiver"), "got: {f} for {focus:?}");
+    fn footer_announces_d_only_in_the_columns_owning_its_plan() {
+        for width in (60..=200u16).chain([u16::MAX]) {
+            let orgs = footer_orgs(Focus::Orgs, width);
+            assert!(
+                !orgs.contains("[d]"),
+                "the orgs footer announces d at width {width}: {orgs}"
+            );
+        }
+        let resources = footer_orgs(Focus::Resources, u16::MAX);
+        assert!(resources.contains("[d] supprimer"), "got: {resources}");
+        assert!(!resources.contains("archiver"), "got: {resources}");
+    }
+
+    /// Spec §4.2, as ruled for the terminal: `[A]` takes the ⛑ rows and
+    /// `[V]` adds the • rows, both from the resources column only. That
+    /// column's footer announces them side by side, in that order; no other
+    /// column's footer names either key, at any width. The old `[A] tout ⚑`
+    /// named the flag, not the level `[A]` now takes.
+    #[test]
+    fn only_the_resources_footer_announces_the_safety_selection_keys() {
+        let resources = footer_orgs(Focus::Resources, u16::MAX);
+        assert!(
+            resources.contains("[A] sûrs  [V] +à vérifier"),
+            "got: {resources}"
+        );
+        for focus in [Focus::Orgs, Focus::Repos, Focus::Resources] {
+            for width in (60..=200u16).chain([u16::MAX]) {
+                let footer = footer_orgs(focus, width);
+                assert!(
+                    !footer.contains("tout ⚑"),
+                    "{focus:?} at width {width}: {footer}"
+                );
+                if focus != Focus::Resources {
+                    assert!(
+                        !footer.contains("[A]") && !footer.contains("[V]"),
+                        "{focus:?} announces a selection key at width {width}: {footer}"
+                    );
+                }
+            }
         }
     }
 
@@ -654,7 +694,7 @@ mod tests {
 
     /// One org holding one repository, loaded, with one resource — a cache a
     /// closed pull request left behind, so its row carries both a size
-    /// (`273.7 Mo`) and a flag (`PR#32 ⚑`) that must survive the narrowest
+    /// (`274Mo`) and a flag (`PR#32 ⚑`) that must survive the narrowest
     /// resources column. No fixture string contains a column title.
     fn loaded_app() -> App {
         let mut app = App::new(vec![OrgSummary {
@@ -710,7 +750,7 @@ mod tests {
                 "resources column missing at width {width}:\n{column}"
             );
             assert!(
-                column.contains("273.7 Mo") && column.contains("PR#32 ⚑"),
+                column.contains("274Mo") && column.contains("PR#32 ⚑"),
                 "a resource row lost its size or its flag at width {width}:\n{column}"
             );
 

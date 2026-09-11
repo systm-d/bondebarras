@@ -6,6 +6,7 @@
 
 use crate::clean::Plan;
 use crate::model::{OrgSummary, RepoSummary, Resource, ResourceKind};
+use crate::safety::Safety;
 use crate::tui::views::progress::{self, Work};
 use ratatui::widgets::ListState;
 use std::collections::{HashMap, HashSet};
@@ -213,10 +214,15 @@ pub struct App {
     /// every other kind does; this is its own, deliberately single-slot
     /// state instead of a `HashSet`, because `clean::Plan` can only ever
     /// target one repository at a time — there is no "select several repos,
-    /// archive them together" shape to build towards. Only ever written by
+    /// archive them together" shape to build towards. Only ever set by
     /// `toggle_repo_selected`, which refuses anything but
     /// `repos::RepoClass::Archivable` — never by any bulk operation; see
-    /// `select_all_stale`'s own guard for why that matters.
+    /// `select_levels`'s own guard for why that matters.
+    ///
+    /// It survives the repos cursor, and the listings that land as it moves
+    /// (ruling R7-1, 2026-09-11): only an untick, the end of its own archive
+    /// (`archive_done`, `archive_failed`) or an org move
+    /// (`reset_scoped_cursors`) clears it.
     pub selected_repo: Option<(String, String)>,
     /// Every repository listing fetched this session, by `(org, repo)` —
     /// spec §3: a repository already loaded shows at once, with no request.
@@ -480,28 +486,32 @@ impl App {
         }
     }
 
-    /// The plan `[d]` builds — keyed on which pane currently has focus,
-    /// never on whichever of `take_repo_plan`/`take_plan` happens to return
-    /// `Some`.
+    /// The plan `[d]` builds: the plan of the column focus is on, never
+    /// whichever of `take_repo_plan`/`take_plan` happens to return `Some`.
+    ///
+    /// - The repos column archives the ticked repository
+    ///   (`take_repo_plan`), wherever the repos cursor has moved since: the
+    ///   tick survives the cursor (ruling R7-1), and the archive modal names
+    ///   the repository it targets.
+    /// - The resources column deletes the ticked resources (`take_plan`).
+    /// - The orgs column owns no plan (Task 7): `None`. With one column on
+    ///   screen and focus there, the resource list is off screen, and a plan
+    ///   built from resources ticked earlier would reach a Tier 1
+    ///   confirmation that does not list them.
     ///
     /// Finding 1 of the final review: the old dispatch was
     /// `take_repo_plan().or_else(|| take_plan())`, so a repository ticked
-    /// earlier outranked a resource selection made afterward, as long as
-    /// `selected_repo` had not happened to get cleared in between.
-    /// `Focus::Repos` is the only focus `toggle_repo_selected` can even be
-    /// reached from (see `tui::column_action`, which `[espace]` goes through), so
-    /// it is also the only focus this may archive from; everywhere else it
-    /// falls back to the ordinary resource-scoped plan, exactly as if no
-    /// repository had ever been ticked. This closes the gap `finish_loading`
-    /// and `reset_scoped_cursors`'s own clearing cannot: a repository ticked
-    /// and then left alone while the user merely `Tab`s over to
-    /// `Focus::Resources` — no `Enter`, no org move — reaches neither of
-    /// those two clears, so the dispatch itself has to be the thing that
-    /// stops preferring it.
+    /// earlier outranked a resource selection made afterward. `Focus::Repos`
+    /// is the only focus `toggle_repo_selected` can be reached from (see
+    /// `tui::column_action`, which `[espace]` goes through), so it is also
+    /// the only focus this archives from: a repository ticked, then left
+    /// ticked while the user `Tab`s over to the resources column, never
+    /// outranks the resources ticked there.
     pub fn take_focused_plan(&self) -> Option<Plan> {
         match self.focus {
             Focus::Repos => self.take_repo_plan(),
-            _ => self.take_plan(),
+            Focus::Resources => self.take_plan(),
+            Focus::Orgs => None,
         }
     }
 
@@ -853,21 +863,18 @@ impl App {
     /// or from a load that has landed.
     ///
     /// Leaves focus and the filter alone: they belong to the user's keys,
-    /// and a listing lands at any moment. Drops a tick left on another
-    /// repository — Finding 1's other half, see `finish_loading` — but not
-    /// one on this repository, which may have been ticked during its own
-    /// pause.
+    /// and a listing lands at any moment. Leaves the repository tick alone
+    /// too, whichever repository it is on (ruling R7-1, 2026-09-11): the
+    /// listing follows the repos cursor, so dropping a tick left on another
+    /// repository here dropped it on every cursor rest, and `d` from the
+    /// repos column had nothing left to archive. `d` archives from the repos
+    /// column only (`take_focused_plan`), so a tick left there never
+    /// outranks the resources ticked in this listing; an org move still
+    /// drops it (`reset_scoped_cursors`).
     fn show_listing(&mut self, org: String, repo: String, items: Vec<Resource>) {
         self.resources = items;
         self.res_cursor = 0;
         self.selected.clear();
-        if self
-            .selected_repo
-            .as_ref()
-            .is_some_and(|(o, r)| *o != org || *r != repo)
-        {
-            self.selected_repo = None;
-        }
         self.loaded = Some((org, repo));
     }
 
@@ -895,11 +902,8 @@ impl App {
     /// their next letters into commands. What belonged to the previous
     /// repository was cleared when the cursor left it (`follow_cursor`).
     ///
-    /// Drops a repository tick left on another repository: Finding 1's
-    /// other half, alongside `reset_scoped_cursors`'s own clearing on every
-    /// org move — a repository ticked before a different one's listing shows
-    /// must not silently stay ticked for `d`. A tick on the repository shown
-    /// stays (`show_listing`).
+    /// Leaves the repository tick alone, whichever repository it is on
+    /// (`show_listing`, ruling R7-1).
     ///
     /// `failed` — the family names `scan::repo_detail_with_warnings` could
     /// not list — become `app.status` instead of being discarded: Finding 5
@@ -971,24 +975,50 @@ impl App {
             .is_some_and(|(o, r)| o == owner && r == repo)
     }
 
-    /// Select every ⚑ row: the whole point of the flag is this one keystroke.
+    /// `[A]`: tick every ⛑ row — `Safety::Safe` (spec §4.2). The ⚑ rows `[A]`
+    /// took before are among them: `safety::classify` levels a cache whose
+    /// pull request closed as safe.
+    pub fn select_safe(&mut self) {
+        self.select_levels(&[Safety::Safe]);
+    }
+
+    /// `[V]`: tick every ⛑ row and every • row — `Safety::Safe` and
+    /// `Safety::Check`. Spec §4.2's middle level is shown on every row but
+    /// never ticked by `[A]`; it takes this second key.
+    pub fn select_safe_and_check(&mut self) {
+        self.select_levels(&[Safety::Safe, Safety::Check]);
+    }
+
+    /// Ticks every visible row whose level is one of `levels` — the one path
+    /// both selection keys share, so their guards cannot drift apart.
     ///
-    /// Iterates `visible_resources()`, not `self.resources` — the pane shows
-    /// the filtered list, and a bulk select feeding an irreversible delete
-    /// must act on what is actually on screen.
+    /// Iterates `visible_resources()`, not `self.resources` — the column
+    /// shows the filtered list, and a bulk select feeding an irreversible
+    /// delete must act on what is actually on screen.
+    ///
+    /// Never takes a `protected` resource, whatever its level: `protected`
+    /// stays the bulk-selection gate (spec §4.3), as `commands::clean::
+    /// select` applies it headless. `safety::classify` never levels a
+    /// protected resource ⛑ today; this guard keeps a classifier bug from
+    /// ever reaching a bulk delete.
     ///
     /// Excludes `ResourceKind::Repository` explicitly, defensively — not
     /// because one can reach `self.resources` today (it can't: a repository
-    /// lives in the tree, see `App::selected_repo`), but because nothing
-    /// else here would stop it if one ever did. `[A]` must never take a
-    /// repository, at any age: `pushed_at` alone is not proof of
-    /// abandonment, and archiving is the only family in this product with no
-    /// preselection path whatsoever — see `bulk_selection_never_takes_a_repository`.
-    pub fn select_all_stale(&mut self) {
+    /// lives in the repos column, see `App::selected_repo`), but because
+    /// nothing else here would stop it if one ever did. Neither key may ever
+    /// take a repository, at any age or level: `pushed_at` alone is not proof
+    /// of abandonment, and archiving is the only family in this product with
+    /// no preselection path whatsoever — see
+    /// `bulk_selection_never_takes_a_repository`.
+    ///
+    /// Individual selection (`toggle_selected`) is not bounded by `Safety`:
+    /// a visible row stays tickable one at a time, whatever its level.
+    fn select_levels(&mut self, levels: &[Safety]) {
         let keys: Vec<(ResourceKind, u64)> = self
             .visible_resources()
             .into_iter()
-            .filter(|r| r.stale_pr)
+            .filter(|r| levels.contains(&r.safety))
+            .filter(|r| !r.protected)
             .filter(|r| r.kind != ResourceKind::Repository)
             .map(|r| (r.kind, r.id))
             .collect();
@@ -1137,82 +1167,114 @@ mod tests {
         a
     }
 
+    /// One cache per entry of `levels`, in that order, ids from 1 — `app()`'s
+    /// shape, with a safety level of the test's choosing on each row.
+    fn app_with_levels(levels: &[Safety]) -> App {
+        let mut a = App::new(vec![]);
+        a.resources = levels
+            .iter()
+            .zip(1u64..)
+            .map(|(&safety, id)| Resource {
+                safety,
+                ..res(id, &format!("cache-{id}"), 100 * id, 10, false)
+            })
+            .collect();
+        a
+    }
+
+    /// The levels of the rows ticked, in the order the rows are listed.
+    fn selected_levels(a: &App) -> Vec<Safety> {
+        a.resources
+            .iter()
+            .filter(|r| a.selected.contains(&(r.kind, r.id)))
+            .map(|r| r.safety)
+            .collect()
+    }
+
+    /// Marks every row `protected`, whatever its level.
+    fn protect_all_resources(a: &mut App) {
+        for r in &mut a.resources {
+            r.protected = true;
+        }
+    }
+
     #[test]
-    fn select_all_stale_takes_only_flagged_items() {
-        let mut a = app();
-        a.select_all_stale();
-        assert_eq!(a.selection_bytes(), 400);
-        assert!(a.selected.contains(&(ResourceKind::Cache, 1)));
-        assert!(a.selected.contains(&(ResourceKind::Cache, 3)));
-        assert!(!a.selected.contains(&(ResourceKind::Cache, 2)));
+    fn select_safe_takes_only_the_safe_rows() {
+        // One row of each level: a key that also took Check would pass a
+        // fixture holding only Safe rows.
+        let mut a = app_with_levels(&[Safety::Safe, Safety::Check, Safety::Keep]);
+        a.select_safe();
+        assert_eq!(selected_levels(&a), vec![Safety::Safe]);
+    }
+
+    #[test]
+    fn select_safe_and_check_adds_check_and_nothing_else() {
+        let mut a = app_with_levels(&[Safety::Safe, Safety::Check, Safety::Keep]);
+        a.select_safe_and_check();
+        assert_eq!(selected_levels(&a), vec![Safety::Safe, Safety::Check]);
+    }
+
+    #[test]
+    fn a_protected_row_is_never_taken_in_bulk_even_if_marked_safe() {
+        // classify never returns Safe for a protected row today; this pins the
+        // selection's own guard, so a future classifier bug cannot reach a
+        // bulk delete.
+        let mut a = app_with_levels(&[Safety::Safe]);
+        protect_all_resources(&mut a);
+        a.select_safe();
+        assert!(selected_levels(&a).is_empty(), "[A] took a protected row");
+        a.select_safe_and_check();
+        assert!(selected_levels(&a).is_empty());
     }
 
     /// THE test of this whole version, per the task-4 brief's own
     /// self-review: without this, a future extension of `[A]` would flip a
-    /// whole organisation to read-only on one keystroke. `[A]` must never
-    /// take a repository, at any age — `pushed_at` alone is not proof of
-    /// abandonment, and this is the only family in the entire product with
-    /// no preselection path whatsoever.
+    /// whole organisation to read-only on one keystroke. Neither `[A]` nor
+    /// `[V]` may ever take a repository, at any age — `pushed_at` alone is
+    /// not proof of abandonment, and this is the only family in the entire
+    /// product with no preselection path whatsoever.
     ///
     /// A `Repository` resource can never actually reach `self.resources` in
-    /// production today — a repository lives in the tree, not the right-hand
-    /// list (see `App::selected_repo`) — which is exactly why this guard has
-    /// to be asserted defensively rather than trusted as an emergent
-    /// property of "nothing puts one there": `select_all_stale` filters
-    /// purely on `r.stale_pr`, with no kind exclusion of its own, so a
-    /// future refactor that ever did merge a repository row into
-    /// `resources` would silently start bulk-selecting it the moment that
-    /// row also happened to carry `stale_pr: true`. The fixture below
-    /// carries a `Repository` item of every age precisely to prove the
-    /// exclusion holds regardless of how old — not just that today's
-    /// plumbing happens not to produce one.
+    /// production today — a repository lives in the repos column, not the
+    /// resource list (see `App::selected_repo`) — which is exactly why this
+    /// guard has to be asserted defensively rather than trusted as an
+    /// emergent property of "nothing puts one there". Spec §4 never marks a
+    /// repository, but both keys select on `Resource.safety`: a future
+    /// refactor that merged a repository row into `resources`, carrying a
+    /// level some classifier bug gave it, would start bulk-selecting it. So
+    /// the fixture's repositories are marked ⛑ and •, unprotected, of every
+    /// age: a guard keyed on the level alone takes them all.
     #[test]
     fn bulk_selection_never_takes_a_repository() {
         let mut a = App::new(vec![]);
+        let repository = |id: u64, label: &str, age_days: i64, safety: Safety| Resource {
+            kind: ResourceKind::Repository,
+            id,
+            label: label.into(),
+            size_bytes: 0,
+            age_days,
+            git_ref: None,
+            stale_pr: true,
+            protected: false,
+            branch_class: None,
+            safety,
+        };
         a.resources = vec![
-            Resource {
-                kind: ResourceKind::Repository,
-                id: 1,
-                label: "young-repo".into(),
-                size_bytes: 0,
-                age_days: 10,
-                git_ref: None,
-                stale_pr: true,
-                protected: false,
-                branch_class: None,
-                safety: crate::safety::Safety::Keep,
-            },
-            Resource {
-                kind: ResourceKind::Repository,
-                id: 2,
-                label: "lokiprint".into(),
-                size_bytes: 0,
-                age_days: 685,
-                git_ref: None,
-                stale_pr: true,
-                protected: false,
-                branch_class: None,
-                safety: crate::safety::Safety::Keep,
-            },
-            Resource {
-                kind: ResourceKind::Repository,
-                id: 3,
-                label: ".github".into(),
-                size_bytes: 0,
-                age_days: 775,
-                git_ref: None,
-                stale_pr: true,
-                protected: false,
-                branch_class: None,
-                safety: crate::safety::Safety::Keep,
-            },
+            repository(1, "young-repo", 10, Safety::Safe),
+            repository(2, "lokiprint", 685, Safety::Check),
+            repository(3, ".github", 775, Safety::Safe),
         ];
 
-        a.select_all_stale();
-
+        a.select_safe();
         assert!(
             a.selected.is_empty(),
-            "a Repository must never be bulk-selected, at any age: got {:?}",
+            "[A] took a Repository: got {:?}",
+            a.selected
+        );
+        a.select_safe_and_check();
+        assert!(
+            a.selected.is_empty(),
+            "[V] took a Repository: got {:?}",
             a.selected
         );
     }
@@ -1262,18 +1324,36 @@ mod tests {
     }
 
     /// Locks finding 4's third leg: `[A]` must act on what is visible, not on
-    /// everything loaded. Before the fix, `select_all_stale` iterated
+    /// everything loaded. Before the fix, the bulk select iterated
     /// `self.resources` directly and selected rows the filter was hiding.
+    /// `[V]` keeps the same rule.
     #[test]
-    fn select_all_stale_does_not_select_rows_hidden_by_the_filter() {
+    fn select_safe_does_not_select_rows_hidden_by_the_filter() {
         let mut a = app();
-        // Hides "coverage-macos" (id 3, stale) but keeps "coverage-linux"
-        // (id 1, stale) visible.
+        // Levelled as `safety::classify` levels such caches: a closed pull
+        // request's is ⛑, the other one •.
+        for r in &mut a.resources {
+            r.safety = if r.stale_pr {
+                Safety::Safe
+            } else {
+                Safety::Check
+            };
+        }
+        // Hides "coverage-macos" (id 3, ⛑) and "ubuntu-22-test" (id 2, •),
+        // keeps "coverage-linux" (id 1, ⛑) visible.
         a.filter = "linux".into();
-        a.select_all_stale();
+        a.select_safe();
 
         assert!(a.selected.contains(&(ResourceKind::Cache, 1)));
         assert!(!a.selected.contains(&(ResourceKind::Cache, 3)));
+
+        a.select_safe_and_check();
+        assert_eq!(
+            a.selected.len(),
+            1,
+            "[V] took a row the filter hides: {:?}",
+            a.selected
+        );
     }
 
     #[test]
@@ -1876,23 +1956,6 @@ mod tests {
         assert_eq!(plan.items[0].kind, ResourceKind::Repository);
     }
 
-    /// Finding 1's other half: `Enter` is the moment `resources` — and so
-    /// `take_plan`'s target — actually changes, so a repository ticked
-    /// before it must not silently keep outranking whatever the user goes on
-    /// to select in the freshly loaded pane.
-    #[test]
-    fn finish_loading_clears_a_stale_repo_tick() {
-        let mut a = App::new(vec![]);
-        a.selected_repo = Some(("org".to_string(), "old-repo".to_string()));
-
-        a.finish_loading("org".to_string(), "new-repo".to_string(), vec![], vec![]);
-
-        assert_eq!(
-            a.selected_repo, None,
-            "loading a repository must drop any repository still ticked in the tree"
-        );
-    }
-
     /// Finding 5 of the final review: `repo_detail`'s stderr wrapper is
     /// invisible behind the TUI's alternate screen, so a refused listing
     /// used to read exactly like an empty one — "nothing here" instead of
@@ -2413,10 +2476,9 @@ mod tests {
     }
 
     /// A repository ticked for archiving during its own pause keeps its tick
-    /// when its listing lands. A tick left on another repository still goes
-    /// (Finding 1, `finish_loading_clears_a_stale_repo_tick`), but this one
-    /// is on the repository now shown: dropping it would lose the user's
-    /// selection to a timer.
+    /// when its listing lands: dropping it would lose the user's selection to
+    /// a timer. A tick left on another repository keeps it as well (ruling
+    /// R7-1, `a_repository_tick_survives_another_repositorys_listing_landing`).
     #[test]
     fn a_tick_on_the_repository_whose_listing_lands_survives() {
         let mut a = App::new(vec![org_named("systm-d", &["lokiprint"])]);
@@ -2429,6 +2491,130 @@ mod tests {
         a.land_load(load, Ok((vec![], vec![])));
 
         assert_eq!(a.selected_repo, Some(key("systm-d", "lokiprint")));
+    }
+
+    /// Two orgs: `maxds-lyon`, holding two archivable repositories —
+    /// lokiprint, then claudine — and `exec-d`, for an org move.
+    fn app_with_two_archivable_repos() -> App {
+        App::new(vec![
+            org_named("maxds-lyon", &["lokiprint", "claudine"]),
+            org_named("exec-d", &["alertu"]),
+        ])
+    }
+
+    /// Ticks lokiprint from the repos column, the cursor on it, then moves
+    /// that cursor down to claudine — the steps the tests below share.
+    fn tick_lokiprint_then_move_to_claudine(a: &mut App, t0: std::time::Instant) {
+        assert!(a.follow_cursor(t0).is_none());
+        a.focus = Focus::Repos;
+        a.toggle_repo_selected();
+        assert_eq!(
+            a.selected_repo,
+            Some(key("maxds-lyon", "lokiprint")),
+            "the fixture ticks lokiprint"
+        );
+        a.repo_cursor = 1;
+    }
+
+    /// `repo`, in `maxds-lyon`, is still the repository ticked, and `d` from
+    /// the repos column builds its archive plan — wherever the cursor is.
+    fn assert_d_archives(a: &App, repo: &str) {
+        assert_eq!(
+            a.selected_repo,
+            Some(key("maxds-lyon", repo)),
+            "the tick on {repo} was lost"
+        );
+        assert_eq!(a.focus, Focus::Repos);
+        let plan = a
+            .take_focused_plan()
+            .expect("d from the repos column must build the ticked repository's archive plan");
+        assert_eq!(
+            (plan.owner.as_str(), plan.repo.as_str()),
+            ("maxds-lyon", repo)
+        );
+        assert_eq!(plan.items.len(), 1);
+        assert_eq!(plan.items[0].kind, ResourceKind::Repository);
+        assert_eq!(plan.items[0].label, repo);
+    }
+
+    /// Ruling R7-1 (2026-09-11): the repository tick stays single, as in
+    /// v0.5, and it survives the cursor. The resources column follows the
+    /// repos cursor, so resting on another repository shows that
+    /// repository's listing — and a listing showing used to drop a tick left
+    /// on any other repository: a tick never outlived a cursor rest, and `d`
+    /// from the repos column had nothing left to archive. Here claudine's
+    /// listing is kept, and shows at once.
+    #[test]
+    fn a_repository_tick_survives_resting_on_a_cached_repository() {
+        let mut a = app_with_two_archivable_repos();
+        let t0 = std::time::Instant::now();
+        a.remember(
+            key("maxds-lyon", "claudine"),
+            vec![res(7, "claudine-cache", 100, 1, false)],
+        );
+
+        tick_lokiprint_then_move_to_claudine(&mut a, t0);
+        assert!(a.follow_cursor(t0 + ms(10)).is_none());
+        assert_eq!(
+            a.loaded,
+            Some(key("maxds-lyon", "claudine")),
+            "the fixture needs claudine's kept listing on screen"
+        );
+
+        assert_d_archives(&a, "lokiprint");
+    }
+
+    /// Ruling R7-1, claudine not kept: her pause runs out, her load starts
+    /// and her listing lands — and lokiprint is still the repository `d`
+    /// archives from the repos column.
+    #[test]
+    fn a_repository_tick_survives_another_repositorys_listing_landing() {
+        let mut a = app_with_two_archivable_repos();
+        let t0 = std::time::Instant::now();
+
+        tick_lokiprint_then_move_to_claudine(&mut a, t0);
+        let rest = t0 + ms(10);
+        assert!(a.follow_cursor(rest).is_none(), "claudine waits a pause");
+        let load = a
+            .follow_cursor(rest + PAUSE)
+            .expect("claudine's load starts after the pause");
+        assert_eq!(load.repo, "claudine");
+        a.land_load(
+            load,
+            Ok((vec![res(7, "claudine-cache", 100, 1, false)], vec![])),
+        );
+        assert_eq!(
+            a.loaded,
+            Some(key("maxds-lyon", "claudine")),
+            "the fixture needs claudine's listing landed"
+        );
+
+        assert_d_archives(&a, "lokiprint");
+    }
+
+    /// Ruling R7-1's other half — Finding 1 of the v0.5 final review: an org
+    /// move still drops the tick, so `d` never archives a repository of an
+    /// org the screen has left. The tick first survives a rest on claudine,
+    /// the positive control; then the org cursor moves to exec-d the way
+    /// `tui::event_loop` moves it.
+    #[test]
+    fn an_org_move_drops_a_repository_tick_that_survived_the_cursor() {
+        let mut a = app_with_two_archivable_repos();
+        let t0 = std::time::Instant::now();
+        a.remember(key("maxds-lyon", "claudine"), vec![]);
+        tick_lokiprint_then_move_to_claudine(&mut a, t0);
+        assert!(a.follow_cursor(t0 + ms(10)).is_none());
+        assert_d_archives(&a, "lokiprint");
+
+        a.org_cursor = 1;
+        a.reset_scoped_cursors();
+        assert!(a.follow_cursor(t0 + ms(20)).is_none());
+
+        assert_eq!(a.selected_repo, None, "an org move kept the tick");
+        assert!(
+            a.take_focused_plan().is_none(),
+            "d would archive a repository of the org the screen left"
+        );
     }
 
     /// A clean listing lands on its own time, so it may clear the warning a

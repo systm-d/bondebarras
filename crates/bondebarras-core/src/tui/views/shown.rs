@@ -151,7 +151,7 @@ mod tests {
         for width in 60..=200u16 {
             let (_, column) = testing::focused_column(&mut app, Focus::Resources, width, 16);
             assert!(
-                column.contains("273.7 Mo"),
+                column.contains("274Mo"),
                 "the cached listing is not on screen at width {width}:\n{column}"
             );
             assert!(
@@ -185,7 +185,7 @@ mod tests {
                     "{phase}: the column does not say {name} is loading at width {width}:\n{column}"
                 );
                 assert!(
-                    !column.contains("273.7 Mo") && !column.contains("éléments"),
+                    !column.contains("274Mo") && !column.contains("éléments"),
                     "{phase}: the column lists another repository at width {width}:\n{column}"
                 );
             }

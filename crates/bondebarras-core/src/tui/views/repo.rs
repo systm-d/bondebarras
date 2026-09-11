@@ -1,7 +1,8 @@
 //! Column 3: the resources of the loaded repository, under its two gauges.
 
-use crate::model::{Resource, ResourceKind, human_size, size_display};
+use crate::model::{Resource, ResourceKind, human_size};
 use crate::refs::BranchClass;
+use crate::safety::Safety;
 use crate::stale::pr_number_from_ref;
 use crate::tui::app::{App, Focus};
 use crate::tui::theme;
@@ -35,11 +36,34 @@ pub(crate) const MIN_WIDTH: u16 = 40;
 /// the task 3/4 report's own warning about decorating a branch/tag label.
 const LABEL_WIDTH: usize = 40;
 
-/// Every character a row spends outside its label: the checkbox (`"[ ] "`,
-/// 4), the kind (`"cache  "`, 7), the size (`"{size:>10}  "`, 12) and the
-/// widest trailing classification (`"par défaut"`, or a flag up to
-/// `"PR#99999 ⚑"`, 10).
-const ROW_BESIDE_LABEL: usize = 4 + 7 + 12 + 10;
+/// The cells a row spends before its label: the checkbox with its safety
+/// marker glued on (`"[x]⛑"`, 4) and the kind between two spaces
+/// (`" cache "`, 7). A package version's class suffix, when it leaves the
+/// row, starts this far in on the item's second line (`row_lines`).
+const LABEL_COLUMN: usize = 4 + 7;
+
+/// Every cell a row spends outside its label: `LABEL_COLUMN`, the size
+/// between two spaces (`" {size:>5} "`, 7 — `compact_size` never takes more
+/// than five) and the widest trailing classification (`"par défaut"`, or a
+/// flag up to `"PR#99999 ⚑"`, 10).
+///
+/// Sized for `LABEL_FLOOR` (ruling R7-2, 2026-09-11): with the marker on a
+/// cell and a space of its own, and `human_size`'s eight-cell sizes, the
+/// same row left an 80-column terminal's resources column 5 label
+/// characters.
+const ROW_BESIDE_LABEL: usize = LABEL_COLUMN + 7 + 10;
+
+/// The label characters every row keeps once the resources column has 40
+/// inner cells, as it has at an 80-column terminal (ruling R7-2). Below 40
+/// — 38 or 39 at a 100- or 101-column terminal, where three columns leave
+/// this one at `MIN_WIDTH` — it is not promised.
+///
+/// Also the digest head a package version keeps beside its class suffix on
+/// one line: with less room, the suffix takes a second line (`label_lines`).
+const LABEL_FLOOR: usize = 12;
+
+// The row budget leaves `LABEL_FLOOR` in 40 inner cells, or nothing builds.
+const _: () = assert!(40 - ROW_BESIDE_LABEL >= LABEL_FLOOR);
 
 /// How wide a label may be in a list `inner_width` cells wide: whatever the
 /// rest of the row leaves, up to `LABEL_WIDTH`.
@@ -62,7 +86,10 @@ fn label_width_in(inner_width: u16) -> usize {
 /// `scan::version_label` appends to a package version. That suffix is the
 /// part that tells such rows apart, and cutting from the right drops it
 /// first, so the head is elided instead and the suffix kept whole, as long
-/// as one head character and its `…` still fit beside it.
+/// as one head character and its `…` still fit beside it. A package version
+/// reaches this only when its class suffix fits beside `LABEL_FLOOR` digest
+/// characters: with less room, `label_lines` moves the suffix to a second
+/// line first.
 fn fit_label(label: &str, width: usize) -> String {
     if label.chars().count() > width
         && label.ends_with(')')
@@ -80,11 +107,108 @@ fn fit_label(label: &str, width: usize) -> String {
     views::fit(label, width)
 }
 
+/// `bytes` in at most five cells, for a resource row's size: `467Mo`,
+/// `1.1Go`, `12Go` — one decimal below ten of a unit, whole numbers from
+/// ten, French decimal units, no space.
+///
+/// Resource rows alone use it (ruling R7-2). Their row must keep
+/// `LABEL_FLOOR` label characters in a resources column of 40 inner cells,
+/// and `human_size`'s `273.7 Mo` takes eight: the three cells this gives
+/// back are what that budget lacked. The column's title, its gauges and the
+/// orgs and repos columns have the room, and keep `human_size`.
+///
+/// Rounds to the nearest tenth or unit, in the unit whose rounded count
+/// stays under a thousand — `999.5 Ko` reads `1.0Mo`, never `1000Ko`. In
+/// integers throughout, so no boundary depends on how a float rounds; the
+/// units run to `Eo`, which holds every `u64`.
+fn compact_size(bytes: u64) -> String {
+    const UNITS: [&str; 6] = ["Ko", "Mo", "Go", "To", "Po", "Eo"];
+    if bytes < 1000 {
+        return format!("{bytes}o");
+    }
+    let bytes = u128::from(bytes);
+    let rounded = |unit_bytes: u128| (bytes + unit_bytes / 2) / unit_bytes;
+    let mut unit = 0;
+    let mut unit_bytes: u128 = 1000;
+    while unit + 1 < UNITS.len() && rounded(unit_bytes) >= 1000 {
+        unit += 1;
+        unit_bytes *= 1000;
+    }
+    let tenths = (bytes * 10 + unit_bytes / 2) / unit_bytes;
+    if tenths < 100 {
+        format!("{}.{}{}", tenths / 10, tenths % 10, UNITS[unit])
+    } else {
+        format!("{}{}", rounded(unit_bytes), UNITS[unit])
+    }
+}
+
+/// A row's safety marker (spec §4), one cell glued to its checkbox (ruling
+/// R7-2) so every kind and label starts in the same column: `⛑` for a safe
+/// row, painted like the ⚑ flag — the safest thing on screen, never an
+/// error; `•` for one to check, in the warning colour; a blank for one to
+/// keep.
+fn marker(safety: Safety) -> Span<'static> {
+    match safety {
+        Safety::Safe => Span::styled("⛑", theme::stale_style()),
+        Safety::Check => Span::styled("•", theme::status_warn()),
+        Safety::Keep => Span::styled(" ", theme::text_style()),
+    }
+}
+
+/// `r`'s label fitted to `width` characters for its row, and the class
+/// suffix a package version moves to its item's second line, if it does.
+///
+/// A package version's class — `(sans tag)`, `(attestation orpheline)`,
+/// appended by `scan::version_label` — is what the row is offered for, and
+/// it is never shortened (ruling R7-2). It stays on the row while its digest
+/// keeps `LABEL_FLOOR` characters beside it; with less room, the whole
+/// suffix goes to a second line and the digest has the row's label width to
+/// itself. Every other label is fitted by `fit_label`, on its one line.
+fn label_lines(r: &Resource, width: usize) -> (String, Option<String>) {
+    if r.kind == ResourceKind::PackageVersion
+        && r.label.chars().count() > width
+        && r.label.ends_with(')')
+        && let Some(start) = r.label.rfind(" (")
+        && width < LABEL_FLOOR + r.label[start..].chars().count()
+    {
+        return (
+            views::fit(&r.label[..start], width),
+            Some(r.label[start + 1..].to_string()),
+        );
+    }
+    (fit_label(&r.label, width), None)
+}
+
+/// A resource's list item, as lines: its row (`row_spans`), and under it —
+/// for a package version whose class suffix left the row (`label_lines`) —
+/// that suffix, starting in the label's column. One list item either way,
+/// so the cursor's highlight and the tick cover both lines. That second line
+/// takes `LABEL_COLUMN` plus the longest suffix, 23: 34 cells, and the
+/// column never has fewer than 38 inside.
+fn row_lines(r: &Resource, checked: bool, label_width: usize) -> Vec<Line<'static>> {
+    let (label, suffix) = label_lines(r, label_width);
+    let mut lines = vec![Line::from(spans_with_label(r, checked, label))];
+    if let Some(suffix) = suffix {
+        lines.push(Line::from(vec![
+            Span::raw(" ".repeat(LABEL_COLUMN)),
+            Span::styled(suffix, theme::text_style()),
+        ]));
+    }
+    lines
+}
+
 /// One row of the resource list, as styled spans, its label fitted to
-/// `label_width` characters (`label_width_in` gives it for a real column).
+/// `label_width` characters (`label_width_in` gives it for a real column):
+/// the first line of its list item, when a package version's class suffix
+/// takes a second (`row_lines`).
 ///
 /// Split out from the widget so it can be asserted on without a terminal.
 pub fn row_spans(r: &Resource, checked: bool, label_width: usize) -> Vec<Span<'static>> {
+    spans_with_label(r, checked, label_lines(r, label_width).0)
+}
+
+/// `row_spans`, its label already fitted.
+fn spans_with_label(r: &Resource, checked: bool, label: String) -> Vec<Span<'static>> {
     let kind = match r.kind {
         ResourceKind::Cache => "cache",
         ResourceKind::Artifact => "artif",
@@ -102,20 +226,23 @@ pub fn row_spans(r: &Resource, checked: bool, label_width: usize) -> Vec<Span<'s
         ResourceKind::Repository => "repo ",
     };
 
-    // `size_display` shows `—` rather than "0 o" for a package version:
-    // GitHub exposes no size for that family, and a bare 0 here would read
-    // as "empty" — the opposite of the truth. Shared with the headless
-    // `clean` dry-run listing so the two screens cannot drift apart.
-    let size = size_display(r);
+    // A kind GitHub reports no size for shows `—` rather than a zero, which
+    // would read as "empty" — the opposite of the truth. `has_known_size`
+    // decides which kinds, here as in `model::size_display`, the headless
+    // `clean` listing's `human_size` counterpart, so the two screens cannot
+    // drift apart on it.
+    let size = if r.kind.has_known_size() {
+        compact_size(r.size_bytes)
+    } else {
+        "—".to_string()
+    };
 
     let mut spans = vec![
-        Span::styled(
-            if checked { "[x] " } else { "[ ] " }.to_string(),
-            theme::text_style(),
-        ),
-        Span::styled(format!("{kind}  "), theme::muted()),
-        Span::styled(fit_label(&r.label, label_width), theme::text_style()),
-        Span::styled(format!("{size:>10}  "), theme::muted()),
+        Span::styled(if checked { "[x]" } else { "[ ]" }, theme::text_style()),
+        marker(r.safety),
+        Span::styled(format!(" {kind} "), theme::muted()),
+        Span::styled(label, theme::text_style()),
+        Span::styled(format!(" {size:>5} "), theme::muted()),
     ];
 
     // Branches and tags carry no PR ref (`mark_stale` leaves `stale_pr`
@@ -343,7 +470,7 @@ pub fn render(app: &mut App, f: &mut Frame, area: Rect) {
         .into_iter()
         .map(|r| {
             let checked = app.selected.contains(&(r.kind, r.id));
-            ListItem::new(Line::from(row_spans(r, checked, label_width)))
+            ListItem::new(row_lines(r, checked, label_width))
         })
         .collect();
 
@@ -509,13 +636,72 @@ mod tests {
         assert_eq!(fit_label(asset, 0), "");
     }
 
+    /// Ruling R7-2: a resource row's size in at most five cells, French
+    /// units, no space — `467Mo`, `1.1Go`, `12Go`: one decimal below ten of
+    /// a unit, whole numbers from ten, the next unit up once rounding would
+    /// reach a thousand. Each boundary from both sides.
+    #[test]
+    fn compact_size_reads_in_french_units_across_each_boundary() {
+        for (bytes, shown) in [
+            (0, "0o"),
+            (999, "999o"),
+            (1_000, "1.0Ko"),
+            (1_049, "1.0Ko"),
+            (1_050, "1.1Ko"),
+            (9_949, "9.9Ko"),
+            (9_950, "10Ko"),
+            (999_499, "999Ko"),
+            (999_500, "1.0Mo"),
+            (273_678_336, "274Mo"),
+            (467_000_000, "467Mo"),
+            (1_100_000_000, "1.1Go"),
+            (12_000_000_000, "12Go"),
+            (999_500_000_000, "1.0To"),
+            (u64::MAX, "18Eo"),
+        ] {
+            assert_eq!(compact_size(bytes), shown, "for {bytes} bytes");
+        }
+    }
+
+    /// The row budget counts five cells for a size, whatever the size.
+    /// Swept over every magnitude a `u64` holds: each unit's rounding
+    /// boundaries — 9.95, 99.95, 999.5 of it — one byte either side, then a
+    /// geometric walk from one byte to `u64::MAX`.
+    #[test]
+    fn compact_size_never_takes_more_than_five_cells() {
+        let mut sizes = vec![0, u64::MAX];
+        for power in 0..=6u32 {
+            let unit = 1000u128.pow(power);
+            for thousandths in [
+                1_000u128, 9_949, 9_950, 9_999, 10_000, 99_949, 99_950, 999_499, 999_500, 999_999,
+            ] {
+                if let Ok(bytes) = u64::try_from(unit * thousandths / 1000) {
+                    sizes.extend([bytes.saturating_sub(1), bytes, bytes.saturating_add(1)]);
+                }
+            }
+        }
+        let mut walk = 1.0_f64;
+        while walk < u64::MAX as f64 {
+            sizes.push(walk as u64);
+            walk *= 1.01;
+        }
+
+        for bytes in sizes {
+            let shown = compact_size(bytes);
+            assert!(
+                views::cells(&shown) <= 5 && shown.ends_with('o'),
+                "{bytes} bytes read {shown:?}"
+            );
+        }
+    }
+
     #[test]
     fn a_row_shows_the_checkbox_kind_label_and_size() {
         let line = text(&row_spans(&res(false), true, LABEL_WIDTH));
         assert!(line.contains("[x]"));
         assert!(line.contains("cache"));
         assert!(line.contains("v0-rust-coverage-Linux-x64"));
-        assert!(line.contains("273.7 Mo"));
+        assert!(line.contains("274Mo"));
     }
 
     #[test]
@@ -547,11 +733,62 @@ mod tests {
 
     #[test]
     fn a_package_row_says_its_size_is_unknown_not_zero() {
-        // Every other screen shows bytes. A bare "0 o" here would read as
-        // "empty", which is the opposite of the truth.
+        // Every other screen shows bytes. A bare zero here — "0 o", or the
+        // row's compact "0o" — would read as "empty", which is the opposite
+        // of the truth.
         let line = text(&row_spans(&package_resource(), false, LABEL_WIDTH));
-        assert!(!line.contains("0 o"), "got: {line}");
+        assert!(!line.contains("0 o") && !line.contains("0o"), "got: {line}");
         assert!(line.contains('—'), "got: {line}");
+    }
+
+    /// `package_resource`'s sibling for the other offered class: an orphaned
+    /// attestation. Built through the real `scan::version_label` from a full
+    /// digest, like its sibling; its label is the longest a package version
+    /// gets — `sha256:1d7018e56… (attestation orpheline)`, 41 characters.
+    fn attestation_resource() -> Resource {
+        let v = crate::packages::PackageVersion {
+            id: 10,
+            digest: "sha256:1d7018e5672547cced06883706367832e5f1be5fa90bc2038ad308e19958e80e"
+                .into(),
+            tags: vec![],
+            age_days: 5,
+        };
+        Resource {
+            kind: ResourceKind::PackageVersion,
+            id: v.id,
+            label: crate::scan::version_label(
+                &v,
+                crate::packages::VersionClass::OrphanedAttestation,
+            ),
+            size_bytes: 0,
+            age_days: v.age_days,
+            git_ref: None,
+            stale_pr: false,
+            protected: false,
+            branch_class: None,
+            safety: crate::safety::Safety::Safe,
+        }
+    }
+
+    /// The row of `column` holding `needle`, without the column's left
+    /// border: the line as its list item draws it.
+    fn row_holding<'a>(column: &'a str, needle: &str) -> &'a str {
+        column
+            .lines()
+            .find(|line| line.contains(needle))
+            .and_then(|line| line.strip_prefix('│'))
+            .unwrap_or_else(|| panic!("no row holds {needle}:\n{column}"))
+    }
+
+    /// Whether `suffix` sits on the row holding `head`, or on the line right
+    /// under it — the second line of the same list item.
+    fn suffix_follows(column: &str, head: &str, suffix: &str) -> bool {
+        let lines: Vec<&str> = column.lines().collect();
+        lines.iter().enumerate().any(|(i, line)| {
+            line.contains(head)
+                && (line.contains(suffix)
+                    || lines.get(i + 1).is_some_and(|next| next.contains(suffix)))
+        })
     }
 
     /// Rendered, not stringly: `row_spans` alone cannot show what actually
@@ -564,35 +801,233 @@ mod tests {
     /// would actually show.
     ///
     /// Read back from the resources column's real `Rect`
-    /// (`views::testing::focused_column`) at every terminal width from 60 to
-    /// 200, instead of `f.area()` at 80 × 24; the name stays because
-    /// `scan.rs` cites it. The `—` size marker must survive every width. The
-    /// `(sans tag)` suffix is asserted wherever `fit_label` has room to keep
-    /// it whole beside one head character — a column of `ROW_BESIDE_LABEL`
-    /// plus ` (sans tag)` plus 2, plus its two borders: 48. Below that the
-    /// three-column layout's minimum (40) and the column an 80-column
-    /// terminal gets (42) cannot hold the suffix with this row format: the
-    /// class suffix at exactly 80 columns is not guaranteed any more — see
-    /// the task 4 report's concern on narrow labels.
+    /// (`views::testing::focused_column`); the name stays because `scan.rs`
+    /// cites it. Task 7 gives its name back its guarantee (ruling R7-2): at
+    /// an 80-column terminal — a 42-cell column, 40 inner cells, 12 of them
+    /// label — both offered classes show whole, `(sans tag)` and the longest,
+    /// `(attestation orpheline)`, though neither fits beside its digest
+    /// there. A class suffix is never shortened: it moves to a second line of
+    /// the same list item. Each suffix is asserted on its own digest's row or
+    /// on the line right under it, so two swapped suffixes fail as well as a
+    /// cut one; each digest's head must show for that. The same holds at
+    /// every width from 60 to 200, with the `—` size marker.
     #[test]
     fn a_package_row_survives_at_eighty_columns() {
         let mut app = App::new(vec![]);
-        app.resources = vec![package_resource()];
-        let suffix_floor = ROW_BESIDE_LABEL + " (sans tag)".len() + 2 + 2;
+        app.resources = vec![package_resource(), attestation_resource()];
+        let classes = [
+            ("sha256:9a", "(sans tag)"),
+            ("sha256:1d", "(attestation orpheline)"),
+        ];
+
+        let (rect, column) = views::testing::focused_column(&mut app, Focus::Resources, 80, 16);
+        assert_eq!(
+            rect.width, 42,
+            "the resources column at an 80-column terminal"
+        );
+        for (head, suffix) in classes {
+            assert!(
+                suffix_follows(&column, head, suffix),
+                "{suffix} is not whole under {head} at 80 columns:\n{column}"
+            );
+        }
 
         for width in 60..=200u16 {
-            let (rect, column) =
-                views::testing::focused_column(&mut app, Focus::Resources, width, 12);
+            let (_, column) = views::testing::focused_column(&mut app, Focus::Resources, width, 16);
             assert!(
                 column.contains('—'),
                 "the size marker must survive at width {width}:\n{column}"
             );
-            if usize::from(rect.width) >= suffix_floor {
+            for (head, suffix) in classes {
                 assert!(
-                    column.contains("sans tag"),
-                    "the class suffix must survive at width {width} (column {}):\n{column}",
-                    rect.width
+                    suffix_follows(&column, head, suffix),
+                    "{suffix} is not whole under {head} at width {width}:\n{column}"
                 );
+            }
+        }
+    }
+
+    /// One cache per safety level, labels short enough to stay whole at
+    /// every width swept: `sure1` is ⛑, `chk2` is •, `keep3` carries no
+    /// marker.
+    fn one_row_per_level() -> Vec<Resource> {
+        [
+            ("sure1", Safety::Safe),
+            ("chk2", Safety::Check),
+            ("keep3", Safety::Keep),
+        ]
+        .into_iter()
+        .zip(1u64..)
+        .map(|((label, safety), id)| Resource {
+            id,
+            label: label.into(),
+            safety,
+            ..res(false)
+        })
+        .collect()
+    }
+
+    /// Spec §4's marker, as ruled for the row budget (R7-2): `⛑` for a safe
+    /// row, `•` for one to check, a blank for one to keep, glued to the
+    /// checkbox — `[x]⛑`, `[ ]•`, `[ ] ` — so every kind and label starts in
+    /// the same column. Read off the resources column's real `Rect` at every
+    /// width from 60 to 200, row by row: a marker on the wrong row, or
+    /// anywhere but right after its checkbox, fails, where a search of the
+    /// whole column for `⛑` and `•` would not.
+    #[test]
+    fn each_row_carries_its_safety_marker_glued_to_its_checkbox_across_swept_widths() {
+        let mut app = App::new(vec![]);
+        app.resources = one_row_per_level();
+        app.selected.insert((ResourceKind::Cache, 1));
+
+        for width in 60..=200u16 {
+            let (_, column) = views::testing::focused_column(&mut app, Focus::Resources, width, 12);
+            for (label, start) in [
+                ("sure1", "[x]⛑ cache "),
+                ("chk2", "[ ]• cache "),
+                ("keep3", "[ ]  cache "),
+            ] {
+                let row = row_holding(&column, label);
+                assert!(
+                    row.starts_with(start),
+                    "the {label} row starts {row:?} at width {width}, not {start:?}"
+                );
+            }
+        }
+    }
+
+    /// `⛑` says "safe to delete": painted like the ⚑ flag, never like an
+    /// error — `the_flag_is_painted_stale_not_error`'s reason. `•` says "look
+    /// first": the warning colour, not an error either.
+    #[test]
+    fn the_safety_markers_are_painted_safe_and_warning_never_error() {
+        let rows = one_row_per_level();
+        let painted = |r: &Resource, glyph: &str| {
+            row_spans(r, false, LABEL_WIDTH)
+                .into_iter()
+                .find(|span| span.content == glyph)
+                .map(|span| span.style)
+        };
+        assert_eq!(painted(&rows[0], "⛑"), Some(theme::stale_style()));
+        assert_eq!(painted(&rows[1], "•"), Some(theme::status_warn()));
+        assert_ne!(painted(&rows[0], "⛑"), Some(theme::status_error()));
+        assert_ne!(painted(&rows[1], "•"), Some(theme::status_error()));
+    }
+
+    /// Rows whose fixed fields are each as wide as they get — a five-cell
+    /// size beside a `PR#99999 ⚑` flag, a `par défaut` classification —
+    /// with labels longer than any column holds and no parenthesised suffix,
+    /// so each one renders cut and its head can be measured up to its `…`;
+    /// plus the two package versions, whose digest ends in `…` of its own.
+    fn widest_rows() -> Vec<Resource> {
+        let row = |kind, id, label: &str| Resource {
+            kind,
+            id,
+            label: label.into(),
+            size_bytes: 0,
+            age_days: 40,
+            git_ref: None,
+            stale_pr: false,
+            protected: false,
+            branch_class: None,
+            safety: Safety::Keep,
+        };
+        vec![
+            Resource {
+                size_bytes: 467_000_000,
+                git_ref: Some("refs/pull/99999/merge".into()),
+                stale_pr: true,
+                safety: Safety::Safe,
+                ..row(
+                    ResourceKind::Cache,
+                    1,
+                    "cache-v0-rust-coverage-Linux-x64-0123456789abcdef",
+                )
+            },
+            Resource {
+                protected: true,
+                branch_class: Some(BranchClass::Default),
+                ..row(
+                    ResourceKind::Branch,
+                    2,
+                    "branch-release/2026-a-very-long-default-branch-name",
+                )
+            },
+            Resource {
+                size_bytes: 1_100_000,
+                safety: Safety::Check,
+                ..row(
+                    ResourceKind::Artifact,
+                    3,
+                    "artifact-github-pages-deployment-bundle-for-the-docs",
+                )
+            },
+            Resource {
+                protected: true,
+                ..row(
+                    ResourceKind::Tag,
+                    4,
+                    "tag-v2026.09.11-release-candidate-with-annotations",
+                )
+            },
+            package_resource(),
+            attestation_resource(),
+        ]
+    }
+
+    /// How each of `widest_rows` reads on screen: a head of its label short
+    /// enough to show at every width swept, its size, its trailing field.
+    const WIDEST_ROWS_READ_AS: [(&str, &str, &str); 6] = [
+        ("cache-v0", "467Mo", "PR#99999 ⚑"),
+        ("branch-re", "—", "par défaut"),
+        ("artifact-", "1.1Mo", "40j"),
+        ("tag-v2026", "—", "protégé"),
+        ("sha256:9a", "—", "5j"),
+        ("sha256:1d", "—", "5j"),
+    ];
+
+    /// How many characters of the label starting with `needle` `row` shows,
+    /// up to and including the `…` that ends it.
+    fn rendered_head(row: &str, needle: &str) -> usize {
+        let rest = &row[row.find(needle).expect("the row holds the needle")..];
+        let end = rest
+            .find('…')
+            .unwrap_or_else(|| panic!("the label starting {needle} is not cut: {row:?}"));
+        rest[..end].chars().count() + 1
+    }
+
+    /// Ruling R7-2's guarantee, stated on the column's inner width: once the
+    /// resources column has at least 40 inner cells — as it has at an
+    /// 80-column terminal — every row keeps at least 12 label characters,
+    /// even beside its widest fixed fields (`widest_rows`). At 38 or 39
+    /// inner cells — a 100- or 101-column terminal, where three columns
+    /// leave this one at its `MIN_WIDTH` — it is not promised. At every width
+    /// from 60 to 200 each row keeps its size and trailing field whole: the
+    /// label is the part that gives. Measured on the resources column's real
+    /// `Rect`, row by row.
+    #[test]
+    fn every_row_keeps_twelve_label_characters_once_the_column_has_forty_inner_cells() {
+        let mut app = App::new(vec![]);
+        app.resources = widest_rows();
+
+        for width in 60..=200u16 {
+            let (rect, column) =
+                views::testing::focused_column(&mut app, Focus::Resources, width, 24);
+            let inner = rect.width - 2;
+            for (needle, size, trailing) in WIDEST_ROWS_READ_AS {
+                let row = row_holding(&column, needle);
+                assert!(
+                    row.contains(size) && row.contains(trailing),
+                    "the {needle} row lost its size or trailing field at width {width}: {row:?}"
+                );
+                if inner >= 40 {
+                    let head = rendered_head(row, needle);
+                    assert!(
+                        head >= 12,
+                        "the {needle} row keeps {head} label characters in {inner} inner cells \
+                         at width {width}: {row:?}"
+                    );
+                }
             }
         }
     }
@@ -707,7 +1142,7 @@ mod tests {
             LABEL_WIDTH,
         ));
         assert!(line.contains("v0.1.1"), "got: {line}");
-        assert!(line.contains("2.4 Mo"), "got: {line}");
+        assert!(line.contains("2.4Mo"), "got: {line}");
     }
 
     /// v0.3 shipped a row that was correct in `row_spans` — every `Span` it
@@ -750,7 +1185,7 @@ mod tests {
                 "the dead branch's classification clipped at width {width}:\n{column}"
             );
             assert!(
-                column.contains('—') && column.contains("2.4 Mo"),
+                column.contains('—') && column.contains("2.4Mo"),
                 "a row's size clipped at width {width}:\n{column}"
             );
             if usize::from(rect.width) >= tag_floor {
