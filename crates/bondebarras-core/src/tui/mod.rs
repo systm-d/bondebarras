@@ -648,8 +648,17 @@ mod tests {
             vec![1, 3],
             "A must add the ⛑ row, and it alone"
         );
+        assert!(
+            app.status.is_empty(),
+            "A left no protected ⛑ row, yet wrote: {}",
+            app.status
+        );
         column_action(&mut app, KeyCode::Char('V'));
         assert_eq!(ticked(&app), vec![1, 2, 3], "V must add the • row");
+        assert_eq!(
+            app.status, "1 branche vivante protégée non cochée.",
+            "V must say it left the protected live branch unticked"
+        );
         column_action(&mut app, KeyCode::Char('s'));
         assert_eq!(app.sort, SortKey::Age, "s must cycle the sort");
         column_action(&mut app, KeyCode::Char('f'));

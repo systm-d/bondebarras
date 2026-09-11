@@ -1013,16 +1013,46 @@ impl App {
     ///
     /// Individual selection (`toggle_selected`) is not bounded by `Safety`:
     /// a visible row stays tickable one at a time, whatever its level.
+    ///
+    /// When it leaves visible rows at `levels` unticked because they are
+    /// `protected`, the status line says how many (`protected_notice`) —
+    /// fix round 1: a live branch shows • and `[V]` never takes it, which
+    /// read as a key skipping rows for no reason. The notice replaces what
+    /// the line held, as `toggle_selected`'s own refusal does: the line
+    /// answers the key just pressed. With nothing skipped, the line is left
+    /// alone. Rows the filter hides are not counted, nor are repositories:
+    /// neither key takes those, protected or not.
     fn select_levels(&mut self, levels: &[Safety]) {
-        let keys: Vec<(ResourceKind, u64)> = self
+        let (skipped, taken): (Vec<&Resource>, Vec<&Resource>) = self
             .visible_resources()
             .into_iter()
             .filter(|r| levels.contains(&r.safety))
-            .filter(|r| !r.protected)
             .filter(|r| r.kind != ResourceKind::Repository)
-            .map(|r| (r.kind, r.id))
-            .collect();
+            .partition(|r| r.protected);
+        let keys: Vec<(ResourceKind, u64)> = taken.iter().map(|r| (r.kind, r.id)).collect();
+        let notice = Self::protected_notice(&skipped);
         self.selected.extend(keys);
+        if let Some(notice) = notice {
+            self.status = notice;
+        }
+    }
+
+    /// What the status line says when a selection key left `skipped` rows
+    /// unticked because they are `protected` — `None` when it left none.
+    /// Live branches are named as such when they are all it left: they are
+    /// the protected • rows production has, and the ones a user wonders
+    /// about. Anything else reads as rows.
+    fn protected_notice(skipped: &[&Resource]) -> Option<String> {
+        let live_branches = skipped.iter().all(|r| {
+            r.kind == ResourceKind::Branch && r.branch_class == Some(crate::refs::BranchClass::Live)
+        });
+        match (skipped.len(), live_branches) {
+            (0, _) => None,
+            (1, true) => Some("1 branche vivante protégée non cochée.".to_string()),
+            (n, true) => Some(format!("{n} branches vivantes protégées non cochées.")),
+            (1, false) => Some("1 ligne protégée non cochée.".to_string()),
+            (n, false) => Some(format!("{n} lignes protégées non cochées.")),
+        }
     }
 
     pub fn cycle_sort(&mut self) {
@@ -1266,6 +1296,88 @@ mod tests {
         assert!(
             !a.selected.contains(&(ResourceKind::Branch, 2)),
             "[V] took a live branch nobody merged: {:?}",
+            a.selected
+        );
+    }
+
+    /// Fix round 1, controller ruling: a live branch shows • yet `[V]` never
+    /// takes it, and nothing on screen said why. When a selection key leaves
+    /// visible rows at its own levels unticked because they are `protected`,
+    /// the status line says how many — naming live branches when that is all
+    /// they are. One such branch; then two, for the plural; then `[A]` on a
+    /// protected ⛑ row, the shape only a classifier bug could give, in the
+    /// general wording.
+    #[test]
+    fn a_bulk_select_says_how_many_protected_rows_it_left_unticked() {
+        let mut a = App::new(vec![]);
+        a.resources = vec![
+            Resource {
+                safety: Safety::Check,
+                ..res(1, "cache-on-a-feature-branch", 100, 10, false)
+            },
+            protected_live_branch(2),
+        ];
+        a.select_safe_and_check();
+        assert_eq!(a.status, "1 branche vivante protégée non cochée.");
+
+        let mut a = App::new(vec![]);
+        a.resources = vec![
+            protected_live_branch(2),
+            Resource {
+                label: "feature/other".into(),
+                ..protected_live_branch(3)
+            },
+        ];
+        a.select_safe_and_check();
+        assert_eq!(a.status, "2 branches vivantes protégées non cochées.");
+
+        let mut a = app_with_levels(&[Safety::Safe]);
+        protect_all_resources(&mut a);
+        a.select_safe();
+        assert_eq!(a.status, "1 ligne protégée non cochée.");
+    }
+
+    /// The other half of the ruling: with no visible protected row skipped at
+    /// the key's own levels, the status line is left as it was — here an
+    /// earlier error the user has not read yet. None of these counts: a
+    /// protected default branch (no marker, a level neither key takes), a
+    /// protected • repository (repositories are never taken, and never
+    /// counted), a protected live branch the filter hides. The two
+    /// unprotected caches are ticked: the keys did run.
+    #[test]
+    fn a_bulk_select_that_skips_no_visible_protected_row_leaves_the_status_alone() {
+        use crate::refs::BranchClass;
+        let error = "Erreur : suppression de 9 — 404";
+        let mut a = App::new(vec![]);
+        a.resources = vec![
+            Resource {
+                safety: Safety::Safe,
+                ..res(1, "cov-safe", 100, 10, true)
+            },
+            Resource {
+                safety: Safety::Check,
+                ..res(2, "cov-check", 100, 10, false)
+            },
+            branch(3, "cov-main", BranchClass::Default),
+            Resource {
+                kind: ResourceKind::Repository,
+                protected: true,
+                safety: Safety::Check,
+                ..res(4, "cov-repo", 0, 10, false)
+            },
+            protected_live_branch(5),
+        ];
+        a.filter = "cov".into();
+        a.status = error.to_string();
+
+        a.select_safe();
+        assert_eq!(a.status, error, "[A] rewrote the status line");
+        a.select_safe_and_check();
+        assert_eq!(a.status, error, "[V] rewrote the status line");
+        assert_eq!(
+            a.selected.len(),
+            2,
+            "the keys must tick the two unprotected caches: {:?}",
             a.selected
         );
     }
