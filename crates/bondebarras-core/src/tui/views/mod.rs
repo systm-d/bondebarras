@@ -340,19 +340,19 @@ fn header_text(app: &App, columns: Option<&ColumnAreas>) -> String {
 /// - The orgs column gone while the repos column shows: the org under the
 ///   cursor, whose repositories those are.
 /// - The repos column gone while the resources column shows: the repository
-///   those resources were loaded from — `app.loaded`, which follows the
-///   repos cursor (`App::follow_cursor`) and is `None` while the next
-///   listing is on its way. The resources column names its repository
-///   itself in every state (`tui::views::shown`).
+///   the resources column names — `shown::subject`, the same identity the
+///   column draws on its first lines, whether its listing is shown, on its
+///   way or failed. Reading `app.loaded` instead recalled nothing while a
+///   listing was on its way, since `loaded` is `None` from the moment the
+///   cursor leaves a repository (ruling F4, 2026-09-11).
 /// - Otherwise nothing: all three columns are on screen, or the orgs column
 ///   is alone and depends on nothing hidden.
 fn hidden_context(app: &App, columns: &ColumnAreas) -> Option<String> {
     if columns.orgs.is_none() && columns.repos.is_some() {
         app.orgs.get(app.org_cursor).map(|org| org.login.clone())
     } else if columns.repos.is_none() && columns.resources.is_some() {
-        app.loaded
-            .as_ref()
-            .map(|(org, repo)| format!("{org}/{repo}"))
+        let shown = app.shown();
+        shown::subject(&shown).map(|(org, repo)| format!("{org}/{repo}"))
     } else {
         None
     }
@@ -752,11 +752,18 @@ mod tests {
 
     /// When the width hides a column, the header says what it held: the org
     /// whose repositories the repos column lists, once the orgs column is
-    /// gone; the repository the resources were loaded from, once the repos
+    /// gone; the repository the resources column names, once the repos
     /// column is gone; nothing when no visible column depends on a hidden
-    /// one. The org cursor sits on a *different* org from the loaded one, so
-    /// recalling the wrong one of the two — or the loaded repository
-    /// everywhere — cannot pass.
+    /// one.
+    ///
+    /// Built on states the event loop produces (ruling F4, 2026-09-11), not
+    /// on a hand-set `loaded`: josephine's listing is on screen, then the org
+    /// cursor moves to exec-d, whose lokiprint the resources column names —
+    /// first during the pause, then with lokiprint's load in flight. In both
+    /// `loaded` is `None`: a header reading it recalls nothing, and one that
+    /// kept the last listing recalls josephine. The org recall and the
+    /// repository recall are told apart by their segment, ` · exec-d ` alone
+    /// or `exec-d/lokiprint`. Swept over every width, for each focus.
     #[test]
     fn the_header_recalls_what_the_hidden_columns_held() {
         for focus in [Focus::Orgs, Focus::Repos, Focus::Resources] {
@@ -768,30 +775,57 @@ mod tests {
                 repos: vec![repo_summary("lokiprint")],
                 billing: None,
             });
+            let t0 = std::time::Instant::now();
+            let listing = app.resources.clone();
+            app.remember(("systm-d".into(), "josephine".into()), listing);
+            assert!(app.follow_cursor(t0).is_none());
+            assert_eq!(app.loaded, Some(("systm-d".into(), "josephine".into())));
+
             app.org_cursor = 1;
-            app.focus = focus;
-            for width in 60..=200u16 {
-                let buf = testing::draw(&mut app, width, 30);
-                let (rows, _) = testing::layout(&app, width, 30);
-                let header = testing::text_in(&buf, rows.header);
-                // (the cursor's org recalled, the loaded repository recalled)
-                let expected = match (width, focus) {
-                    (100.., _) => (false, false),
-                    (78..=99, Focus::Orgs) => (false, true),
-                    (78..=99, _) => (true, false),
-                    (_, Focus::Orgs) => (false, false),
-                    (_, Focus::Repos) => (true, false),
-                    (_, Focus::Resources) => (false, true),
-                };
-                assert_eq!(
-                    (
-                        header.contains("exec-d"),
-                        header.contains("systm-d/josephine")
-                    ),
-                    expected,
-                    "header at width {width}, focus on {focus:?}: {header}"
-                );
-            }
+            app.reset_scoped_cursors();
+            let pause = std::time::Duration::from_millis(100);
+            assert!(app.follow_cursor(t0 + pause).is_none());
+            sweep_the_header(&mut app, focus, "during the pause");
+
+            let in_flight = std::time::Duration::from_millis(400);
+            assert!(
+                app.follow_cursor(t0 + in_flight).is_some(),
+                "lokiprint's load starts"
+            );
+            sweep_the_header(&mut app, focus, "load in flight");
+        }
+    }
+
+    /// `the_header_recalls_what_the_hidden_columns_held`'s sweep, for one
+    /// focus and one state of the loop.
+    fn sweep_the_header(app: &mut App, focus: Focus, phase: &str) {
+        app.focus = focus;
+        for width in 60..=200u16 {
+            let buf = testing::draw(app, width, 30);
+            let (rows, _) = testing::layout(app, width, 30);
+            let header = testing::text_in(&buf, rows.header);
+            // (the cursor's org recalled, the named repository recalled)
+            let expected = match (width, focus) {
+                (100.., _) => (false, false),
+                (78..=99, Focus::Orgs) => (false, true),
+                (78..=99, _) => (true, false),
+                (_, Focus::Orgs) => (false, false),
+                (_, Focus::Repos) => (true, false),
+                (_, Focus::Resources) => (false, true),
+            };
+            assert_eq!(
+                (
+                    header.contains("· exec-d "),
+                    header.contains("exec-d/lokiprint")
+                ),
+                expected,
+                "{phase}: header at width {width}, focus on {focus:?}: {header}"
+            );
+            assert!(
+                !header.contains("josephine"),
+                "{phase}: the header recalls the repository the cursor left at width \
+                 {width}, focus on {focus:?}: {header}"
+            );
         }
     }
 

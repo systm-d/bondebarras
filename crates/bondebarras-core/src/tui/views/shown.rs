@@ -24,15 +24,31 @@ const LOADING: &str = "(chargement…)";
 /// `Entrée` retries.
 const FAILED: &str = "(échec du chargement)";
 
+/// The repository `shown` is about, as `(org, repo)`: what the resources
+/// column names on its first lines, and what the header recalls once the
+/// repos column is hidden (`views::hidden_context`) — one identity for both,
+/// in every state. `None` for `Shown::Nothing`.
+pub(crate) fn subject(shown: &Shown) -> Option<(&str, &str)> {
+    match shown {
+        Shown::Nothing => None,
+        Shown::Listing { org, repo }
+        | Shown::Loading { org, repo }
+        | Shown::Failed { org, repo } => Some((org, repo)),
+    }
+}
+
 /// The lines the resources column opens with, `width` cells wide: the name
-/// of the repository `shown` is about, then — when there is no listing to
-/// draw under it — what stands in for one. Nothing for `Shown::Nothing`.
+/// of the repository `shown` is about (`subject`), then — when there is no
+/// listing to draw under it — what stands in for one. Nothing for
+/// `Shown::Nothing`.
 pub(crate) fn head_lines(shown: &Shown, width: u16) -> Vec<Line<'static>> {
-    let (org, repo, stand_in) = match shown {
-        Shown::Nothing => return Vec::new(),
-        Shown::Listing { org, repo } => (org, repo, None),
-        Shown::Loading { org, repo } => (org, repo, Some(LOADING)),
-        Shown::Failed { org, repo } => (org, repo, Some(FAILED)),
+    let Some((org, repo)) = subject(shown) else {
+        return Vec::new();
+    };
+    let stand_in = match shown {
+        Shown::Loading { .. } => Some(LOADING),
+        Shown::Failed { .. } => Some(FAILED),
+        Shown::Nothing | Shown::Listing { .. } => None,
     };
     let mut lines: Vec<Line<'static>> = name_lines(org, repo, usize::from(width))
         .into_iter()

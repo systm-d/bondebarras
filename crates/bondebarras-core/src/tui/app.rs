@@ -194,11 +194,22 @@ pub struct App {
     /// `repos::RepoClass::Archivable` — never by any bulk operation; see
     /// `select_all_stale`'s own guard for why that matters.
     pub selected_repo: Option<(String, String)>,
-    /// Every complete repository listing fetched this session, by `(org,
-    /// repo)` — spec §3: a repository already loaded shows at once, with no
-    /// request. Written by `land_load`, for a listing with no refused family
-    /// only; dropped for a repository a purge touched (`forget`).
+    /// Every repository listing fetched this session, by `(org, repo)` —
+    /// spec §3: a repository already loaded shows at once, with no request.
+    /// Written by `land_load` (a refresh by `Entrée` replaces it), kept
+    /// current row by row while a purge deletes from it (`resource_deleted`),
+    /// and dropped when that purge ends (`purge_ended`).
     pub repo_cache: HashMap<(String, String), Vec<Resource>>,
+    /// The families whose listing was refused when a kept listing was
+    /// fetched, under the same key — ruling F2 (2026-09-11): kept with the
+    /// listing and said again on every visit, so kept rows never read as if
+    /// a refused family were empty. No entry when nothing was refused.
+    repo_refused: HashMap<(String, String), Vec<&'static str>>,
+    /// How many purges in flight concern each repository — recorded from
+    /// each plan when it is launched (`purge_launched`), released when that
+    /// purge ends (`purge_ended`). No load starts on its own for a
+    /// repository recorded here (`follow_cursor`).
+    purging_repos: HashMap<(String, String), usize>,
     /// The generation a listing must carry to be accepted when it lands
     /// (`accepts_load`). Moves on whenever an outstanding load stops being
     /// wanted: another load begins (`begin_load`), the cursor leaves its
@@ -252,6 +263,8 @@ impl App {
             quit_armed: false,
             selected_repo: None,
             repo_cache: HashMap::new(),
+            repo_refused: HashMap::new(),
+            purging_repos: HashMap::new(),
             load_generation: 0,
             pending_since: None,
             cursor_repo: None,
@@ -478,8 +491,20 @@ impl App {
         generation.0 == self.load_generation
     }
 
-    /// Keeps `items` as `key`'s listing for the rest of the session.
+    /// Keeps `items` as `key`'s listing for the rest of the session, with no
+    /// refused family.
     pub fn remember(&mut self, key: (String, String), items: Vec<Resource>) {
+        self.keep(key, items, Vec::new());
+    }
+
+    /// Keeps `items` as `key`'s listing, together with the families whose
+    /// listing was refused — ruling F2: both come back on every visit.
+    fn keep(&mut self, key: (String, String), items: Vec<Resource>, refused: Vec<&'static str>) {
+        if refused.is_empty() {
+            self.repo_refused.remove(&key);
+        } else {
+            self.repo_refused.insert(key.clone(), refused);
+        }
         self.repo_cache.insert(key, items);
     }
 
@@ -490,21 +515,61 @@ impl App {
             .map(Vec::as_slice)
     }
 
-    /// Drops `(org, repo)`'s kept listing: a purge has just changed that
-    /// repository on GitHub, and the screen must not show what it deleted
-    /// when the cursor comes back to it.
+    /// Drops `(org, repo)`'s kept listing, and its refused families: a purge
+    /// concerning that repository has just ended (`purge_ended`), and the
+    /// next visit must read a fresh listing.
     ///
     /// A load of that repository already in flight is superseded too — its
-    /// listing may have been read before the deletion — and `follow_cursor`
-    /// gives the repository a fresh pause. The caller passes the purge's own
-    /// identity, off its `clean::Progress` message, never the cursor's.
+    /// listing may have been read before the purge's deletions — and
+    /// `follow_cursor` gives the repository a fresh pause. The caller passes
+    /// the purge's own identity, never the cursor's.
     pub fn forget(&mut self, (org, repo): (&str, &str)) {
         let key = (org.to_string(), repo.to_string());
         self.repo_cache.remove(&key);
+        self.repo_refused.remove(&key);
         if self.in_flight.as_ref() == Some(&key) {
             self.in_flight = None;
             self.load_generation += 1;
         }
+    }
+
+    /// Records a purge — or an archive — confirmed and about to run: the
+    /// quit guard's count, the org to refresh when it finishes, and the
+    /// repository its plan concerns.
+    ///
+    /// The repository is recorded from the plan itself, at launch: nothing
+    /// that arrives later names it reliably — `Progress::Finished` names no
+    /// repository, and the cursor can be anywhere by then. While it is
+    /// recorded, no load starts on its own for that repository
+    /// (`follow_cursor`); `purge_ended` releases it.
+    pub fn purge_launched(&mut self, plan: &Plan) {
+        self.purging_org = Some(plan.owner.clone());
+        self.purges_in_flight += 1;
+        *self
+            .purging_repos
+            .entry((plan.owner.clone(), plan.repo.clone()))
+            .or_insert(0) += 1;
+    }
+
+    /// Applies the end of one purge of `(owner, repo)`: its `Finished`, which
+    /// the event loop tags with the repository recorded from its plan at
+    /// launch (`tui::spawn_purge`) — never the cursor's.
+    ///
+    /// Releases that purge's claim on the repository, and forgets the
+    /// repository's kept listing (ruling F3, 2026-09-11). A deletion changes
+    /// more than its own row — a workflow run takes its artifacts with it, a
+    /// deleted branch changes how its caches are marked — so the next visit
+    /// reads a fresh listing. Until the end, the listing was kept current
+    /// row by row instead (`resource_deleted`), and the purge caused no load.
+    pub fn purge_ended(&mut self, owner: &str, repo: &str) {
+        let key = (owner.to_string(), repo.to_string());
+        if let Some(count) = self.purging_repos.get_mut(&key) {
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                self.purging_repos.remove(&key);
+            }
+        }
+        self.forget((owner, repo));
     }
 
     /// What the resources column shows, for the repository under the
@@ -558,21 +623,30 @@ impl App {
     ///   filter and load warning that belonged to it: it never lists one
     ///   repository under another's cursor;
     /// - a repository kept in `repo_cache` shows at once, with no request
-    ///   and no pause; any other waits `LOAD_PAUSE` from `now`.
+    ///   and no pause, and with the warning for any family its listing had
+    ///   refused (ruling F2); any other waits `LOAD_PAUSE` from `now`.
     ///
     /// One case arms without a change: a repository still loading with no
-    /// pause running and no load in flight — its load was superseded by a
-    /// purge (`forget`). It gets a fresh pause rather than an immediate
-    /// request. A failed load is not retried here; `Entrée` does that
-    /// (`force_load`).
+    /// pause running and no load in flight — its load was superseded when a
+    /// purge concerning it ended (`forget`). It gets a fresh pause rather
+    /// than an immediate request.
+    ///
+    /// No load starts here for a repository a purge in flight concerns
+    /// (`purge_launched`), whether its pause was armed by a cursor move or a
+    /// cache miss — ruling F3: a purge must not start a reload storm. The
+    /// load waits for the purge's end. A failed load is not retried here
+    /// either; `Entrée` does that (`force_load`).
     pub fn follow_cursor(&mut self, now: Instant) -> Option<Load> {
         let target = self.current_target();
         if target != self.cursor_repo {
             self.cursor_repo = target.clone();
             self.leave_listing();
-            if let Some((org, repo)) = target {
-                match self.repo_cache.get(&(org.clone(), repo.clone())).cloned() {
-                    Some(items) => self.show_listing(org, repo, items),
+            if let Some(key) = target {
+                match self.repo_cache.get(&key).cloned() {
+                    Some(items) => {
+                        let refused = self.repo_refused.get(&key).cloned().unwrap_or_default();
+                        self.finish_loading(key.0, key.1, items, refused);
+                    }
                     None => self.pending_since = Some(now),
                 }
             }
@@ -582,49 +656,65 @@ impl App {
         let Shown::Loading { org, repo } = self.shown() else {
             return None;
         };
+        let key = (org, repo);
+        if self.in_flight.as_ref() == Some(&key) {
+            return None;
+        }
         match self.pending_since {
-            Some(since) if now.saturating_duration_since(since) >= LOAD_PAUSE => self.start_load(),
-            Some(_) => None,
             None => {
-                if self.in_flight != Some((org, repo)) {
-                    self.pending_since = Some(now);
-                }
+                self.pending_since = Some(now);
                 None
             }
+            Some(since) if now.saturating_duration_since(since) < LOAD_PAUSE => None,
+            // A purge concerning this repository still runs: a listing read
+            // now would be read mid-deletion. The load waits for the purge's
+            // end (`purge_ended`); the pause, long elapsed by then, lets it
+            // start on the next look.
+            Some(_) if self.purging_repos.contains_key(&key) => None,
+            Some(_) => self.start_load(),
         }
     }
 
-    /// `Entrée`: the load of the repository under the column-2 cursor, now,
-    /// without waiting for the pause — spec §3.
+    /// `Entrée`: a fresh load of the repository under the column-2 cursor,
+    /// now — spec §3, and ruling F1 (2026-09-11).
     ///
-    /// `None` when there is nothing to request: its listing is already shown
-    /// (from `repo_cache` or a load), its load is already in flight, or no
-    /// repository is under the cursor. A failed load is retried.
+    /// It skips the pause, and the cache too: `Entrée` is the one way to
+    /// refresh a repository within a session. A listing already shown leaves
+    /// the column, which says `(chargement…)` until the fresh one lands and
+    /// replaces it, on screen and in `repo_cache` (`land_load`). The kept
+    /// listing stays until then: a cursor that leaves meanwhile supersedes
+    /// the refresh, and finds the kept listing on its way back. A failed load
+    /// is retried the same way.
+    ///
+    /// `None` when there is nothing to request: its load is already in
+    /// flight, or no repository is under the cursor. A refresh is a key, not
+    /// a load starting on its own, so a purge concerning the repository does
+    /// not hold it back.
     pub fn force_load(&mut self) -> Option<Load> {
-        match self.shown() {
-            Shown::Loading { org, repo }
-                if self
-                    .in_flight
-                    .as_ref()
-                    .is_none_or(|(o, r)| *o != org || *r != repo) =>
-            {
-                self.start_load()
-            }
-            Shown::Failed { .. } => self.start_load(),
-            _ => None,
+        let target = self.current_target()?;
+        if self.in_flight.as_ref() == Some(&target) {
+            return None;
         }
+        if self.loaded.as_ref() == Some(&target) {
+            self.loaded = None;
+            self.resources.clear();
+            self.selected.clear();
+            self.res_cursor = 0;
+            self.clear_load_warning();
+        }
+        self.start_load()
     }
 
     /// Applies a listing that has landed, with the `Load` it was started
     /// under.
     ///
     /// Dropped — neither shown nor kept — unless `accepts_load` still
-    /// accepts its generation. Otherwise it is shown (`finish_loading`), and
-    /// kept in `repo_cache` only when no family was refused: served from the
-    /// cache later, it would come back without Finding 5's warning, the
-    /// refused family reading as empty again. A failed load is said on the
-    /// status line, and the column says it failed rather than loading for
-    /// ever.
+    /// accepts its generation. Otherwise it is shown (`finish_loading`) and
+    /// kept in `repo_cache`, replacing whatever was kept before, together
+    /// with its refused families if any (ruling F2): a later visit says them
+    /// again rather than show the kept rows as if a refused family were
+    /// empty. A failed load is said on the status line, and the column says
+    /// it failed rather than loading for ever.
     pub fn land_load(
         &mut self,
         load: Load,
@@ -636,9 +726,11 @@ impl App {
         self.in_flight = None;
         match outcome {
             Ok((items, failed)) => {
-                if failed.is_empty() {
-                    self.remember((load.org.clone(), load.repo.clone()), items.clone());
-                }
+                self.keep(
+                    (load.org.clone(), load.repo.clone()),
+                    items.clone(),
+                    failed.clone(),
+                );
                 self.finish_loading(load.org, load.repo, items, failed);
             }
             Err(e) => {
@@ -757,18 +849,31 @@ impl App {
         }
     }
 
-    /// Applies a `Progress::Done` for a deleted resource: drops its row and
-    /// its tick — from the listing of the repository it was deleted from,
-    /// and no other.
+    /// Applies a `Progress::Done` for a deleted resource: drops its row from
+    /// the repository's kept listing, and its row and tick from the list on
+    /// screen — the listing of the repository it was deleted from, and no
+    /// other.
     ///
-    /// The listing on screen follows the cursor, so it can belong to another
+    /// Ruling F3 (2026-09-11): the kept listing is updated rather than
+    /// forgotten, so a purge starts no reload — the cursor coming back to
+    /// the repository mid-purge finds its listing, less what was deleted.
+    /// The purge's end forgets it (`purge_ended`).
+    ///
+    /// The list on screen follows the cursor, so it can belong to another
     /// repository by the time a deletion lands; and a branch's or a tag's id
     /// is a hash of its name (`api::refs::resource_id`), the same in every
     /// repository. `owner`/`repo` come off the message, as `archive_done`'s
     /// do.
     pub fn resource_deleted(&mut self, kind: ResourceKind, id: u64, owner: &str, repo: &str) {
+        let deleted = |r: &Resource| r.kind == kind && r.id == id;
+        if let Some(items) = self
+            .repo_cache
+            .get_mut(&(owner.to_string(), repo.to_string()))
+        {
+            items.retain(|r| !deleted(r));
+        }
         if self.lists(owner, repo) {
-            self.resources.retain(|r| !(r.kind == kind && r.id == id));
+            self.resources.retain(|r| !deleted(r));
             self.selected.remove(&(kind, id));
         }
     }
@@ -1925,8 +2030,9 @@ mod tests {
     }
 
     /// Spec §3: a repository already loaded shows at once, with no request —
-    /// not when the cursor comes back to it, not after the pause, not on
-    /// `Entrée`.
+    /// not when the cursor comes back to it, not after the pause. `Entrée`
+    /// does request it: see
+    /// `enter_refreshes_a_cached_repository_and_its_listing_replaces_the_kept_one`.
     #[test]
     fn a_cached_repository_shows_at_once_when_the_cursor_returns() {
         let mut a = App::new(vec![org_named("systm-d", &["josephine", "claudine"])]);
@@ -1952,9 +2058,56 @@ mod tests {
             a.follow_cursor(t0 + ms(10) + PAUSE).is_none(),
             "the pause re-requested a cached repository"
         );
+    }
+
+    /// Ruling F1 (2026-09-11): `Entrée` is the one way to refresh a
+    /// repository within a session, so it loads even one already kept —
+    /// past the pause and past the cache — and the fresh listing replaces the
+    /// kept one. A forced load the cursor then leaves is dropped by
+    /// generation, like any other.
+    #[test]
+    fn enter_refreshes_a_cached_repository_and_its_listing_replaces_the_kept_one() {
+        let mut a = App::new(vec![org_named("systm-d", &["josephine", "claudine"])]);
+        let t0 = std::time::Instant::now();
+        a.remember(
+            key("systm-d", "josephine"),
+            vec![res(1, "before", 100, 1, false)],
+        );
+        assert!(a.follow_cursor(t0).is_none());
+        assert_eq!(
+            a.loaded,
+            Some(key("systm-d", "josephine")),
+            "the fixture needs josephine listed from the cache"
+        );
+        let ids = |rows: &[Resource]| rows.iter().map(|r| r.id).collect::<Vec<_>>();
+
+        let refresh = a
+            .force_load()
+            .expect("Entrée must refresh a cached repository");
+        assert_eq!(refresh.repo, "josephine");
+        a.land_load(refresh, Ok((vec![res(2, "after", 100, 1, false)], vec![])));
+        assert_eq!(
+            ids(a.cached(("systm-d", "josephine")).expect("kept")),
+            vec![2],
+            "the fresh listing must replace the kept one"
+        );
+        assert_eq!(ids(a.resources.as_slice()), vec![2]);
+
+        let superseded = a.force_load().expect("Entrée refreshes again");
+        a.repo_cursor = 1;
+        assert!(a.follow_cursor(t0 + ms(100)).is_none());
+        a.land_load(
+            superseded,
+            Ok((vec![res(3, "stale", 100, 1, false)], vec![])),
+        );
+        assert_eq!(
+            ids(a.cached(("systm-d", "josephine")).expect("kept")),
+            vec![2],
+            "a forced load the cursor left replaced the kept listing"
+        );
         assert!(
-            a.force_load().is_none(),
-            "Entrée re-requested a cached repository"
+            !a.resources.iter().any(|r| r.id == 3),
+            "a forced load the cursor left is shown under claudine"
         );
     }
 
@@ -2023,17 +2176,20 @@ mod tests {
         );
     }
 
-    /// Finding 5 meets the cache: a listing with a refused family shows,
-    /// with its warning, but is not kept — served later from the cache it
-    /// would come back without the warning, the refused family reading as
-    /// empty again.
+    /// Ruling F2 (2026-09-11), Finding 5 meeting the cache: a listing with a
+    /// refused family is kept together with that refusal, and its warning
+    /// comes back on every visit. The second visit requests nothing and
+    /// still says which listing failed — the kept rows never read as if the
+    /// refused family were empty. `Entrée` is the retry.
     #[test]
-    fn a_listing_with_a_refused_family_is_shown_but_not_cached() {
-        let mut a = App::new(vec![org_named("systm-d", &["josephine"])]);
+    fn a_second_visit_to_a_listing_with_a_refused_family_requests_nothing_and_warns_again() {
+        let mut a = App::new(vec![org_named("systm-d", &["josephine", "claudine"])]);
         let t0 = std::time::Instant::now();
+        a.remember(key("systm-d", "claudine"), vec![]);
         assert!(a.follow_cursor(t0).is_none());
-        let load = a.follow_cursor(t0 + PAUSE).expect("the load starts");
-
+        let load = a
+            .follow_cursor(t0 + PAUSE)
+            .expect("josephine's load starts");
         a.land_load(
             load,
             Ok((
@@ -2041,12 +2197,29 @@ mod tests {
                 vec!["caches"],
             )),
         );
-
-        assert_eq!(a.loaded, Some(key("systm-d", "josephine")));
         assert!(a.status.contains("caches"), "got: {}", a.status);
+
+        a.repo_cursor = 1;
+        assert!(a.follow_cursor(t0 + ms(1000)).is_none());
         assert!(
-            a.cached(("systm-d", "josephine")).is_none(),
-            "a listing missing a refused family was cached"
+            !a.status.contains("caches"),
+            "the warning must leave with josephine: {}",
+            a.status
+        );
+
+        a.repo_cursor = 0;
+        let back = t0 + ms(2000);
+        assert!(a.follow_cursor(back).is_none());
+        assert!(
+            a.follow_cursor(back + PAUSE).is_none(),
+            "the second visit re-requested josephine"
+        );
+        assert_eq!(a.loaded, Some(key("systm-d", "josephine")));
+        assert_eq!(a.resources.len(), 1);
+        assert!(
+            a.status.contains("caches"),
+            "the second visit lost the warning: {}",
+            a.status
         );
     }
 
