@@ -215,9 +215,13 @@ fn classify_asset(r: &Resource, ctx: &RepoContext) -> Safety {
         Some(0) => Safety::Keep,
         Some(n) if n < SAFE_RELEASE_DEPTH => Safety::Check,
         Some(_) => Safety::Safe,
-        // A tag absent from the listing: its release is older than the page we
-        // fetched, so it is at least as old as the oldest we know.
-        None => Safety::Safe,
+        // A tag absent from the list does not mean an older release:
+        // `scan::distinct_release_tags` builds the list from these very
+        // assets, so every real asset's tag is in it. Absent means
+        // `tag_in_label` read the label wrong — a tag holding its own
+        // parenthesis, `v1.0(beta)`, reads `beta)` — and the release could be
+        // the newest. Nothing proves the asset old, so a person looks.
+        None => Safety::Check,
     }
 }
 
@@ -436,15 +440,33 @@ mod tests {
         assert_eq!(classify(&latest, &ctx()), Safety::Keep);
     }
 
+    /// `classify_asset`'s `None` arm, at its level: a tag absent from
+    /// `release_tags` is a label the parse got wrong, not an old release
+    /// (F-M1), so it reads `Check` — never `Safe`, which `[A]` would take,
+    /// nor `Keep`, which would hide it from `[V]`. The fixture's tag, well
+    /// formed but absent, isolates the arm from the parse itself.
     #[test]
-    fn an_asset_whose_tag_is_older_than_the_fetched_page_is_safe() {
-        // `classify_asset`'s `None` arm: a tag that predates everything
-        // `release_tags` carries. Flipping that arm to `Check` or `Keep`
-        // would only be caught here — neither other asset fixture reaches
-        // a tag absent from the list.
-        let mut ancient = res(ResourceKind::ReleaseAsset, 900);
-        ancient.label = "josephine-linux (v0.1.0)".into();
-        assert_eq!(classify(&ancient, &ctx()), Safety::Safe);
+    fn an_asset_whose_tag_is_absent_from_the_release_list_is_only_worth_checking() {
+        let mut unlisted = res(ResourceKind::ReleaseAsset, 900);
+        unlisted.label = "josephine-linux (v0.1.0)".into();
+        assert_eq!(classify(&unlisted, &ctx()), Safety::Check);
+    }
+
+    /// Final review minor, promoted (F-M1): `scan::distinct_release_tags`
+    /// builds `release_tags` from the very assets whose labels
+    /// `tag_in_label` parses, so a tag missing from the list never means an
+    /// older release — only a label the parse got wrong. A tag holding its
+    /// own parenthesis is one: `josephine-linux (v1.0(beta))` reads `beta)`.
+    /// That asset belongs to the newest release, and must not read ⛑.
+    #[test]
+    fn the_newest_release_tagged_with_a_parenthesis_has_no_safe_asset() {
+        let tags = RepoContext {
+            release_tags: vec!["v1.0(beta)".into(), "v0.9.0".into(), "v0.8.0".into()],
+            ..ctx()
+        };
+        let mut newest = res(ResourceKind::ReleaseAsset, 2);
+        newest.label = format!("{} ({})", "josephine-linux", "v1.0(beta)");
+        assert_ne!(classify(&newest, &tags), Safety::Safe);
     }
 
     #[test]
