@@ -1,18 +1,24 @@
-//! Right pane: the resources of the selected repository.
+//! Column 3: the resources of the loaded repository, under its two gauges.
 
 use crate::model::{Resource, ResourceKind, human_size, size_display};
 use crate::refs::BranchClass;
 use crate::stale::pr_number_from_ref;
-use crate::tui::app::App;
+use crate::tui::app::{App, Focus};
 use crate::tui::theme;
-use crate::tui::views::gauges;
+use crate::tui::views::{self, gauges};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
+use ratatui::widgets::{List, ListItem, Paragraph};
 use std::collections::HashSet;
 
-/// Widest a label renders as before this truncates it with a trailing `…`.
+/// Narrowest the resources column is drawn whenever it shares the screen.
+/// `tui::views::columns_for` derives both of its thresholds from it: this is
+/// the column deletion happens in, so a narrow terminal drops columns from
+/// the left rather than squeeze this one below it.
+pub(crate) const MIN_WIDTH: u16 = 40;
+
+/// Widest a label renders as, however roomy the column.
 ///
 /// v0.3 shipped a row whose `Span`s were correct in code and still
 /// truncated on an actual terminal, because nothing reserved a bound for the
@@ -20,29 +26,65 @@ use std::collections::HashSet;
 /// the size and the flag/age this task's branch and tag classification join,
 /// past the edge of a realistic-width terminal (ratatui's `List` clips
 /// rather than wraps). Bounding the label fixes that for every kind, not
-/// just the one v0.3 happened to hit.
+/// just the one v0.3 happened to hit. Since the three columns, a narrower
+/// column shortens it further (`label_width_in`).
 ///
 /// Display-only, and safe as such: `clean::execute` deletes a branch or tag
-/// by `Resource.label` itself, never by anything this function returns, so
+/// by `Resource.label` itself, never by anything `fit_label` returns, so
 /// shortening what's drawn cannot touch what GitHub is asked to delete — see
 /// the task 3/4 report's own warning about decorating a branch/tag label.
 const LABEL_WIDTH: usize = 40;
 
-fn display_label(label: &str) -> String {
-    let chars: Vec<char> = label.chars().collect();
-    if chars.len() > LABEL_WIDTH {
-        let head: String = chars[..LABEL_WIDTH - 1].iter().collect();
-        format!("{head}…")
-    } else {
-        let width = LABEL_WIDTH;
-        format!("{label:<width$}")
-    }
+/// Every character a row spends outside its label: the checkbox (`"[ ] "`,
+/// 4), the kind (`"cache  "`, 7), the size (`"{size:>10}  "`, 12) and the
+/// widest trailing classification (`"par défaut"`, or a flag up to
+/// `"PR#99999 ⚑"`, 10).
+const ROW_BESIDE_LABEL: usize = 4 + 7 + 12 + 10;
+
+/// How wide a label may be in a list `inner_width` cells wide: whatever the
+/// rest of the row leaves, up to `LABEL_WIDTH`.
+///
+/// The label is the one part of a row that gives. Spec §2.1 as amended on
+/// 2026-09-11: the size and the flag are never the part a narrow column
+/// clips — the v0.3 defect again, a row correct in code and cut on screen,
+/// would otherwise come back at every width where the resources column
+/// shares the screen at its `MIN_WIDTH`.
+fn label_width_in(inner_width: u16) -> usize {
+    usize::from(inner_width)
+        .saturating_sub(ROW_BESIDE_LABEL)
+        .min(LABEL_WIDTH)
 }
 
-/// One row of the resource list, as styled spans.
+/// `label` fitted to `width` characters for a resource row.
+///
+/// Like `views::fit`, except for a label ending in a parenthesised suffix —
+/// the release tag `scan::asset_resources` appends to an asset, the class
+/// `scan::version_label` appends to a package version. That suffix is the
+/// part that tells such rows apart, and cutting from the right drops it
+/// first, so the head is elided instead and the suffix kept whole, as long
+/// as one head character and its `…` still fit beside it.
+fn fit_label(label: &str, width: usize) -> String {
+    if label.chars().count() > width
+        && label.ends_with(')')
+        && let Some(start) = label.rfind(" (")
+    {
+        let suffix = &label[start..];
+        let suffix_len = suffix.chars().count();
+        if width >= suffix_len + 2 {
+            return format!(
+                "{}{suffix}",
+                views::fit(&label[..start], width - suffix_len)
+            );
+        }
+    }
+    views::fit(label, width)
+}
+
+/// One row of the resource list, as styled spans, its label fitted to
+/// `label_width` characters (`label_width_in` gives it for a real column).
 ///
 /// Split out from the widget so it can be asserted on without a terminal.
-pub fn row_spans(r: &Resource, checked: bool) -> Vec<Span<'static>> {
+pub fn row_spans(r: &Resource, checked: bool, label_width: usize) -> Vec<Span<'static>> {
     let kind = match r.kind {
         ResourceKind::Cache => "cache",
         ResourceKind::Artifact => "artif",
@@ -52,11 +94,11 @@ pub fn row_spans(r: &Resource, checked: bool) -> Vec<Span<'static>> {
         ResourceKind::Tag => "tag  ",
         ResourceKind::ReleaseAsset => "asset",
         // Never actually reaches this list in production — a repository
-        // lives in the left tree (`tui::views::orgs`), not this right-pane
-        // resource list (task 3) — but the match must stay exhaustive
-        // regardless, and a real label costs nothing (same reasoning v0.3
-        // and v0.4 gave every other kind here: this function is pure
-        // display, with no dependency on later tasks).
+        // lives in the repos column (`tui::views::repos`), not this resource
+        // list (task 3) — but the match must stay exhaustive regardless, and
+        // a real label costs nothing (same reasoning v0.3 and v0.4 gave
+        // every other kind here: this function is pure display, with no
+        // dependency on later tasks).
         ResourceKind::Repository => "repo ",
     };
 
@@ -72,7 +114,7 @@ pub fn row_spans(r: &Resource, checked: bool) -> Vec<Span<'static>> {
             theme::text_style(),
         ),
         Span::styled(format!("{kind}  "), theme::muted()),
-        Span::styled(display_label(&r.label), theme::text_style()),
+        Span::styled(fit_label(&r.label, label_width), theme::text_style()),
         Span::styled(format!("{size:>10}  "), theme::muted()),
     ];
 
@@ -114,10 +156,10 @@ pub fn row_spans(r: &Resource, checked: bool) -> Vec<Span<'static>> {
     spans
 }
 
-/// The list block's title: item count and byte tally, plus — when the
-/// visible list holds at least one resource `ResourceKind::has_known_size`
-/// says GitHub exposes no size for — the caveat that some rows' size is
-/// unknown.
+/// The resources column's title: the column's name, then item count and
+/// byte tally, plus — when the visible list holds at least one resource
+/// `ResourceKind::has_known_size` says GitHub exposes no size for — the
+/// caveat that some rows' size is unknown.
 ///
 /// Not optional when `has_sizeless` is true: a column of `—` in a tool that
 /// shows bytes on every other screen reads as "these are empty", which is
@@ -130,11 +172,11 @@ pub fn row_spans(r: &Resource, checked: bool) -> Vec<Span<'static>> {
 fn list_title(count: usize, bytes: u64, has_sizeless: bool) -> String {
     if has_sizeless {
         format!(
-            " {count} éléments · {} · ⚠ GitHub n'expose pas la taille de certaines ressources ",
+            " RESSOURCES · {count} éléments · {} · ⚠ GitHub n'expose pas la taille de certaines ressources ",
             human_size(bytes)
         )
     } else {
-        format!(" {count} éléments · {} ", human_size(bytes))
+        format!(" RESSOURCES · {count} éléments · {} ", human_size(bytes))
     }
 }
 
@@ -161,11 +203,11 @@ fn repo_minutes_used(org: &crate::model::OrgSummary, repo_name: &str) -> u64 {
     report.included_minutes(month, &only_this_repo)
 }
 
-/// The two gauges for the repository whose resources this pane currently
-/// shows (`app.loaded`, not wherever the tree cursor has since wandered —
+/// The two gauges for the repository whose resources this column currently
+/// shows (`app.loaded`, not wherever the repos cursor has since wandered —
 /// same reasoning as `App::take_plan`). Empty before anything has loaded, or
-/// if the loaded repository has since left the tree (an org refresh, say):
-/// there is nothing to gauge yet.
+/// if the loaded repository has since left its org's list (an org refresh,
+/// say): there is nothing to gauge yet.
 fn repo_gauge_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     let Some((org_login, repo_name)) = app.loaded.as_ref() else {
         return Vec::new();
@@ -191,51 +233,47 @@ fn repo_gauge_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     lines
 }
 
-/// Renders the resource list as a stateful list so ratatui scrolls to keep
-/// the selection visible. On a 69-cache repo, an 80x24 terminal only fits
-/// about 19 rows without this — the plain `render_widget` used before left
-/// most of them unreachable.
-///
-/// Task 3 draws the repository's two gauges (see `tui::views::gauges`) at
-/// the head of this same area, above the resource list; task 4 keeps them at
-/// the head of column 3 once the three-column layout replaces this pane.
+/// Renders the resources column: its block, the repository's two gauges
+/// (`tui::views::gauges`) at its head (spec §5), and under them the resource
+/// list, as a stateful list so ratatui scrolls to keep the selection
+/// visible. On a 69-cache repo, an 80x24 terminal only fits about 19 rows
+/// without this — the plain `render_widget` used before left most of them
+/// unreachable.
 pub fn render(app: &mut App, f: &mut Frame, area: Rect) {
-    let gauge_lines = repo_gauge_lines(app, area.width);
-    let (gauge_area, list_area) = if gauge_lines.is_empty() {
-        (None, area)
+    let focused = app.focus == Focus::Resources;
+
+    // Everything below until `app.res_state` reads `app` through shared
+    // borrows only; the items own their strings (`ListItem<'static>`), so
+    // those borrows end once the items are built.
+    let visible = app.visible_resources();
+    let has_sizeless = visible.iter().any(|r| !r.kind.has_known_size());
+    let title = list_title(visible.len(), app.selection_bytes(), has_sizeless);
+
+    let block = views::column_block(title, focused);
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let gauge_lines = repo_gauge_lines(app, inner.width);
+    let list_area = if gauge_lines.is_empty() {
+        inner
     } else {
-        let chunks = Layout::vertical([
+        let [gauge_area, list_area] = Layout::vertical([
             Constraint::Length(gauge_lines.len() as u16),
             Constraint::Min(0),
         ])
-        .split(area);
-        (Some(chunks[0]), chunks[1])
-    };
-    if let Some(gauge_area) = gauge_area {
+        .areas(inner);
         f.render_widget(Paragraph::new(gauge_lines), gauge_area);
-    }
+        list_area
+    };
 
-    // Read before `items` is built, from the same shared borrow, so both can
-    // draw from `app.visible_resources()` before anything is borrowed
-    // mutably below.
-    let has_sizeless = app
-        .visible_resources()
-        .iter()
-        .any(|r| !r.kind.has_known_size());
-
-    // Built first, from a shared borrow of `app` only: the items own their
-    // strings (`ListItem<'static>`), so the borrow ends here, before
-    // `app.res_state` is borrowed mutably below.
-    let items: Vec<ListItem<'static>> = app
-        .visible_resources()
+    let label_width = label_width_in(list_area.width);
+    let items: Vec<ListItem<'static>> = visible
         .into_iter()
         .map(|r| {
-            let spans = row_spans(r, app.selected.contains(&(r.kind, r.id)));
-            ListItem::new(Line::from(spans))
+            let checked = app.selected.contains(&(r.kind, r.id));
+            ListItem::new(Line::from(row_spans(r, checked, label_width)))
         })
         .collect();
-
-    let title = list_title(items.len(), app.selection_bytes(), has_sizeless);
 
     app.res_state.select(if items.is_empty() {
         None
@@ -243,14 +281,7 @@ pub fn render(app: &mut App, f: &mut Frame, area: Rect) {
         Some(app.res_cursor.min(items.len() - 1))
     });
 
-    let list = List::new(items)
-        .block(
-            Block::default()
-                .title(title)
-                .borders(Borders::ALL)
-                .border_style(theme::border_style()),
-        )
-        .highlight_style(theme::selection_style());
+    let list = List::new(items).highlight_style(views::cursor_style(focused));
 
     f.render_stateful_widget(list, list_area, &mut app.res_state);
 }
@@ -364,7 +395,7 @@ mod tests {
     }
 
     /// `ResourceKind::Repository` never actually reaches `row_spans` in
-    /// production — task 3 keeps a repository in the left tree, never in
+    /// production — a repository lives in the repos column, never in
     /// `app.resources` — but the match on `r.kind` must stay exhaustive
     /// regardless, and this locks the label it was given rather than leaving
     /// it unverified.
@@ -382,13 +413,33 @@ mod tests {
             branch_class: None,
             safety: crate::safety::Safety::Keep,
         };
-        let line = text(&row_spans(&r, false));
+        let line = text(&row_spans(&r, false, LABEL_WIDTH));
         assert!(line.contains("repo"), "got: {line}");
+    }
+
+    /// An asset's label ends with its release tag (`scan::asset_resources`)
+    /// and a package version's with its class (`scan::version_label`), both
+    /// in parentheses — the one part of such a label that tells rows apart.
+    /// Shortening a label to the column must elide the head and keep that
+    /// suffix whole while at least one head character still fits; cutting
+    /// from the right, as `views::fit` does, would drop the suffix first.
+    #[test]
+    fn a_shortened_label_keeps_its_parenthesised_suffix() {
+        let asset = "claudine-linux-x86_64.tar.gz (v0.1.1)";
+        assert_eq!(fit_label(asset, 20), "claudine-l… (v0.1.1)");
+        // No room for even one head character beside the suffix: a plain cut.
+        assert_eq!(fit_label(asset, 10), "claudine-…");
+        // A label that fits is only padded, suffix or not.
+        assert_eq!(fit_label("main", 6), "main  ");
+        // No suffix to keep: a plain cut.
+        assert_eq!(fit_label("v0-rust-coverage-Linux-x64", 8), "v0-rust…");
+        // A column too narrow for any label at all: nothing, not a panic.
+        assert_eq!(fit_label(asset, 0), "");
     }
 
     #[test]
     fn a_row_shows_the_checkbox_kind_label_and_size() {
-        let line = text(&row_spans(&res(false), true));
+        let line = text(&row_spans(&res(false), true, LABEL_WIDTH));
         assert!(line.contains("[x]"));
         assert!(line.contains("cache"));
         assert!(line.contains("v0-rust-coverage-Linux-x64"));
@@ -397,7 +448,7 @@ mod tests {
 
     #[test]
     fn a_stale_row_carries_the_flag_and_its_pr_number() {
-        let line = text(&row_spans(&res(true), false));
+        let line = text(&row_spans(&res(true), false, LABEL_WIDTH));
         assert!(line.contains("[ ]"));
         assert!(line.contains("PR#32"));
         assert!(line.contains('⚑'));
@@ -405,7 +456,7 @@ mod tests {
 
     #[test]
     fn a_fresh_row_carries_no_flag() {
-        assert!(!text(&row_spans(&res(false), false)).contains('⚑'));
+        assert!(!text(&row_spans(&res(false), false, LABEL_WIDTH)).contains('⚑'));
     }
 
     /// The flag is the safest thing on screen to delete, so it must never be
@@ -414,7 +465,7 @@ mod tests {
     /// content alone would let a swapped style through unnoticed.
     #[test]
     fn the_flag_is_painted_stale_not_error() {
-        let spans = row_spans(&res(true), false);
+        let spans = row_spans(&res(true), false, LABEL_WIDTH);
         let flag = spans
             .last()
             .expect("a row always ends with a flag or an age");
@@ -426,7 +477,7 @@ mod tests {
     fn a_package_row_says_its_size_is_unknown_not_zero() {
         // Every other screen shows bytes. A bare "0 o" here would read as
         // "empty", which is the opposite of the truth.
-        let line = text(&row_spans(&package_resource(), false));
+        let line = text(&row_spans(&package_resource(), false, LABEL_WIDTH));
         assert!(!line.contains("0 o"), "got: {line}");
         assert!(line.contains('—'), "got: {line}");
     }
@@ -477,6 +528,7 @@ mod tests {
         let line = text(&row_spans(
             &branch("claude/landing-3jbqk4", BranchClass::Merged),
             true,
+            LABEL_WIDTH,
         ));
         assert!(line.contains("mergée"), "got: {line}");
         assert!(line.contains('⚑'), "got: {line}");
@@ -496,7 +548,11 @@ mod tests {
     /// *absent* for a different class.
     #[test]
     fn a_default_branch_is_labelled_par_defaut() {
-        let line = text(&row_spans(&branch("main", BranchClass::Default), false));
+        let line = text(&row_spans(
+            &branch("main", BranchClass::Default),
+            false,
+            LABEL_WIDTH,
+        ));
         assert!(line.contains("par défaut"), "got: {line}");
         assert!(!line.contains("mergée"), "got: {line}");
         assert!(!line.contains("vivante"), "got: {line}");
@@ -508,6 +564,7 @@ mod tests {
         let line = text(&row_spans(
             &branch("release/2.0", BranchClass::Protected),
             false,
+            LABEL_WIDTH,
         ));
         assert!(line.contains("protégée"), "got: {line}");
         assert!(!line.contains("par défaut"), "got: {line}");
@@ -521,6 +578,7 @@ mod tests {
         let line = text(&row_spans(
             &branch("feature/rejected", BranchClass::Live),
             false,
+            LABEL_WIDTH,
         ));
         assert!(line.contains("vivante"), "got: {line}");
         assert!(!line.contains("protégée"), "got: {line}");
@@ -534,7 +592,7 @@ mod tests {
     /// negative counterpart the way the branch tests above do.
     #[test]
     fn a_tag_is_always_labelled_protected() {
-        let line = text(&row_spans(&tag("v0.1.3"), false));
+        let line = text(&row_spans(&tag("v0.1.3"), false, LABEL_WIDTH));
         assert!(line.contains("protégé"), "got: {line}");
     }
 
@@ -543,7 +601,11 @@ mod tests {
     /// delete must never be painted like a problem.
     #[test]
     fn the_dead_branch_flag_is_painted_stale_not_error() {
-        let spans = row_spans(&branch("claude/landing-3jbqk4", BranchClass::Merged), false);
+        let spans = row_spans(
+            &branch("claude/landing-3jbqk4", BranchClass::Merged),
+            false,
+            LABEL_WIDTH,
+        );
         let flag = spans
             .last()
             .expect("a branch row always ends with a classification");
@@ -562,6 +624,7 @@ mod tests {
         let line = text(&row_spans(
             &asset("claudine-linux-x86_64.tar.gz (v0.1.1)", 2_400_000, 40),
             false,
+            LABEL_WIDTH,
         ));
         assert!(line.contains("v0.1.1"), "got: {line}");
         assert!(line.contains("2.4 Mo"), "got: {line}");
@@ -571,12 +634,21 @@ mod tests {
     /// built carried the right text — and still truncated on an actual
     /// terminal, because nothing asserted on a rendered buffer, only on the
     /// spans themselves (see `a_package_row_survives_at_eighty_columns`
-    /// above). That fix covered one resource at one width. A branch name can
-    /// run much longer than a cache key — the design doc's own measured
-    /// example is 42 characters — and a single sampled width can dodge a
-    /// truncation the way the confirm modal's height sweep found one
-    /// recurring at exactly one height per width. Sweep widths instead of
-    /// sampling them, for both a dead branch and a release asset.
+    /// above). A branch name can run much longer than a cache key — the
+    /// design doc's own measured example is 42 characters — and a single
+    /// sampled width can dodge a truncation the way the confirm modal's
+    /// height sweep found one recurring at exactly one height per width.
+    ///
+    /// Since the three columns, read back from the resources column's real
+    /// `Rect` (`views::testing::focused_column`) at every terminal width
+    /// from 60 to 200, where that column is as narrow as `MIN_WIDTH` in the
+    /// three- and two-column layouts. The label is the part that gives: the
+    /// dead branch's `mergée ⚑`, its `—` size and the asset's size survive
+    /// every width. The asset's release tag lives *inside* its label
+    /// (`scan::asset_resources`), so it survives wherever `fit_label` has
+    /// room to keep the label's ` (v0.1.1)` suffix whole beside one head
+    /// character and its `…` — from a column of `ROW_BESIDE_LABEL` plus that
+    /// much, plus its two borders; read off the real `Rect`, not assumed.
     #[test]
     fn a_branch_and_an_asset_row_stay_legible_across_swept_widths() {
         let mut app = App::new(vec![]);
@@ -587,47 +659,36 @@ mod tests {
             ),
             asset("claudine-linux-x86_64.tar.gz (v0.1.1)", 2_400_000, 40),
         ];
+        let tag_floor = ROW_BESIDE_LABEL + " (v0.1.1)".len() + 2 + 2;
 
-        // Floor: the smallest width at which both rows' full classification
-        // (the branch's "mergée ⚑", the asset's release tag) is on screen at
-        // all, determined empirically by probing every width from 40 to 200
-        // with this exact fixture and recording the first one both markers
-        // appeared at — not computed by hand, since the checkbox/kind/label/
-        // size columns plus the border are several small `format!`s away
-        // from an easy mental sum. 72 (one below) was checked separately and
-        // clips the branch flag, confirming this is the real floor, not
-        // just a width that happens to work.
-        const FLOOR: u16 = 73;
-        for width in FLOOR..=200 {
-            let backend = ratatui::backend::TestBackend::new(width, 10);
-            let mut terminal = ratatui::Terminal::new(backend).unwrap();
-            terminal.draw(|f| render(&mut app, f, f.area())).unwrap();
-
-            let rendered: String = terminal
-                .backend()
-                .buffer()
-                .content()
-                .iter()
-                .map(|c| c.symbol())
-                .collect();
+        for width in 60..=200u16 {
+            let (rect, column) =
+                views::testing::focused_column(&mut app, Focus::Resources, width, 12);
 
             assert!(
-                rendered.contains("mergée") && rendered.contains('⚑'),
-                "the dead branch's classification clipped at width {width}: {rendered}"
+                column.contains("mergée ⚑"),
+                "the dead branch's classification clipped at width {width}:\n{column}"
             );
             assert!(
-                rendered.contains("v0.1.1"),
-                "the asset's release tag clipped at width {width}: {rendered}"
+                column.contains('—') && column.contains("2.4 Mo"),
+                "a row's size clipped at width {width}:\n{column}"
             );
+            if usize::from(rect.width) >= tag_floor {
+                assert!(
+                    column.contains("(v0.1.1)"),
+                    "the asset's release tag lost at width {width} (column {}):\n{column}",
+                    rect.width
+                );
+            }
         }
     }
 
     /// The merged/asset sweep above proves the longest branch label
-    /// ("mergée ⚑") survives from width 73; it says nothing about the three
-    /// shorter classifications this task adds. Swept, not sampled, for the
-    /// same reason as the sweep above — a single sampled width could dodge a
-    /// truncation the way the confirm modal's height sweep found one
-    /// recurring at exactly one height per width.
+    /// ("mergée ⚑") survives every width; it says nothing about the three
+    /// shorter classifications this task adds — `par défaut` is in fact the
+    /// widest of the four, the one `ROW_BESIDE_LABEL` is sized for. Swept,
+    /// not sampled, over the resources column's real `Rect`, for the same
+    /// reason as the sweep above.
     #[test]
     fn every_branch_classification_stays_legible_across_swept_widths() {
         let mut app = App::new(vec![]);
@@ -638,42 +699,24 @@ mod tests {
             branch("feature/rejected", BranchClass::Live),
         ];
 
-        // Floor: the smallest width at which all four classification words
-        // are on screen at once, determined empirically the same way as the
-        // sweep above — probing every width from 40 to 200 and recording the
-        // first one all five markers ("par défaut", "protégée", "mergée",
-        // "⚑", "vivante") appeared at, with no gap above it up to 200. 74
-        // (one below) was checked separately and clips "par défaut" to "par
-        // défau" — confirming this is the real floor.
-        const FLOOR: u16 = 75;
-        for width in FLOOR..=200 {
-            let backend = ratatui::backend::TestBackend::new(width, 10);
-            let mut terminal = ratatui::Terminal::new(backend).unwrap();
-            terminal.draw(|f| render(&mut app, f, f.area())).unwrap();
-
-            let rendered: String = terminal
-                .backend()
-                .buffer()
-                .content()
-                .iter()
-                .map(|c| c.symbol())
-                .collect();
+        for width in 60..=200u16 {
+            let (_, column) = views::testing::focused_column(&mut app, Focus::Resources, width, 12);
 
             assert!(
-                rendered.contains("par défaut"),
-                "the default-branch label clipped at width {width}: {rendered}"
+                column.contains("par défaut"),
+                "the default-branch label clipped at width {width}:\n{column}"
             );
             assert!(
-                rendered.contains("protégée"),
-                "the GitHub-protected label clipped at width {width}: {rendered}"
+                column.contains("protégée"),
+                "the GitHub-protected label clipped at width {width}:\n{column}"
             );
             assert!(
-                rendered.contains("mergée") && rendered.contains('⚑'),
-                "the merged-branch classification clipped at width {width}: {rendered}"
+                column.contains("mergée ⚑"),
+                "the merged-branch classification clipped at width {width}:\n{column}"
             );
             assert!(
-                rendered.contains("vivante"),
-                "the live-branch label clipped at width {width}: {rendered}"
+                column.contains("vivante"),
+                "the live-branch label clipped at width {width}:\n{column}"
             );
         }
     }
@@ -767,30 +810,26 @@ mod tests {
     }
 
     /// Task 3: the two gauges (`tui::views::gauges`) are drawn at the head of
-    /// this pane, for the repository `app.loaded` names — not wherever the
-    /// tree cursor sits, and not through some separately-rendered widget the
-    /// real `render` never touches.
+    /// the resources column, for the repository `app.loaded` names — not
+    /// wherever the repos cursor sits, and not through some
+    /// separately-rendered widget the real `render` never touches.
     ///
-    /// Renders the *real* resource-pane `Rect`, not `f.area()` stood in for
-    /// it: `views::mod::render` never hands this pane the whole frame — it
-    /// first carves off the header/status/footer rows, then the fixed-width
-    /// orgs pane, and only the remainder reaches `repo::render`. Replicating
-    /// that same split here (rather than pretending the backend's full area
-    /// belongs to this pane) is what makes the sweep meaningful: at a given
-    /// overall terminal width, the resource pane is narrower than the
-    /// terminal by `orgs::PANE_WIDTH`, and a defect that only bites once that
-    /// real width is accounted for — this pane's own internal gauge/list
-    /// split included — would stay invisible to a test that skipped this
-    /// step and searched a much roomier fabricated area instead.
+    /// Renders the whole real layout and reads back only the resources
+    /// column's `Rect` (`views::testing::focused_column`), never `f.area()`
+    /// stood in for it: `views::render` never hands this column the whole
+    /// frame — it first carves off the header/status/footer rows, then the
+    /// columns — and a defect that only bites once that real width is
+    /// accounted for, this column's own border and gauge/list split
+    /// included, would stay invisible to a test searching a roomier
+    /// fabricated area. Swept at every terminal width from 60 to 200, where
+    /// the column is as narrow as `MIN_WIDTH` in the three- and two-column
+    /// layouts.
     ///
-    /// `pane_width` (60 to 200, binding constraint §7's sweep range) is the
-    /// resource pane's own resulting width, not the outer terminal's — the
-    /// two differ by exactly `orgs::PANE_WIDTH`. The fixture is built so a
-    /// wrong implementation cannot pass by accident: capping the cache
-    /// percentage at 100 would drop "115" and the eviction warning; a
-    /// percent helper that divides by a genuinely zero ceiling would show
-    /// `u64::MAX` instead of "50"; never wiring the gauges into `render` at
-    /// all would show neither "Cache" nor "Minutes".
+    /// The fixture is built so a wrong implementation cannot pass by
+    /// accident: capping the cache percentage at 100 would drop "115" and
+    /// the eviction warning; a percent helper that divides by a genuinely
+    /// zero ceiling would show `u64::MAX` instead of "50"; never wiring the
+    /// gauges into `render` at all would show neither "Cache" nor "Minutes".
     #[test]
     fn the_two_gauges_render_at_the_head_of_the_real_resource_pane_across_swept_widths() {
         let mut app = App::new(vec![]);
@@ -798,58 +837,32 @@ mod tests {
         app.loaded = Some(("systm-d".to_string(), "josephine".to_string()));
         app.resources = vec![res(false)];
 
-        for pane_width in 60..=200u16 {
-            let total_width = pane_width + super::super::orgs::PANE_WIDTH;
+        for width in 60..=200u16 {
             // 13 rows: the 3 fixed header/status/footer rows this crate's
             // real layout always reserves, plus the same 10-row body height
-            // the file's other sweep tests use.
-            let backend = ratatui::backend::TestBackend::new(total_width, 13);
-            let mut terminal = ratatui::Terminal::new(backend).unwrap();
-            terminal
-                .draw(|f| {
-                    let body = ratatui::layout::Layout::vertical([
-                        ratatui::layout::Constraint::Length(1),
-                        ratatui::layout::Constraint::Min(1),
-                        ratatui::layout::Constraint::Length(1),
-                        ratatui::layout::Constraint::Length(1),
-                    ])
-                    .split(f.area())[1];
-                    let resource_area = ratatui::layout::Layout::horizontal([
-                        ratatui::layout::Constraint::Length(super::super::orgs::PANE_WIDTH),
-                        ratatui::layout::Constraint::Min(20),
-                    ])
-                    .split(body)[1];
-                    render(&mut app, f, resource_area);
-                })
-                .unwrap();
-
-            let rendered: String = terminal
-                .backend()
-                .buffer()
-                .content()
-                .iter()
-                .map(|c| c.symbol())
-                .collect();
+            // the file's other sweep tests used before the columns.
+            let (_, rendered) =
+                views::testing::focused_column(&mut app, Focus::Resources, width, 13);
 
             assert!(
                 rendered.contains("Cache"),
-                "cache gauge missing at pane width {pane_width}: {rendered}"
+                "cache gauge missing at width {width}:\n{rendered}"
             );
             assert!(
                 rendered.contains("Minutes"),
-                "minutes gauge missing at pane width {pane_width}: {rendered}"
+                "minutes gauge missing at width {width}:\n{rendered}"
             );
             assert!(
                 rendered.contains("115"),
-                "cache overshoot percent clipped at pane width {pane_width}: {rendered}"
+                "cache overshoot percent clipped at width {width}:\n{rendered}"
             );
             assert!(
                 rendered.contains("évince"),
-                "cache eviction warning clipped at pane width {pane_width}: {rendered}"
+                "cache eviction warning clipped at width {width}:\n{rendered}"
             );
             assert!(
                 rendered.contains("50"),
-                "minutes percent clipped at pane width {pane_width}: {rendered}"
+                "minutes percent clipped at width {width}:\n{rendered}"
             );
         }
     }

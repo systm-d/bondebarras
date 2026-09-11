@@ -9,13 +9,39 @@ use crate::model::{OrgSummary, RepoSummary, Resource, ResourceKind};
 use ratatui::widgets::ListState;
 use std::collections::HashSet;
 
-/// Which pane the keyboard drives. The tree has three levels, and each one
-/// needs its own cursor: an org, one of its repos, then that repo's resources.
+/// Which column the keyboard drives, each with its own cursor: the orgs,
+/// the current org's repositories, then the loaded repository's resources.
+///
+/// The three values used to name the levels of a folded tree; since spec
+/// §2 they name the three columns of `tui::views::column_areas`, whichever
+/// of them the terminal's width leaves on screen.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Focus {
     Orgs,
     Repos,
     Resources,
+}
+
+impl Focus {
+    /// The column to the right, wrapping from the resources back to the
+    /// orgs — where `→` and `Tab` move.
+    pub fn next(self) -> Focus {
+        match self {
+            Focus::Orgs => Focus::Repos,
+            Focus::Repos => Focus::Resources,
+            Focus::Resources => Focus::Orgs,
+        }
+    }
+
+    /// The column to the left, wrapping from the orgs round to the
+    /// resources — where `←` moves.
+    pub fn previous(self) -> Focus {
+        match self {
+            Focus::Orgs => Focus::Resources,
+            Focus::Repos => Focus::Orgs,
+            Focus::Resources => Focus::Repos,
+        }
+    }
 }
 
 /// Which top-level view is on screen.
@@ -59,11 +85,13 @@ pub struct App {
     /// not wherever the cursor has wandered since — they are not the same
     /// thing the moment the user moves after loading.
     pub loaded: Option<(String, String)>,
-    /// Persistent cursor state for the left (orgs/repos tree) pane. Without
-    /// it ratatui only ever draws the rows that fit and the cursor walks off
-    /// screen past that point.
+    /// Persistent cursor state for the orgs column. Without it ratatui only
+    /// ever draws the rows that fit and the cursor walks off screen past
+    /// that point.
     pub org_state: ListState,
-    /// Persistent cursor state for the right (resources) pane. Same reason.
+    /// Persistent cursor state for the repos column. Same reason.
+    pub repo_state: ListState,
+    /// Persistent cursor state for the resources column. Same reason.
     pub res_state: ListState,
     /// The org a running purge belongs to, for the post-purge cache refresh.
     /// The user can navigate away while it runs — purges execute on a
@@ -92,7 +120,7 @@ pub struct App {
     /// whatever deletions are still queued with no summary shown. Disarmed by
     /// `purge_finished` only once every in-flight purge has settled.
     pub quit_armed: bool,
-    /// The repository ticked for archiving, from the left tree — `(org,
+    /// The repository ticked for archiving, from the repos column — `(org,
     /// repo)`. A repository lives one level above `resources`, not inside
     /// it, so it cannot share `selected`'s `(ResourceKind, u64)` set the way
     /// every other kind does; this is its own, deliberately single-slot
@@ -122,6 +150,7 @@ impl App {
             should_quit: false,
             loaded: None,
             org_state: ListState::default(),
+            repo_state: ListState::default(),
             res_state: ListState::default(),
             purging_org: None,
             view: View::Orgs,
@@ -132,7 +161,7 @@ impl App {
         }
     }
 
-    /// Resources after filtering and sorting — what the right pane draws.
+    /// Resources after filtering and sorting — what the resources column draws.
     pub fn visible_resources(&self) -> Vec<&Resource> {
         let needle = self.filter.to_lowercase();
         let mut out: Vec<&Resource> = self
@@ -184,7 +213,7 @@ impl App {
         }
     }
 
-    /// Tick or untick the repository row under the cursor, in the left tree —
+    /// Tick or untick the repository row under the cursor, in the repos column —
     /// the repository's own equivalent of `toggle_selected`, since it lives
     /// one level above `resources` and cannot share that method's cursor or
     /// storage.
@@ -1271,7 +1300,7 @@ mod tests {
         assert_eq!(plan.items[0].kind, ResourceKind::Cache);
     }
 
-    /// The positive counterpart: with focus still on the repo tree, a ticked
+    /// The positive counterpart: with focus still on the repos column, a ticked
     /// repository must still be what `d` builds.
     #[test]
     fn take_focused_plan_returns_the_repo_plan_while_focus_is_on_the_repo_tree() {
@@ -1336,18 +1365,18 @@ mod tests {
         assert!(a.status.is_empty(), "got: {}", a.status);
     }
 
+    /// `→`/`Tab` and `←` walk the three columns (spec §2), both ways, and
+    /// wrap. The repo level was unreachable at one point because `Focus`
+    /// only had two variants. The test this replaces re-implemented the
+    /// cycle inline and asserted on its own copy, so nothing the event loop
+    /// did could make it fail.
     #[test]
-    fn focus_cycles_through_all_three_levels() {
-        // The repo level was unreachable at one point because Focus only had
-        // two variants; this locks the tree's shape.
-        let mut f = Focus::Orgs;
-        for expected in [Focus::Repos, Focus::Resources, Focus::Orgs] {
-            f = match f {
-                Focus::Orgs => Focus::Repos,
-                Focus::Repos => Focus::Resources,
-                Focus::Resources => Focus::Orgs,
-            };
-            assert_eq!(f, expected);
-        }
+    fn focus_walks_the_three_columns_both_ways_and_wraps() {
+        assert_eq!(Focus::Orgs.next(), Focus::Repos);
+        assert_eq!(Focus::Repos.next(), Focus::Resources);
+        assert_eq!(Focus::Resources.next(), Focus::Orgs);
+        assert_eq!(Focus::Orgs.previous(), Focus::Resources);
+        assert_eq!(Focus::Repos.previous(), Focus::Orgs);
+        assert_eq!(Focus::Resources.previous(), Focus::Repos);
     }
 }

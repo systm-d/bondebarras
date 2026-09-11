@@ -2,8 +2,8 @@
 //! documented (but API-unexposed) per-repository ceiling, and Actions
 //! minutes against the free monthly allowance.
 //!
-//! Drawn at the top of the resource pane for now (`tui::views::repo`); task
-//! 4 moves them to the head of column 3 without changing anything here.
+//! Drawn at the head of the resources column (`tui::views::repo`), for the
+//! repository its resources were loaded from.
 
 use crate::billing::FREE_MINUTES_PER_MONTH;
 use crate::model::human_size;

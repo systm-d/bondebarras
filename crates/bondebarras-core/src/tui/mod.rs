@@ -140,7 +140,7 @@ where
                         deleted_sizeless,
                     );
 
-                    // The recap above talks about bytes freed; the left pane
+                    // The recap above talks about bytes freed; the orgs column
                     // must agree on the same frame, not show the pre-purge
                     // total for the org the purge just happened in. One
                     // request is enough — a stale number would be worse than
@@ -239,6 +239,13 @@ where
             continue;
         }
 
+        // `←`/`→`/`Tab` move between the columns, in every layout — with a
+        // single column on screen they change which one it is.
+        if let Some(focus) = column_after(app.focus, key.code) {
+            app.focus = focus;
+            continue;
+        }
+
         match key.code {
             KeyCode::Esc if !app.filter.is_empty() => {
                 app.filter.clear();
@@ -246,13 +253,6 @@ where
             }
             KeyCode::Char('q') | KeyCode::Esc => request_quit(&mut app),
             KeyCode::Char('b') => app.view = View::Billing,
-            KeyCode::Tab => {
-                app.focus = match app.focus {
-                    Focus::Orgs => Focus::Repos,
-                    Focus::Repos => Focus::Resources,
-                    Focus::Resources => Focus::Orgs,
-                }
-            }
             KeyCode::Down => match app.focus {
                 Focus::Orgs => {
                     app.org_cursor = (app.org_cursor + 1).min(app.orgs.len().saturating_sub(1));
@@ -297,7 +297,7 @@ where
                     }
                 }
             }
-            // The tree's own row (`Focus::Repos`) ticks a repository for
+            // The repos column (`Focus::Repos`) ticks a repository for
             // archiving; every other focus keeps ticking a resource, as
             // before. Two different guards, two different storage slots —
             // see `App::toggle_repo_selected`'s own doc comment for why a
@@ -358,6 +358,22 @@ fn purge_finished_status(
         } else {
             format!("Bon débarras ! {recap}, {failures} échec(s).")
         }
+    }
+}
+
+/// The column a key moves focus to, or `None` when it is not a column key.
+///
+/// `→` and `Tab` are one key, as spec §2's key table has it, and both wrap
+/// from the resources back to the orgs; `←` wraps the other way. They work
+/// in every layout: with one column on screen they change which column that
+/// is, with two they bring the orgs column in on the left
+/// (`tui::views::column_areas`). Split out of `event_loop` so the mapping
+/// can be asserted on without a terminal.
+fn column_after(focus: Focus, code: KeyCode) -> Option<Focus> {
+    match code {
+        KeyCode::Right | KeyCode::Tab => Some(focus.next()),
+        KeyCode::Left => Some(focus.previous()),
+        _ => None,
     }
 }
 
@@ -437,5 +453,28 @@ mod tests {
         let mut app = App::new(vec![]);
         request_quit(&mut app);
         assert!(app.should_quit);
+    }
+
+    /// Spec §2's key table: `→` and `Tab` go to the next column, `←` to the
+    /// previous one, wrapping, in every layout. Any other key is not a
+    /// column key and must fall through to the rest of the loop — `↓` moves
+    /// a cursor, it must not also move the column.
+    #[test]
+    fn right_and_tab_move_to_the_next_column_and_left_to_the_previous() {
+        assert_eq!(
+            column_after(Focus::Orgs, KeyCode::Right),
+            Some(Focus::Repos)
+        );
+        assert_eq!(column_after(Focus::Orgs, KeyCode::Tab), Some(Focus::Repos));
+        assert_eq!(
+            column_after(Focus::Resources, KeyCode::Right),
+            Some(Focus::Orgs)
+        );
+        assert_eq!(column_after(Focus::Repos, KeyCode::Left), Some(Focus::Orgs));
+        assert_eq!(
+            column_after(Focus::Orgs, KeyCode::Left),
+            Some(Focus::Resources)
+        );
+        assert_eq!(column_after(Focus::Repos, KeyCode::Down), None);
     }
 }
