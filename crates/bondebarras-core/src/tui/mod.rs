@@ -9,7 +9,7 @@ use crate::clean::{self, Plan, Progress};
 use crate::model::{OrgSummary, Resource, ResourceKind};
 use crate::scan;
 use anyhow::Result;
-use app::{App, Focus, Load, View};
+use app::{App, Focus, Load, LoadGeneration, View};
 use crossterm::cursor::Show;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use crossterm::execute;
@@ -70,6 +70,7 @@ where
     let mut pending: Option<Plan> = None;
     let (tx, mut rx) = mpsc::unbounded_channel::<Tagged>();
     let (landings_tx, mut landings) = mpsc::unbounded_channel::<Landing>();
+    let (ticks_tx, mut ticks) = mpsc::unbounded_channel::<LoadGeneration>();
 
     while !app.should_quit {
         // Spec §3: the resources column follows the repository under the
@@ -78,7 +79,7 @@ where
         // each `TICK` when no key comes — so the load starts within one tick
         // of the pause ending. `App::follow_cursor` says what arms it.
         if let Some(load) = app.follow_cursor(Instant::now()) {
-            spawn_load(&client, &landings_tx, load);
+            spawn_load(&client, &landings_tx, &ticks_tx, load);
         }
 
         terminal.draw(|f| views::render(&mut app, f, pending.as_ref()))?;
@@ -95,6 +96,14 @@ where
             {
                 app.refresh_org_cache(&org_login, repos);
             }
+        }
+
+        // Ticks of the loads in flight, each under its load's generation:
+        // `App::load_ticked` drops those of a load superseded since, as
+        // `land_load` drops its listing. Drained before the listings, which
+        // their loads send only once every tick has gone.
+        while let Ok(generation) = ticks.try_recv() {
+            app.load_ticked(generation);
         }
 
         // Listings that landed, each with the `Load` it was started under:
@@ -222,7 +231,7 @@ where
                 // requests nothing when its listing is already shown or on
                 // its way.
                 if let Some(load) = app.force_load() {
-                    spawn_load(&client, &landings_tx, load);
+                    spawn_load(&client, &landings_tx, &ticks_tx, load);
                 }
             }
             // `espace`, `s`, `A` and `f` act on the focused column only — see
@@ -281,11 +290,12 @@ fn purge_finished_status(
 }
 
 /// A listing as it lands back in the event loop: the `Load` it was started
-/// under, and what `scan::repo_detail_with_warnings` returned.
+/// under, and what `scan::repo_detail_ticking` returned.
 type Landing = (Load, Result<(Vec<Resource>, Vec<&'static str>)>);
 
 /// Fetches `load`'s listing on a spawned task and sends it back, with its
-/// `Load`, on `landings`.
+/// `Load`, on `landings` — and, as each of its calls lands, a tick under the
+/// load's generation on `ticks`, for the load bar (`App::load_ticked`).
 ///
 /// Spawned, not awaited — the purge's shape. `Entrée` used to await the nine
 /// listings inline, freezing the draw and the keys for the whole load; a
@@ -294,16 +304,39 @@ type Landing = (Load, Result<(Vec<Resource>, Vec<&'static str>)>);
 /// `Load`'s generation exists for. A task on the runtime the purges already
 /// run on, not a thread.
 ///
-/// Calls `repo_detail_with_warnings` directly, not the `repo_detail` stderr
-/// wrapper: Finding 5 of the final review needs the failed family names as
-/// data so `App::finish_loading` can put them where the user is actually
-/// looking — the wrapper's `eprintln!` writes to a stream the alternate
-/// screen hides.
-fn spawn_load(client: &Arc<Client>, landings: &mpsc::UnboundedSender<Landing>, load: Load) {
+/// Calls `repo_detail_ticking` — `repo_detail_with_warnings`, ticking —
+/// directly, not the `repo_detail` stderr wrapper: Finding 5 of the final
+/// review needs the failed family names as data so `App::finish_loading` can
+/// put them where the user is actually looking — the wrapper's `eprintln!`
+/// writes to a stream the alternate screen hides.
+///
+/// The ticks go out under the load's generation, since they travel apart
+/// from the listing, and every one of them before the listing: the run drops
+/// its tick sender as it returns, which ends the forwarding, and only then is
+/// the listing sent. No tick of a load trails its own landing.
+fn spawn_load(
+    client: &Arc<Client>,
+    landings: &mpsc::UnboundedSender<Landing>,
+    ticks: &mpsc::UnboundedSender<LoadGeneration>,
+    load: Load,
+) {
     let client = Arc::clone(client);
     let landings = landings.clone();
+    let ticks = ticks.clone();
     tokio::spawn(async move {
-        let outcome = scan::repo_detail_with_warnings(&client, &load.org, &load.repo).await;
+        let generation = load.generation();
+        let (tick, mut landed) = mpsc::unbounded_channel::<()>();
+        let forward = async {
+            while landed.recv().await.is_some() {
+                // A closed channel means the event loop has ended — the user
+                // quit — and no one is left to show the bar to.
+                let _ = ticks.send(generation);
+            }
+        };
+        let (outcome, ()) = tokio::join!(
+            scan::repo_detail_ticking(&client, &load.org, &load.repo, tick),
+            forward
+        );
         // A closed channel means the event loop has ended — the user quit —
         // and there is no one left to show the listing to.
         let _ = landings.send((load, outcome));
@@ -375,6 +408,7 @@ fn apply_progress(app: &mut App, purge: &(String, String), msg: Progress) -> Opt
             } else {
                 app.resource_deleted(kind, id, &owner, &repo);
             }
+            app.purge_advanced();
             None
         }
         Progress::Failed {
@@ -391,6 +425,10 @@ fn apply_progress(app: &mut App, purge: &(String, String), msg: Progress) -> Opt
                 app.resource_failed(kind, id, &owner, &repo);
                 app.status = format!("Erreur : suppression de {id} — {reason}");
             }
+            // A refused item is processed, not still waiting: the bar counts
+            // it like a deletion, or a purge refused throughout would never
+            // reach its end.
+            app.purge_advanced();
             None
         }
         Progress::Finished {
@@ -1069,6 +1107,192 @@ mod tests {
         apply_progress(&mut app, &key("josephine"), outcome(true, "josephine"));
         assert!(app.resources.is_empty());
         assert!(app.selected.is_empty());
+    }
+
+    /// The item an archive plan of `repo` holds: the repository itself.
+    fn repository_item(repo: &str) -> crate::model::Resource {
+        crate::model::Resource {
+            kind: ResourceKind::Repository,
+            id: crate::api::refs::resource_id(repo),
+            label: repo.into(),
+            ..cache_row(0)
+        }
+    }
+
+    /// The purge bar, as `(label, done, total)`.
+    fn bar(app: &App) -> Option<(&str, usize, usize)> {
+        app.purge
+            .as_ref()
+            .map(|w| (w.label.as_str(), w.done, w.total))
+    }
+
+    /// Several purges run at once — the cursor stays free during one, and
+    /// `d` works again — and they share one bar that counts them all. The
+    /// second of josephine's two purges is confirmed while the first is
+    /// still deleting: a second purge overwriting the slot would read 0/4
+    /// where 2/7 is true, and the first one's `Finished` clearing it would
+    /// announce the end of four deletions still to come.
+    #[test]
+    fn purge_bar_counts_every_purge_in_flight_and_leaves_with_the_last() {
+        let mut app = app_with_two_repositories();
+        let purge = key("josephine");
+        app.purge_launched(&plan("josephine", (1..=3).map(cache_row).collect()));
+        apply_progress(&mut app, &purge, done(1, "josephine"));
+        apply_progress(&mut app, &purge, done(2, "josephine"));
+        assert_eq!(bar(&app), Some(("suppression", 2, 3)));
+
+        app.purge_launched(&plan("josephine", (4..=7).map(cache_row).collect()));
+        assert_eq!(
+            bar(&app),
+            Some(("suppression", 2, 7)),
+            "the second purge overwrote the first one's count"
+        );
+
+        apply_progress(&mut app, &purge, done(3, "josephine"));
+        apply_progress(&mut app, &purge, finished());
+        assert_eq!(
+            bar(&app),
+            Some(("suppression", 3, 7)),
+            "the first purge's end ended the bar with four deletions still running"
+        );
+
+        for id in 4..=7 {
+            apply_progress(&mut app, &purge, done(id, "josephine"));
+        }
+        assert_eq!(bar(&app), Some(("suppression", 7, 7)));
+        apply_progress(&mut app, &purge, finished());
+        assert_eq!(bar(&app), None, "the bar outlived the last purge");
+    }
+
+    /// A refused deletion is an item processed, not one still waiting: with
+    /// `Done` alone counted, this bar would stop at 1/3 with nothing left to
+    /// do.
+    #[test]
+    fn purge_bar_counts_a_refused_item_as_processed() {
+        let mut app = app_with_two_repositories();
+        let purge = key("josephine");
+        app.purge_launched(&plan("josephine", (1..=3).map(cache_row).collect()));
+
+        apply_progress(&mut app, &purge, done(1, "josephine"));
+        apply_progress(&mut app, &purge, failed(2, "josephine"));
+        apply_progress(&mut app, &purge, failed(3, "josephine"));
+
+        assert_eq!(bar(&app), Some(("suppression", 3, 3)));
+    }
+
+    /// An archive is never called a deletion — on the bar no more than in
+    /// its confirmation modal or its recap.
+    #[test]
+    fn purge_bar_calls_an_archive_archivage() {
+        let mut app = app_with_two_repositories();
+        app.purge_launched(&plan("claudine", vec![repository_item("claudine")]));
+        assert_eq!(bar(&app), Some(("archivage", 0, 1)));
+    }
+
+    /// A deletion and an archive running together share the bar, and its
+    /// label names both: its counts hold the archive's item as well as the
+    /// deletions', so `suppression` alone would count an archive as a
+    /// deletion. The archive is refused — its `Failed` counts, from the
+    /// archive branch of the message — and its end leaves the deletion's bar
+    /// running, still named for both since its count still holds the
+    /// archive.
+    #[test]
+    fn purge_bar_names_both_when_a_deletion_and_an_archive_run_together() {
+        let mut app = app_with_two_repositories();
+        let deletion = key("josephine");
+        let archive = key("claudine");
+        let item = repository_item("claudine");
+        app.purge_launched(&plan("josephine", (1..=2).map(cache_row).collect()));
+        app.purge_launched(&plan("claudine", vec![item.clone()]));
+        assert_eq!(bar(&app), Some(("suppression et archivage", 0, 3)));
+
+        apply_progress(
+            &mut app,
+            &archive,
+            Progress::Failed {
+                kind: item.kind,
+                id: item.id,
+                reason: "403".into(),
+                owner: "systm-d".into(),
+                repo: "claudine".into(),
+            },
+        );
+        apply_progress(
+            &mut app,
+            &archive,
+            Progress::Finished {
+                freed: 0,
+                failures: 1,
+                deleted: 0,
+                deleted_sizeless: 0,
+                archived_repo: Some("claudine".into()),
+            },
+        );
+        assert_eq!(bar(&app), Some(("suppression et archivage", 1, 3)));
+
+        apply_progress(&mut app, &deletion, done(1, "josephine"));
+        apply_progress(&mut app, &deletion, done(2, "josephine"));
+        apply_progress(&mut app, &deletion, finished());
+        assert_eq!(bar(&app), None);
+    }
+
+    /// A plan with no item sets no bar: it ends before it could be drawn,
+    /// and a bar at 0 % that vanishes at once is a flicker, not news. Nor
+    /// does one joining a running bar change its label or its count.
+    #[test]
+    fn purge_bar_is_not_set_by_an_empty_plan() {
+        let mut app = app_with_two_repositories();
+        app.purge_launched(&plan("josephine", vec![]));
+        assert_eq!(bar(&app), None, "an empty plan set a bar");
+        apply_progress(&mut app, &key("josephine"), finished());
+
+        app.purge_launched(&plan("claudine", vec![repository_item("claudine")]));
+        app.purge_launched(&plan("josephine", vec![]));
+        assert_eq!(
+            bar(&app),
+            Some(("archivage", 0, 1)),
+            "an empty plan changed the running bar"
+        );
+    }
+
+    /// The event loop's half of a load's bar: `spawn_load` forwards every
+    /// tick of its run under its load's generation — the one
+    /// `App::load_ticked` accepts — and all of them before the listing
+    /// lands, so no tick of a load trails its own landing. Against a server
+    /// that knows no route: every call still completes, and ticks.
+    #[tokio::test]
+    async fn a_spawned_load_forwards_every_tick_under_its_generation_before_it_lands() {
+        let server = wiremock::MockServer::start().await;
+        let client = Arc::new(Client::with_base("t0ken", &server.uri()).unwrap());
+        let mut app = app_with_two_repositories();
+        assert!(app.follow_cursor(Instant::now()).is_none());
+        let load = app.force_load().expect("josephine's load starts");
+        let (landings_tx, mut landings) = mpsc::unbounded_channel::<Landing>();
+        let (ticks_tx, mut ticks) = mpsc::unbounded_channel();
+
+        spawn_load(&client, &landings_tx, &ticks_tx, load);
+        let (load, outcome) = tokio::time::timeout(Duration::from_secs(10), landings.recv())
+            .await
+            .expect("the listing never landed")
+            .expect("the landings channel closed");
+
+        let mut forwarded = 0;
+        while let Ok(generation) = ticks.try_recv() {
+            app.load_ticked(generation);
+            forwarded += 1;
+        }
+        assert_eq!(
+            forwarded,
+            scan::TOTAL_CALLS,
+            "ticks forwarded before the landing"
+        );
+        assert_eq!(
+            app.loading.as_ref().map(|w| w.done),
+            Some(scan::TOTAL_CALLS),
+            "the forwarded ticks are not the load's own"
+        );
+        app.land_load(load, outcome);
+        assert_eq!(app.loading, None);
     }
 
     /// Spec §2's key table: `→` and `Tab` go to the next column, `←` to the

@@ -1,5 +1,7 @@
 //! Rendering. Layout mirrors claudine: header, body, status line, footer,
-//! with modals drawn on top conditionally.
+//! with modals drawn on top conditionally — plus, while a purge, an archive
+//! or a load runs, a progress row between the status line and the footer
+//! (`progress`).
 //!
 //! The body of `View::Orgs` is three columns — the orgs, the current org's
 //! repositories, the loaded repository's resources — and a narrow terminal
@@ -9,6 +11,7 @@ pub mod billing;
 pub mod confirm;
 pub mod gauges;
 pub mod orgs;
+pub mod progress;
 pub mod repo;
 pub mod repos;
 pub mod shown;
@@ -124,21 +127,39 @@ pub fn columns_for(width: u16) -> Columns {
     }
 }
 
-/// The four rows every frame is cut into.
+/// The rows every frame is cut into.
 pub(crate) struct Screen {
     pub header: Rect,
     pub body: Rect,
     pub status: Rect,
+    /// The progress row (`progress`): one line while a purge, an archive or
+    /// a repository load runs, none otherwise.
+    pub progress: Rect,
     pub footer: Rect,
 }
 
-/// Cuts `area` into the header, body, status and footer rows — decided here
-/// once, for `render` and the render tests alike.
-pub(crate) fn screen(area: Rect) -> Screen {
+/// The rows a frame needs before the progress row gets a line: the header,
+/// one line of body, the status line, the progress row and the footer.
+const ROWS_WITH_PROGRESS: u16 = 5;
+
+/// Cuts `area` into the header, body, status, progress and footer rows —
+/// decided here once, for `render` and the render tests alike.
+///
+/// The progress row is a row of its own, between the status line and the
+/// footer, and only `with_progress`: at `Length(0)` ratatui draws nothing, so
+/// the row does not exist while nothing runs. Its line comes out of the
+/// body's, never the status line's nor the footer's — see `progress`'s own
+/// doc comment for why both must stay. A frame shorter than
+/// `ROWS_WITH_PROGRESS` has no body line left to give, and ratatui's solver
+/// would take the status line's instead: there the bar gets no line at all.
+pub(crate) fn screen(area: Rect, with_progress: bool) -> Screen {
     let rows = Layout::vertical([
         Constraint::Length(1),
         Constraint::Min(1),
         Constraint::Length(1),
+        Constraint::Length(u16::from(
+            with_progress && area.height >= ROWS_WITH_PROGRESS,
+        )),
         Constraint::Length(1),
     ])
     .split(area);
@@ -146,7 +167,8 @@ pub(crate) fn screen(area: Rect) -> Screen {
         header: rows[0],
         body: rows[1],
         status: rows[2],
-        footer: rows[3],
+        progress: rows[3],
+        footer: rows[4],
     }
 }
 
@@ -274,7 +296,7 @@ pub(crate) fn fit(text: &str, width: usize) -> String {
 }
 
 pub fn render(app: &mut App, f: &mut Frame, pending: Option<&Plan>) {
-    let rows = screen(f.area());
+    let rows = screen(f.area(), progress::shown(app).is_some());
     let columns = match app.view {
         View::Orgs => Some(column_areas(rows.body, app.focus)),
         View::Billing => None,
@@ -315,6 +337,9 @@ pub fn render(app: &mut App, f: &mut Frame, pending: Option<&Plan>) {
         Paragraph::new(Span::styled(footer, theme::muted())),
         rows.footer,
     );
+    if let Some(work) = progress::shown(app) {
+        progress::render(work, f, rows.progress);
+    }
 
     if let Some(plan) = pending {
         confirm::render(plan, f, f.area());
@@ -393,13 +418,13 @@ pub(crate) mod testing {
     //! given — never the whole frame, where a column drawn across the full
     //! width or at the wrong offset would still be found.
 
-    use super::{ColumnAreas, Screen, column_areas, render, screen};
+    use super::{ColumnAreas, Screen, column_areas, progress, render, screen};
     use crate::tui::app::{App, Focus};
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect;
 
     /// Draws the real `views::render` — header, columns, status line,
-    /// footer — on a `width` × `height` test terminal.
+    /// progress row, footer — on a `width` × `height` test terminal.
     pub(crate) fn draw(app: &mut App, width: u16, height: u16) -> Buffer {
         let backend = ratatui::backend::TestBackend::new(width, height);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
@@ -410,7 +435,10 @@ pub(crate) mod testing {
     /// The rects `render` draws into at this size, from the same two
     /// functions it calls.
     pub(crate) fn layout(app: &App, width: u16, height: u16) -> (Screen, ColumnAreas) {
-        let rows = screen(Rect::new(0, 0, width, height));
+        let rows = screen(
+            Rect::new(0, 0, width, height),
+            progress::shown(app).is_some(),
+        );
         let columns = column_areas(rows.body, app.focus);
         (rows, columns)
     }

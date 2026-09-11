@@ -14,6 +14,7 @@ use crate::refs::{BranchClass, BranchRef, classify_branch};
 use crate::stale::is_stale;
 use anyhow::Result;
 use std::collections::HashSet;
+use tokio::sync::mpsc::UnboundedSender;
 
 /// Stage 1: cache aggregates and repository list for each org.
 ///
@@ -116,6 +117,49 @@ pub async fn repo_detail_with_warnings(
     owner: &str,
     repo: &str,
 ) -> Result<(Vec<Resource>, Vec<&'static str>)> {
+    detail(client, owner, repo, None).await
+}
+
+/// `repo_detail_with_warnings`, plus one tick per completed call.
+///
+/// The nine listings are joined, so without this the caller sees nothing
+/// between "started" and "all nine done" — a bar over that has two states
+/// and is worth less than the `(chargement…)` text it would replace.
+/// Each future sends its tick as it lands; ticks arrive in completion
+/// order, which is the order the user is actually waiting on.
+pub async fn repo_detail_ticking(
+    client: &Client,
+    owner: &str,
+    repo: &str,
+    tick: UnboundedSender<()>,
+) -> Result<(Vec<Resource>, Vec<&'static str>)> {
+    detail(client, owner, repo, Some(tick)).await
+}
+
+/// How many calls a repository's drill-down joins — the futures of
+/// `detail`'s `futures::join!`, right below — and so how many ticks
+/// `repo_detail_ticking` sends: the denominator of the TUI's load bar.
+///
+/// It must follow the number of futures joined there. A tenth call joined
+/// without raising it would push the bar past its end, and a tenth family's
+/// call left unticked would leave the bar full while that call still runs.
+/// `repo_detail_ticking_ticks_exactly_total_calls_times` anchors the two.
+pub const TOTAL_CALLS: usize = 9;
+
+/// The one code path behind `repo_detail_with_warnings` and
+/// `repo_detail_ticking`: the nine calls, joined, then every family's rows
+/// and their safety classification. `tick`, when given, gets one `()` per
+/// call as that call lands (`ticked`); dropped when this returns, which
+/// closes its channel.
+async fn detail(
+    client: &Client,
+    owner: &str,
+    repo: &str,
+    tick: Option<UnboundedSender<()>>,
+) -> Result<(Vec<Resource>, Vec<&'static str>)> {
+    let tick = tick.as_ref();
+    // `TOTAL_CALLS`, just above, counts these futures: one more or one
+    // fewer here means changing it too.
     let (
         caches_r,
         artifacts_r,
@@ -127,18 +171,18 @@ pub async fn repo_detail_with_warnings(
         assets_r,
         default_branch_r,
     ) = futures::join!(
-        caches::list(client, owner, repo),
-        artifacts::list(client, owner, repo),
-        runs::list(client, owner, repo),
+        ticked(caches::list(client, owner, repo), tick),
+        ticked(artifacts::list(client, owner, repo), tick),
+        ticked(runs::list(client, owner, repo), tick),
         // This account's convention: a repo's image, when it publishes one,
         // is named after the repo. A repo with no image 404s — `versions`
         // already turns that into an empty list, not an error.
-        packages::versions(client, owner, repo),
-        prs::closed_prs(client, owner, repo),
-        refs::branches(client, owner, repo),
-        refs::tags(client, owner, repo),
-        releases::assets(client, owner, repo),
-        refs::default_branch(client, owner, repo),
+        ticked(packages::versions(client, owner, repo), tick),
+        ticked(prs::closed_prs(client, owner, repo), tick),
+        ticked(refs::branches(client, owner, repo), tick),
+        ticked(refs::tags(client, owner, repo), tick),
+        ticked(releases::assets(client, owner, repo), tick),
+        ticked(refs::default_branch(client, owner, repo), tick),
     );
 
     let mut failed: Vec<&'static str> = Vec::new();
@@ -204,8 +248,8 @@ pub async fn repo_detail_with_warnings(
     // every family's listing — a `RepoContext` built entirely from data this
     // function already holds, at zero extra HTTP cost. This must run after
     // `mark_stale`: `classify`'s cache and workflow-run rules both read
-    // `stale_pr`. A future `repo_detail_ticking` (task 6) is meant to reuse
-    // this same path rather than duplicate it.
+    // `stale_pr`. `repo_detail_ticking` goes through this same path, not a
+    // copy of it.
     let ctx = crate::safety::RepoContext {
         merged_refs: closed.merged_refs,
         live_branches,
@@ -218,6 +262,20 @@ pub async fn repo_detail_with_warnings(
 
     items.sort_by_key(|i| std::cmp::Reverse(i.size_bytes));
     Ok((items, failed))
+}
+
+/// `call`, then one tick on `tick` as it lands — whatever it returned: a
+/// refused listing is a call done all the same.
+///
+/// The send's error is dropped on purpose: a closed channel means the user
+/// has left the screen, and a tick nobody reads must not fail a load that
+/// succeeded.
+async fn ticked<F: Future>(call: F, tick: Option<&UnboundedSender<()>>) -> F::Output {
+    let landed = call.await;
+    if let Some(tick) = tick {
+        let _ = tick.send(());
+    }
+    landed
 }
 
 /// Distinct release tags, newest first, in the order the releases API
@@ -2044,5 +2102,143 @@ mod tests {
             .unwrap();
 
         assert!(failed.is_empty(), "got: {failed:?}");
+    }
+
+    /// Mounts the nine calls `repo_detail_with_warnings` joins for
+    /// `systm-d/{repo}`, each answering a healthy, empty page — and no
+    /// package published, like most repositories.
+    async fn mount_an_empty_repository(server: &MockServer, repo: &str) {
+        let empty = |body: serde_json::Value| ResponseTemplate::new(200).set_body_json(body);
+        let routes = [
+            (
+                format!("/repos/systm-d/{repo}/actions/caches"),
+                empty(serde_json::json!({ "actions_caches": [] })),
+            ),
+            (
+                format!("/repos/systm-d/{repo}/actions/artifacts"),
+                empty(serde_json::json!({ "artifacts": [] })),
+            ),
+            (
+                format!("/repos/systm-d/{repo}/actions/runs"),
+                empty(serde_json::json!({ "workflow_runs": [] })),
+            ),
+            (
+                format!("/orgs/systm-d/packages/container/{repo}/versions"),
+                ResponseTemplate::new(404),
+            ),
+            (
+                format!("/repos/systm-d/{repo}/pulls"),
+                empty(serde_json::json!([])),
+            ),
+            (
+                format!("/repos/systm-d/{repo}/branches"),
+                empty(serde_json::json!([])),
+            ),
+            (
+                format!("/repos/systm-d/{repo}/tags"),
+                empty(serde_json::json!([])),
+            ),
+            (
+                format!("/repos/systm-d/{repo}/releases"),
+                empty(serde_json::json!([])),
+            ),
+            (
+                format!("/repos/systm-d/{repo}"),
+                empty(serde_json::json!({ "default_branch": "main" })),
+            ),
+        ];
+        for (route, response) in routes {
+            Mock::given(method("GET"))
+                .and(path(route))
+                .respond_with(response)
+                .mount(server)
+                .await;
+        }
+    }
+
+    /// `TOTAL_CALLS` is the load bar's denominator, so it must be the number
+    /// of calls the drill-down really joins. A complete run ticks exactly
+    /// that many times — a tenth listing joined with its tick would
+    /// overshoot it — and sends exactly that many requests — a tenth joined
+    /// without one would leave the bar full while it still runs, and a
+    /// constant left at nine after a tenth family would stop the bar at
+    /// 90 %. The channel closes with the run: the event loop's forwarder
+    /// waits for that before the listing lands.
+    #[tokio::test]
+    async fn repo_detail_ticking_ticks_exactly_total_calls_times() {
+        let server = MockServer::start().await;
+        mount_an_empty_repository(&server, "tics").await;
+        let client = Client::with_base("t0ken", &server.uri()).unwrap();
+        let (tick, mut ticks) = tokio::sync::mpsc::unbounded_channel();
+
+        let (_, failed) = repo_detail_ticking(&client, "systm-d", "tics", tick)
+            .await
+            .unwrap();
+        assert!(
+            failed.is_empty(),
+            "the fixture must be a complete run: {failed:?}"
+        );
+
+        let counted = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            let mut n = 0;
+            while ticks.recv().await.is_some() {
+                n += 1;
+            }
+            n
+        })
+        .await
+        .expect("the tick channel outlived the run");
+        assert_eq!(counted, TOTAL_CALLS, "ticks of a complete run");
+        let requests = server
+            .received_requests()
+            .await
+            .expect("wiremock records requests");
+        assert_eq!(
+            requests.len(),
+            TOTAL_CALLS,
+            "requests of a complete run: {:?}",
+            requests.iter().map(|r| r.url.path()).collect::<Vec<_>>()
+        );
+    }
+
+    /// Each call ticks as it lands, not all nine once the join is over: a
+    /// bar fed that way has two states, and says less than the
+    /// `(chargement…)` it sits under. The releases listing answers a second
+    /// after the eight others, whose eight ticks must all arrive while it is
+    /// still running.
+    #[tokio::test]
+    async fn repo_detail_ticking_ticks_each_call_as_it_lands() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/tics/releases"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!([]))
+                    .set_delay(std::time::Duration::from_secs(1)),
+            )
+            .with_priority(1)
+            .mount(&server)
+            .await;
+        mount_an_empty_repository(&server, "tics").await;
+        let client = Client::with_base("t0ken", &server.uri()).unwrap();
+        let (tick, mut ticks) = tokio::sync::mpsc::unbounded_channel();
+
+        let run = repo_detail_ticking(&client, "systm-d", "tics", tick);
+        tokio::pin!(run);
+        let eight = async {
+            for _ in 1..TOTAL_CALLS {
+                ticks
+                    .recv()
+                    .await
+                    .expect("the run closed its ticks before its fast calls ticked");
+            }
+        };
+        tokio::select! {
+            biased;
+            _ = &mut run => panic!("the slow call landed before the eight fast ones had ticked"),
+            () = eight => {}
+        }
+        run.await.unwrap();
+        assert!(ticks.recv().await.is_some(), "the slow call never ticked");
     }
 }

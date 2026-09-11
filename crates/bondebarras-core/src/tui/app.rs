@@ -6,6 +6,7 @@
 
 use crate::clean::Plan;
 use crate::model::{OrgSummary, RepoSummary, Resource, ResourceKind};
+use crate::tui::views::progress::{self, Work};
 use ratatui::widgets::ListState;
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
@@ -92,6 +93,15 @@ pub struct Load {
     generation: LoadGeneration,
     pub org: String,
     pub repo: String,
+}
+
+impl Load {
+    /// The generation this load was started under, for the ticks its task
+    /// sends (`App::load_ticked`): they travel apart from its listing, and
+    /// must carry the same identity.
+    pub fn generation(&self) -> LoadGeneration {
+        self.generation
+    }
 }
 
 /// What the resources column shows, measured against the repository under
@@ -183,6 +193,20 @@ pub struct App {
     /// whatever deletions are still queued with no summary shown. Disarmed by
     /// `purge_finished` only once every in-flight purge has settled.
     pub quit_armed: bool,
+    /// The purge or archive in flight, if any.
+    ///
+    /// One slot for every purge running at once, apart from `loading`: the
+    /// cursor stays free during a purge, so a load can start while deletions
+    /// land, and one slot for both would let either announce the end of the
+    /// other. Set by `purge_launched`, advanced by `purge_advanced`, cleared
+    /// by `purge_finished` once the last purge in flight has finished.
+    pub purge: Option<Work>,
+    /// The repository drill-down in flight, if any.
+    ///
+    /// The load of `in_flight`, under `load_generation`: set when that load
+    /// starts, advanced by the ticks its task sends (`load_ticked`), and
+    /// cleared wherever `in_flight` is.
+    pub loading: Option<Work>,
     /// The repository ticked for archiving, from the repos column — `(org,
     /// repo)`. A repository lives one level above `resources`, not inside
     /// it, so it cannot share `selected`'s `(ResourceKind, u64)` set the way
@@ -262,6 +286,8 @@ impl App {
             month_cursor: 0,
             purges_in_flight: 0,
             quit_armed: false,
+            purge: None,
+            loading: None,
             selected_repo: None,
             repo_cache: HashMap::new(),
             repo_refused: HashMap::new(),
@@ -492,6 +518,22 @@ impl App {
         generation.0 == self.load_generation
     }
 
+    /// Moves the load bar one call on, for a tick of the load started under
+    /// `generation` — only if `accepts_load` still accepts it.
+    ///
+    /// A load the cursor left, or one a purge made suspect, keeps ticking on
+    /// its task. Its ticks are dropped here as its listing is in `land_load`:
+    /// otherwise the bar of the repository now looked at would move at the
+    /// pace of the one left behind.
+    pub fn load_ticked(&mut self, generation: LoadGeneration) {
+        if !self.accepts_load(generation) {
+            return;
+        }
+        if let Some(bar) = self.loading.as_mut() {
+            bar.done += 1;
+        }
+    }
+
     /// Keeps `items` as `key`'s listing for the rest of the session, with no
     /// refused family.
     pub fn remember(&mut self, key: (String, String), items: Vec<Resource>) {
@@ -530,6 +572,7 @@ impl App {
         self.repo_refused.remove(&key);
         if self.in_flight.as_ref() == Some(&key) {
             self.in_flight = None;
+            self.loading = None;
             self.load_generation += 1;
         }
     }
@@ -543,6 +586,10 @@ impl App {
     /// repository, and the cursor can be anywhere by then. While it is
     /// recorded, no load starts on its own for that repository
     /// (`follow_cursor`); `purge_ended` releases it.
+    ///
+    /// Its items join the purge bar (`purge`, `Work::joined`), counted from
+    /// the plan itself. A plan with no item sets no bar and changes none: it
+    /// ends before it could be drawn.
     pub fn purge_launched(&mut self, plan: &Plan) {
         self.purging_org = Some(plan.owner.clone());
         self.purges_in_flight += 1;
@@ -550,6 +597,27 @@ impl App {
             .purging_repos
             .entry((plan.owner.clone(), plan.repo.clone()))
             .or_insert(0) += 1;
+
+        if !plan.items.is_empty() {
+            let label = if plan.is_archive() {
+                progress::ARCHIVE
+            } else {
+                progress::DELETION
+            };
+            let count = plan.items.len();
+            self.purge = Some(match self.purge.take() {
+                Some(running) => running.joined(label, count),
+                None => Work::new(label, count),
+            });
+        }
+    }
+
+    /// Advances the purge bar by one item: a purge's `Done` or `Failed`. A
+    /// refused item is processed, not still waiting.
+    pub fn purge_advanced(&mut self) {
+        if let Some(bar) = self.purge.as_mut() {
+            bar.done += 1;
+        }
     }
 
     /// Applies the end of one purge of `(owner, repo)`: its `Finished`, which
@@ -729,6 +797,7 @@ impl App {
             return;
         }
         self.in_flight = None;
+        self.loading = None;
         match outcome {
             Ok((items, failed)) => {
                 self.keep(
@@ -754,6 +823,7 @@ impl App {
         self.load_failed = None;
         let generation = self.begin_load();
         self.in_flight = Some((org.clone(), repo.clone()));
+        self.loading = Some(Work::new(progress::LOAD, crate::scan::TOTAL_CALLS));
         Some(Load {
             generation,
             org,
@@ -767,6 +837,7 @@ impl App {
     fn leave_listing(&mut self) {
         self.load_generation += 1;
         self.in_flight = None;
+        self.loading = None;
         self.load_failed = None;
         self.pending_since = None;
         self.loaded = None;
@@ -1023,10 +1094,15 @@ impl App {
     /// not let that first `Finished` clear the guard while the second purge
     /// is still running — `q` would then quit silently, exactly the case the
     /// guard exists to prevent.
+    ///
+    /// The purge bar goes on the same condition, and for the same reason: a
+    /// bar cleared by the first `Finished` would announce the end of work
+    /// still running.
     pub fn purge_finished(&mut self) {
         self.purges_in_flight = self.purges_in_flight.saturating_sub(1);
         if self.purges_in_flight == 0 {
             self.quit_armed = false;
+            self.purge = None;
         }
     }
 }
