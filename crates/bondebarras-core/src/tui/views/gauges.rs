@@ -18,18 +18,22 @@ use ratatui::text::{Line, Span};
 /// both gauge lines that use it say so.
 pub const CACHE_CEILING_BYTES: u64 = 10 * 1024 * 1024 * 1024;
 
-/// `used / ceiling` as a whole percentage, shared by both gauges rather than
-/// each re-typing the same division.
+/// `used / ceiling` as a whole percentage.
 ///
 /// A pure `(used, ceiling)` function, not `(used)` alone against a baked-in
 /// constant: the cache ceiling is a compile-time constant today, but the
 /// minutes ceiling already reads from `billing::FREE_MINUTES_PER_MONTH`, and
 /// issue #11 will replace that single source with a per-plan figure that can
-/// legitimately be unknown (ceiling zero). Modelled on `views::billing::
-/// gauge_line`, which already never clamps the *percentage* at 100 % — an
-/// org, or a repository, well past its allowance is exactly what these
-/// gauges exist to surface, and a clamped number would say nothing.
-fn percent(used: u64, ceiling: u64) -> u64 {
+/// legitimately be unknown (ceiling zero).
+///
+/// `pub(crate)`, not private: `views::billing::gauge_line` shares this exact
+/// business rule (an uncapped, zero-guarded percentage) rather than keeping
+/// its own copy of the same formula — the two gauges here and the Billing
+/// tab's gauge would otherwise need to change in lockstep with no single
+/// source of truth. This is also where the module's zero-ceiling test
+/// already lives, so both call sites stay covered by one test rather than
+/// two that could drift apart.
+pub(crate) fn percent(used: u64, ceiling: u64) -> u64 {
     if ceiling == 0 {
         0
     } else {
