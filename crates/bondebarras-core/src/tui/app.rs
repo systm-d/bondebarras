@@ -230,9 +230,10 @@ pub struct App {
     /// The repository whose last load failed, until the cursor leaves it or
     /// `Entrée` retries it.
     load_failed: Option<(String, String)>,
-    /// The warning the last listing with a refused family wrote to `status`,
-    /// so the next listing clears that warning and never a message written
-    /// since — a purge's recap, the quit guard's warning: a listing lands on
+    /// The message the last load wrote to `status` — a refused family's
+    /// warning, or a failed load's error — so the repository's next listing,
+    /// or the cursor leaving it, clears that message and never one written
+    /// since: a purge's recap, the quit guard's warning. A listing lands on
     /// its own time, not on a key.
     load_warning: Option<String>,
 }
@@ -714,7 +715,11 @@ impl App {
     /// with its refused families if any (ruling F2): a later visit says them
     /// again rather than show the kept rows as if a refused family were
     /// empty. A failed load is said on the status line, and the column says
-    /// it failed rather than loading for ever.
+    /// it failed rather than loading for ever. That error is the load's own
+    /// message (`load_warning`), like a refused family's warning: the next
+    /// listing of the repository, or the cursor leaving it, clears it — a
+    /// retry that lands in full must not leave the status line saying the
+    /// load failed (fix round 1).
     pub fn land_load(
         &mut self,
         load: Load,
@@ -735,6 +740,7 @@ impl App {
             }
             Err(e) => {
                 self.status = format!("Erreur : chargement de {}/{} — {e}", load.org, load.repo);
+                self.load_warning = Some(self.status.clone());
                 self.load_failed = Some((load.org, load.repo));
             }
         }
@@ -2248,6 +2254,52 @@ mod tests {
             "a failed repository was requested again without Entrée"
         );
         assert!(a.force_load().is_some(), "Entrée must retry");
+    }
+
+    /// Fix round 1: a failed load's error is the load's own message, like a
+    /// refused family's warning, so it never outlives the failure it
+    /// reports. Retried with `Entrée` and landing in full, the retry clears
+    /// it; a failure the cursor leaves behind leaves with it. The status
+    /// line must not say a load failed while the column lists that
+    /// repository. Claudine is never loaded: the cursor leaving josephine
+    /// finds no listing whose landing could clear the error in its place.
+    #[test]
+    fn a_load_error_leaves_the_status_line_once_retried_or_left_behind() {
+        let mut a = App::new(vec![org_named("systm-d", &["josephine", "claudine"])]);
+        let t0 = std::time::Instant::now();
+        assert!(a.follow_cursor(t0).is_none());
+        let load = a.follow_cursor(t0 + PAUSE).expect("the load starts");
+        a.land_load(load, Err(anyhow::anyhow!("503 Service Unavailable")));
+        assert!(a.status.contains("503"), "got: {}", a.status);
+
+        let retry = a.force_load().expect("Entrée retries");
+        a.land_load(
+            retry,
+            Ok((vec![res(1, "josephine-cache", 100, 1, false)], vec![])),
+        );
+        assert_eq!(
+            a.shown(),
+            Shown::Listing {
+                org: "systm-d".into(),
+                repo: "josephine".into()
+            }
+        );
+        assert!(
+            !a.status.contains("503"),
+            "the error outlived a successful retry: {}",
+            a.status
+        );
+
+        let refresh = a.force_load().expect("Entrée refreshes");
+        a.land_load(refresh, Err(anyhow::anyhow!("502 Bad Gateway")));
+        assert!(a.status.contains("502"), "got: {}", a.status);
+        a.repo_cursor = 1;
+        assert!(a.follow_cursor(t0 + ms(2000)).is_none());
+        assert!(
+            !a.status.contains("502"),
+            "josephine's error stayed on claudine: {}",
+            a.status
+        );
     }
 
     /// A listing lands on its own time, not on a key: it must not move the
