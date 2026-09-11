@@ -349,7 +349,7 @@ impl App {
     /// earlier outranked a resource selection made afterward, as long as
     /// `selected_repo` had not happened to get cleared in between.
     /// `Focus::Repos` is the only focus `toggle_repo_selected` can even be
-    /// reached from (see `[espace]`'s own dispatch in `tui::event_loop`), so
+    /// reached from (see `tui::column_action`, which `[espace]` goes through), so
     /// it is also the only focus this may archive from; everywhere else it
     /// falls back to the ordinary resource-scoped plan, exactly as if no
     /// repository had ever been ticked. This closes the gap `finish_loading`

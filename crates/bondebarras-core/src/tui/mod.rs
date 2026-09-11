@@ -297,17 +297,9 @@ where
                     }
                 }
             }
-            // The repos column (`Focus::Repos`) ticks a repository for
-            // archiving; every other focus keeps ticking a resource, as
-            // before. Two different guards, two different storage slots —
-            // see `App::toggle_repo_selected`'s own doc comment for why a
-            // repository cannot share `toggle_selected`'s.
-            KeyCode::Char(' ') => match app.focus {
-                Focus::Repos => app.toggle_repo_selected(),
-                _ => app.toggle_selected(),
-            },
-            KeyCode::Char('s') => app.cycle_sort(),
-            KeyCode::Char('A') => app.select_all_stale(),
+            // `espace`, `s`, `A` and `f` act on the focused column only — see
+            // `column_action`.
+            KeyCode::Char(' ' | 's' | 'A' | 'f') => column_action(&mut app, key.code),
             // Dispatches on focus, not on preferring a ticked repository
             // unconditionally — see `App::take_focused_plan`'s own doc
             // comment for Finding 1 of the final review, which this used to
@@ -319,7 +311,6 @@ where
                     pending = Some(plan);
                 }
             }
-            KeyCode::Char('f') => app.filter_mode = true,
             _ => {}
         }
     }
@@ -392,9 +383,187 @@ fn request_quit(app: &mut App) {
     }
 }
 
+/// Applies `espace`, `s`, `A` or `f` to the column focus is on, and only to
+/// it.
+///
+/// - The resources column: `espace` ticks the row under the cursor, `A`
+///   takes the ⚑ rows, `s` cycles the sort, `f` opens the filter.
+/// - The repos column: `espace` ticks the repository for archiving, under
+///   `App::toggle_repo_selected`'s own rules — a repository cannot share
+///   `toggle_selected`'s guard or storage (see that method's doc comment).
+///   `A`, `s` and `f` do nothing.
+/// - The orgs column: nothing.
+///
+/// These keys used to reach the resource list from every column. Once the
+/// columns fold with the width, that list can be off screen while the orgs
+/// or the repos have focus — `espace` and `A` then ticked resources the user
+/// could not see, and `d` deleted them. The per-column footer
+/// (`tui::views::column_actions`) announces these keys only where they act.
+fn column_action(app: &mut App, code: KeyCode) {
+    match (app.focus, code) {
+        (Focus::Resources, KeyCode::Char(' ')) => app.toggle_selected(),
+        (Focus::Resources, KeyCode::Char('A')) => app.select_all_stale(),
+        (Focus::Resources, KeyCode::Char('s')) => app.cycle_sort(),
+        (Focus::Resources, KeyCode::Char('f')) => app.filter_mode = true,
+        (Focus::Repos, KeyCode::Char(' ')) => app.toggle_repo_selected(),
+        _ => {}
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tui::app::SortKey;
+
+    /// One org with one archivable repository, loaded, holding two caches a
+    /// closed pull request left behind — stale, so `A` would take both, and
+    /// the cursor on one, so `espace` would tick it. A key that reaches the
+    /// resource list from the wrong column has something to change.
+    fn app_with_loaded_resources() -> App {
+        let mut app = App::new(vec![crate::model::OrgSummary {
+            login: "systm-d".into(),
+            cache_bytes: 0,
+            cache_count: 0,
+            repos: vec![crate::model::RepoSummary {
+                name: "josephine".into(),
+                cache_bytes: 0,
+                cache_count: 0,
+                private: false,
+                age_days: 5,
+                class: crate::repos::RepoClass::Archivable,
+            }],
+            billing: None,
+        }]);
+        app.loaded = Some(("systm-d".into(), "josephine".into()));
+        app.resources = (1..=2)
+            .map(|id| crate::model::Resource {
+                kind: ResourceKind::Cache,
+                id,
+                label: format!("cache-{id}"),
+                size_bytes: 100 * id,
+                age_days: 40,
+                git_ref: Some("refs/pull/32/merge".into()),
+                stale_pr: true,
+                protected: false,
+                branch_class: None,
+                safety: crate::safety::Safety::Keep,
+            })
+            .collect();
+        app
+    }
+
+    /// Presses `espace`, `A`, `s` and `f`, in that order, through the same
+    /// dispatch the event loop uses. `f` goes last: once the filter is open
+    /// the loop hands every key to it instead.
+    fn press_list_keys(app: &mut App) {
+        for key in [' ', 'A', 's', 'f'] {
+            column_action(app, KeyCode::Char(key));
+        }
+    }
+
+    /// The resources column keeps all four keys as they were: `espace` ticks
+    /// the row under the cursor, `A` takes the ⚑ rows, `s` cycles the sort,
+    /// `f` opens the filter. The positive control for the three tests below.
+    #[test]
+    fn list_keys_act_on_the_resource_list_in_the_resources_column() {
+        let mut app = app_with_loaded_resources();
+        app.focus = Focus::Resources;
+
+        column_action(&mut app, KeyCode::Char(' '));
+        assert_eq!(
+            app.selected.len(),
+            1,
+            "espace must tick the row under the cursor"
+        );
+        column_action(&mut app, KeyCode::Char('A'));
+        assert_eq!(app.selected.len(), 2, "A must take every ⚑ row");
+        column_action(&mut app, KeyCode::Char('s'));
+        assert_eq!(app.sort, SortKey::Age, "s must cycle the sort");
+        column_action(&mut app, KeyCode::Char('f'));
+        assert!(app.filter_mode, "f must open the filter");
+    }
+
+    /// The repos column: `espace` keeps its v0.5 meaning — tick the
+    /// repository for archiving, under `App::toggle_repo_selected`'s own
+    /// rules — and `A`, `s`, `f` do nothing. None of the four may reach the
+    /// resource list: its column is not the one the keyboard drives.
+    #[test]
+    fn list_keys_leave_the_resource_list_alone_in_the_repos_column() {
+        let mut app = app_with_loaded_resources();
+        app.focus = Focus::Repos;
+
+        press_list_keys(&mut app);
+
+        assert_eq!(
+            app.selected_repo,
+            Some(("systm-d".to_string(), "josephine".to_string())),
+            "espace must still tick the repository"
+        );
+        assert!(
+            app.selected.is_empty(),
+            "a resource was ticked from the repos column: {:?}",
+            app.selected
+        );
+        assert_eq!(app.sort, SortKey::Size, "s sorted from the repos column");
+        assert!(
+            !app.filter_mode,
+            "f opened the filter from the repos column"
+        );
+    }
+
+    /// The orgs column: none of the four keys does anything.
+    #[test]
+    fn list_keys_do_nothing_in_the_orgs_column() {
+        let mut app = app_with_loaded_resources();
+        app.focus = Focus::Orgs;
+
+        press_list_keys(&mut app);
+
+        assert!(
+            app.selected.is_empty(),
+            "a resource was ticked from the orgs column: {:?}",
+            app.selected
+        );
+        assert_eq!(
+            app.selected_repo, None,
+            "a repository was ticked from the orgs column"
+        );
+        assert_eq!(app.sort, SortKey::Size, "s sorted from the orgs column");
+        assert!(!app.filter_mode, "f opened the filter from the orgs column");
+    }
+
+    /// The case that made this a safety defect: a terminal narrow enough for
+    /// one column, focus on the orgs — the resource list is not on screen at
+    /// all, yet `espace` and `A` used to tick resources in it, and `d` would
+    /// then delete what the user never saw. Checks first that the resources
+    /// column really is hidden at this width (through the layout `render`
+    /// uses), then that the keys changed nothing and `d` finds nothing to
+    /// delete.
+    #[test]
+    fn list_keys_cannot_reach_a_resource_list_hidden_by_the_one_column_layout() {
+        let mut app = app_with_loaded_resources();
+        app.focus = Focus::Orgs;
+        let (_, columns) = views::testing::layout(&app, 70, 24);
+        assert!(
+            columns.resources.is_none(),
+            "the fixture must hide the resources column at width 70"
+        );
+
+        press_list_keys(&mut app);
+
+        assert!(
+            app.selected.is_empty(),
+            "resources off screen were ticked: {:?}",
+            app.selected
+        );
+        assert_eq!(app.sort, SortKey::Size);
+        assert!(!app.filter_mode);
+        assert!(
+            app.take_focused_plan()
+                .is_none_or(|plan| plan.items.is_empty()),
+            "d would delete resources the user never saw"
+        );
+    }
 
     #[test]
     fn purge_finished_status_names_the_repo_when_archiving_succeeds() {
