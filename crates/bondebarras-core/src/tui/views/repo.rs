@@ -975,15 +975,18 @@ mod tests {
         ]
     }
 
-    /// How each of `widest_rows` reads on screen: a head of its label short
-    /// enough to show at every width swept, its size, its trailing field.
+    /// How each of `widest_rows` reads on screen: a head of its label, its
+    /// size, its trailing field. No head is longer than 8 characters — all a
+    /// 9-cell label shows before its `…`, one cell under the 10 the column's
+    /// narrowest inner width leaves — so a label cut one cell short still
+    /// finds its row, and fails on the 12-character measurement itself.
     const WIDEST_ROWS_READ_AS: [(&str, &str, &str); 6] = [
-        ("cache-v0", "467Mo", "PR#99999 ⚑"),
-        ("branch-re", "—", "par défaut"),
-        ("artifact-", "1.1Mo", "40j"),
-        ("tag-v2026", "—", "protégé"),
-        ("sha256:9a", "—", "5j"),
-        ("sha256:1d", "—", "5j"),
+        ("cache-v", "467Mo", "PR#99999 ⚑"),
+        ("branch-", "—", "par défaut"),
+        ("artifac", "1.1Mo", "40j"),
+        ("tag-v20", "—", "protégé"),
+        ("sha256:9", "—", "5j"),
+        ("sha256:1", "—", "5j"),
     ];
 
     /// How many characters of the label starting with `needle` `row` shows,
