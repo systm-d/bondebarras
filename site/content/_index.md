@@ -117,7 +117,7 @@ cta2 = "Install"
 
 <section class="preview">
 <h2>One screen, entirely at the keyboard</h2>
-<p class="section-lede">The org tree on the left, the selected repository's resources on the right — flagged caches stand out at a glance.</p>
+<p class="section-lede">Three columns, always on screen — organizations, this org's repositories, and the selected one's resources — flagged caches stand out at a glance.</p>
 <figure class="shot">
 <div class="term-window">
 <div class="term-bar"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span><span class="term-title">bondebarras — systm-d</span></div>
@@ -125,14 +125,15 @@ cta2 = "Install"
 <div class="tui">
 <div class="tui-head"><span class="tui-brand">bondebarras</span><span class="tui-home">15 orgs</span></div>
 <div class="tui-panels">
-<div class="tui-col"><div class="col-title">Orgs</div><div class="row sel">▾ systm-d      37.2 Go</div><div class="row">   ci-heavy    11.1 Go</div><div class="row">   another-repo 9.8 Go</div><div class="row dim">▸ SecondBrain 13.9 Go</div></div>
-<div class="tui-col grow"><div class="col-title">69 éléments · 11.1 Go</div><div class="row sel">[x] cache  coverage-linux-x64            261.0 Mo  <span class="stale">PR#32 ⚑</span></div><div class="row">[x] cache  coverage-linux-x64            261.0 Mo  <span class="stale">PR#25 ⚑</span></div><div class="row">[ ] cache  ubuntu-22.04-test              257.0 Mo  12j</div><div class="row">[x] artif  build-output                    1.1 Mo  <span class="stale">PR#32 ⚑</span></div></div>
+<div class="tui-col"><div class="col-title">Orgs</div><div class="row sel">systm-d      37.2 Go</div><div class="row dim">SecondBrain  13.9 Go</div></div>
+<div class="tui-col"><div class="col-title">Dépôts</div><div class="row">another-repo  9.8 Go</div><div class="row sel">ci-heavy     11.1 Go</div></div>
+<div class="tui-col grow"><div class="col-title">69 éléments · 11.1 Go</div><div class="row sel">[x]⛑ cache  coverage-linux-x64            261.0 Mo  <span class="stale">PR#32 ⚑</span></div><div class="row">[x]⛑ cache  coverage-linux-x64            261.0 Mo  <span class="stale">PR#25 ⚑</span></div><div class="row">[ ]  cache  ubuntu-22.04-test              257.0 Mo  12j</div><div class="row">[x]  artif  build-output                    1.1 Mo  <span class="stale">PR#32 ⚑</span></div></div>
 </div>
-<div class="tui-foot"><span class="key">espace</span> cocher<span class="key">s</span> trier<span class="key">f</span> filtrer<span class="key">A</span> tout ⚑<span class="key">d</span> supprimer</div>
+<div class="tui-foot"><span class="key">←/→</span> colonne<span class="key">↑/↓</span> ligne<span class="key">espace</span> cocher<span class="key">A</span> sûrs<span class="key">V</span> +à vérifier<span class="key">d</span> supprimer<span class="key">f</span> filtrer<span class="key">s</span> trier<span class="key">b</span> billing<span class="key">q</span> quitter</div>
 </div>
 </div>
 </div>
-<figcaption>Left: organizations and their repos, biggest cache footprint first. Right: this repository's resources, flagged caches in blue.</figcaption>
+<figcaption>Left to right: organizations, this org's repositories, and the selected one's resources — ⛑ marks a row safe to delete, ⚑ a cache pinned to a closed pull request.</figcaption>
 </figure>
 <figure class="shot">
 <div class="term-window">

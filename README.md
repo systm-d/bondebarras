@@ -37,8 +37,11 @@ again by anything.
 - **Two-stage scan** — org-level aggregates load in seconds for every
   organization the token can see; a repository's individual resources are
   only fetched when you drill into it, so you only pay for what you look at.
-- **Split-pane TUI** — organizations (and their repositories) on the left,
-  the selected repository's resources on the right.
+- **Three-column TUI** — organizations, the current org's repositories, and
+  the selected repository's resources, all three visible at once on a wide
+  terminal and folding from the left as it narrows. Resources load
+  automatically once the cursor rests on a repository for 300 ms, kept for
+  the rest of the session so revisiting one costs no request.
 - **Actions caches, artifacts, and workflow runs**, each deletable
   individually or as part of a bulk selection.
 - **Container package versions** (GHCR) — untagged layers and orphaned
@@ -63,9 +66,9 @@ again by anything.
   `exec-d/terminus` (1,453 MB across 25 releases) and `delfour-co/githero`
   (1,371 MB across 27).
 - **Repository archiving** — the repository itself, ticked one row at a time
-  from its own place in the tree (the left pane, not the resource list on
-  the right) and archived through the same confirmation flow as every
-  deletion. **Archiving frees no bytes** — a repository's size doesn't
+  from its own place in the repositories column (not the resources column)
+  and archived through the same confirmation flow as every deletion.
+  **Archiving frees no bytes** — a repository's size doesn't
   change — but an archived repository has its Actions disabled, so it stops
   *producing* the caches, artifacts and workflow runs every other feature
   here cleans up: closing the tap instead of mopping the floor forever. It
@@ -80,10 +83,24 @@ again by anything.
   exactly **one** already archived.
 - **⚑ Stale-PR flag** — every cache is checked against the repository's
   closed pull requests; a cache attached to a closed or merged PR is flagged
-  as safe to delete in one keystroke.
+  ⚑ and marked ⛑ safe, so `[A]` takes it in one keystroke.
+- **Three-level safety marking**, on every visible resource — ⛑ *safe*, •
+  *worth checking*, or unmarked *keep* — see [Safety](#safety) below.
+  `[A]` selects every ⛑ row, `[V]` adds every • row, and neither ever takes
+  a protected one.
+- **Two per-repository gauges** at the head of the resources column: Actions
+  cache usage against GitHub's documented (but API-unexposed) 10 GiB
+  per-repository ceiling — past 100 % it warns that GitHub is already
+  evicting least-recently-read caches to make room — and Actions minutes
+  against the free monthly allowance. Neither is ever clamped at 100 %: a
+  number past the ceiling is real, not an error.
+- **A progress row** appears between the status line and the footer while a
+  purge, an archive, or a repository load is running, with a real, counted
+  done/total — never an estimate.
 - **Ad-hoc bulk selection** — sort by size/age/name, filter incrementally by
-  label, or select every flagged row at once. Nothing is persisted: no rules
-  engine, no config file, you decide every time.
+  label, or select every safe (or safe-and-worth-checking) row at once.
+  Nothing is persisted: no rules engine, no config file, you decide every
+  time.
 - **Tiered confirmation** before any deletion — a bare `[y/N]` for the
   regenerable Tier 1 (caches, artifacts, workflow runs), an itemised recap
   plus an explicit irreversibility warning for Tier 2 (package versions,
@@ -107,6 +124,22 @@ again by anything.
   cron job.
 
 ## Safety
+
+Every visible resource carries a three-level marker, shown in the resources
+column beside its checkbox:
+
+| Marker | Meaning | Example |
+| --- | --- | --- |
+| ⛑ | Safe — nothing live references it | a cache on a closed/merged PR, an expired artifact, a release two behind, an untagged package version, a merged branch |
+| • | Worth checking before deciding | a live but unmerged branch, an artifact or workflow run past its age threshold, the release just before the latest |
+| *(none)* | Keep | the default/protected branch, a tagged package version, the latest release, a tag, or a repository (never marked, at any age) |
+
+`[A]` ticks every ⛑ row; `[V]` adds every • row too. Neither ever takes a
+resource GitHub itself protects — a tagged package version, the default or a
+protected branch, a live but unmerged one, every tag — and if either key
+leaves protected rows unticked, the status line says how many (a live
+branch left unticked is named as such). Individual selection (`Espace`)
+stays available one row at a time regardless of level.
 
 - Nothing this tool deletes is reversible on GitHub's side, so it never
   pretends otherwise: there is **no trash and no undo**. Repository
@@ -206,23 +239,75 @@ On startup, bondebarras resolves a GitHub token (`gh auth token`, falling
 back to `$GITHUB_TOKEN`), fetches the organizations it can see, and loads the
 stage-1 overview: Actions cache totals and repository lists for each one.
 
+The screen is three columns — organizations, the current org's
+repositories, and the loaded repository's resources — that fold from the
+**left** as the terminal narrows, so the resources column (where deletion
+happens) is never the one squeezed or dropped: three columns from 100
+terminal columns wide, two from 78 (the left one follows focus — orgs or
+repos — with the hidden one recalled in the header), one below that (the
+focused column alone, `←`/`→` change which one).
+
+```
+ ORGS                 DÉPÔTS                                 RESSOURCES
+ ──────────────────── ─────────────────────────────────────  ──────────────────────────────
+ systm-d      36.4 Go  josephine          5 j        12.4 Go  Cache   ████████████▓ 115 %
+ SecondBrain… 14.9 Go  claudine          12 j        11.8 Go  Minutes ▓▓▓▓▓▓▓▓▓▓▓▓▓   0 %
+ delfour-co    161 Mo  alertU     déjà archivé         8.0 Go ────────────────────────────
+ exec-d         71 Mo  anonymous          3 j          4.3 Go [ ]⛑ cache v0-rust-cov…  467Mo PR#54 ⚑
+                                                                [ ]• artif github-pages    1.1Mo  40j
+                                                                [ ]  asset josephine-0.… 4.0Mo (v0.12.0)
+```
+
+*(A sketch of the layout, not a screenshot — column widths not to scale.)*
+The resources column opens with the two gauges above, for the repository it
+shows; while a purge, an archive, or a repository load is running, a
+progress row with a real, counted done/total appears between the status
+line and the footer.
+
+Resources are not fetched just because the cursor passes over a repository:
+the load starts once the cursor **rests on it for 300 ms**, and the result
+is kept for the rest of the session — revisiting a repository shows it
+instantly, with no new request. `Entrée` forces an immediate (re)load,
+skipping both the pause and the cache. While a repository's resources are on
+the way, or failed, the column shows `(chargement…)` / `(échec du
+chargement)` instead of an empty list, which would otherwise read as "this
+repository holds nothing".
+
 ### Keyboard shortcuts (TUI)
 
-| Key                 | Action                                                    |
-| -------------------- | ---------------------------------------------------------- |
-| `↑` `↓`              | Move the cursor within the focused pane                   |
-| `Tab`                | Cycle focus: organizations → repositories → resources     |
-| `Enter`              | Drill into the selected repository (stage 2)               |
-| `Space`              | Check / uncheck the row under the cursor — a repository row, on the tree, ticks it for archiving instead |
-| `s`                  | Cycle sort: size → age → name                              |
-| `f`                  | Enter filter mode (incremental match on the label)          |
-| `A`                  | Select every ⚑-flagged row (never a repository, at any age) |
-| `d`                  | Delete the current selection, or archive a ticked repository (opens the confirmation modal either way) |
-| `y` / `N`            | Confirm / cancel what's pending                             |
-| `b`                  | Switch to the Billing tab (and back)                        |
-| `←` `→`              | Move between months, on the Billing tab                     |
-| `Esc`                | Clear an active filter, or quit if there is none            |
-| `q`                  | Quit (twice, to confirm, while a purge is running)          |
+Movement works from any column, in every layout:
+
+| Key | Action |
+| --- | --- |
+| `←` / `→` | Previous / next column (wraps) — with one column on screen, changes which one is shown |
+| `Tab` | Same as `→` |
+| `↑` / `↓` | Move the cursor within the focused column |
+| `Entrée` | Force an immediate reload of the repository under the repositories-column cursor, skipping the 300 ms pause and any cached listing |
+
+`Espace`, `A`, `V`, `s`, and `f` act **only in the column that has focus** —
+the footer always shows which keys apply where:
+
+| Key | Organizations | Repositories | Resources |
+| --- | --- | --- | --- |
+| `Espace` | — | tick/untick *that* repository for archiving (one at a time) | check/uncheck the row under the cursor |
+| `A` | — | — | select every ⛑ *safe* row |
+| `V` | — | — | also select every • *worth-checking* row |
+| `s` | — | — | cycle sort: size → age → name |
+| `f` | — | — | enter filter mode (incremental match on the label) |
+| `d` | — (not offered) | archive the ticked repository | delete the checked resources |
+
+Either `d` opens the same confirmation modal, worded for what it is about to
+do (archive or delete).
+
+Everywhere:
+
+| Key | Action |
+| --- | --- |
+| `y` / `N` | Confirm / cancel what's pending |
+| `b` | Switch to the Billing tab (and back) |
+| `←` / `→` (Billing tab only) | Move between months |
+| `Esc` | Clear an active filter, or quit if there is none |
+| `q` | Quit (twice, to confirm, while a purge is running) |
 
 ### CLI subcommands
 
@@ -287,8 +372,8 @@ this is unconditional, not something any combination of flags can reach.**
 Every other family above at least has *some* headless path, gated by
 `protected` or a family flag; a repository has none at all. Archiving turns
 a whole repository read-only, and that is not a decision a cron job gets to
-make on its own — the tree's own tick (`espace`, in the interactive TUI) is
-the only way in.
+make on its own — the repositories column's own tick (`espace`, in the
+interactive TUI) is the only way in.
 
 ### Required token scopes
 

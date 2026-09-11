@@ -51,19 +51,19 @@ shim).
 - **A repository is never auto-selected, and headless never archives one, at
   all.** `pushed_at` alone is not proof of abandonment, so unlike every
   other family, archiving has **no preselection path whatsoever**:
-  `tui::app::App::select_all_stale` (`[A]`) excludes `ResourceKind::
-  Repository` explicitly, and `commands::clean::select` returns `false` for
-  it unconditionally — no `--archive` flag exists, or is planned. This is
-  the first time the product refuses an entire resource *family* headlessly,
-  not just a tier or a single protected instance. An already-archived
-  repository, or one this token cannot administer, is not individually
-  tickable either (`tui::app::App::toggle_repo_selected`) — a harder
-  refusal than a protected tag or a live branch, which stay tickable one row
-  at a time.
-- **The repository is the one candidate that lives in the tree itself, not
+  `tui::app::App::select_safe` (`[A]`) and `select_safe_and_check` (`[V]`)
+  both exclude `ResourceKind::Repository` explicitly, and
+  `commands::clean::select` returns `false` for it unconditionally — no
+  `--archive` flag exists, or is planned. This is the first time the product
+  refuses an entire resource *family* headlessly, not just a tier or a
+  single protected instance. An already-archived repository, or one this
+  token cannot administer, is not individually tickable either
+  (`tui::app::App::toggle_repo_selected`) — a harder refusal than a
+  protected tag or a live branch, which stay tickable one row at a time.
+- **The repository is the one candidate that lives in its own column, not
   the resource list.** `model::RepoSummary` carries its own `age_days` and
   `repos::RepoClass` (`Archivable` / `AlreadyArchived` / `NoAdminRights`),
-  rendered by `tui::views::orgs::repo_row_spans` as either an age (`"775
+  rendered by `tui::views::repos::repo_row_spans` as either an age (`"775
   j"`) or the class name — the same "classification replaces the age" shape
   a `Branch` row already has.
 - **A release is never deletable — only its assets are, permanently out of
@@ -78,7 +78,15 @@ shim).
   package storage either. `Resource.size_bytes` is hardcoded to `0` for
   `ResourceKind::PackageVersion`; never estimate or extrapolate one. The TUI
   shows `—` instead of formatting that zero, with a header line spelling out
-  why — see `tui::views::repo::list_title`.
+  why — see `tui::views::repo::column_head`.
+- **A purge's progress messages are tagged with the repository its plan
+  concerns, recorded at launch.** `tui::spawn_purge` labels every message it
+  forwards on the purge channel with `(plan.owner, plan.repo)`, since
+  `clean::Progress::Finished` itself names no repository and the cursor can
+  be anywhere by the time it lands. `apply_progress` reads that tag, not the
+  cursor, to decide whose cached listing a finished purge forgets
+  (`App::purge_ended`) — `clean.rs` stays unaware that columns or a cache
+  exist at all.
 - **`Resource.protected` is refused in bulk, unconditionally.** A tagged
   package version (`latest`, and any other real tag), a live branch (the
   default one, GitHub-protected, or simply with no merged PR behind it), and
@@ -130,15 +138,20 @@ shim).
 | Release-asset endpoints (list, delete) — no endpoint for deleting a release itself | `crates/bondebarras-core/src/api/releases.rs` |
 | Dead-branch classification (pure): default/protected/no-merged-PR exclusions | `crates/bondebarras-core/src/refs.rs` |
 | Two-stage scan orchestration | `crates/bondebarras-core/src/scan.rs` |
+| Resource safety classification (`Safety::Safe`/`Check`/`Keep`, `RepoContext`) | `crates/bondebarras-core/src/safety.rs` |
 | Deletion planning & execution, progress events | `crates/bondebarras-core/src/clean.rs` |
-| TUI event loop, terminal setup/teardown | `crates/bondebarras-core/src/tui/mod.rs` |
-| TUI state: navigation, selection, sort, filter, quit guard | `crates/bondebarras-core/src/tui/app.rs` |
+| TUI event loop, terminal setup/teardown, tagged purge/load channels | `crates/bondebarras-core/src/tui/mod.rs` |
+| TUI state: navigation, selection, sort, filter, quit guard, load-after-pause cache | `crates/bondebarras-core/src/tui/app.rs` |
 | TUI palette and styles | `crates/bondebarras-core/src/tui/theme.rs` |
-| Left pane (orgs / repos tree) | `crates/bondebarras-core/src/tui/views/orgs.rs` |
-| Right pane (resource list) | `crates/bondebarras-core/src/tui/views/repo.rs` |
+| Column 1: organizations | `crates/bondebarras-core/src/tui/views/orgs.rs` |
+| Column 2: repositories of the org under the cursor | `crates/bondebarras-core/src/tui/views/repos.rs` |
+| Column 3: resources of the loaded repository | `crates/bondebarras-core/src/tui/views/repo.rs` |
+| Column 3's subject line and its `(chargement…)`/`(échec du chargement)` stand-ins | `crates/bondebarras-core/src/tui/views/shown.rs` |
+| Per-repository cache/minutes gauges, at the head of column 3 | `crates/bondebarras-core/src/tui/views/gauges.rs` |
+| Progress row (purge/archive/load bar, between the status line and the footer) | `crates/bondebarras-core/src/tui/views/progress.rs` |
 | Confirmation modal | `crates/bondebarras-core/src/tui/views/confirm.rs` |
 | Billing tab rendering | `crates/bondebarras-core/src/tui/views/billing.rs` |
-| Overall layout (header/status/footer) | `crates/bondebarras-core/src/tui/views/mod.rs` |
+| Overall layout (header/status/footer, column widths & folding thresholds) | `crates/bondebarras-core/src/tui/views/mod.rs` |
 | CLI parsing (`scan`, `clean`) | `crates/bondebarras-core/src/cli.rs` |
 | Headless `scan --json` / `clean` command bodies | `crates/bondebarras-core/src/commands/{scan,clean}.rs` |
 | Entry point / runtime wiring | `crates/bondebarras-core/src/lib.rs` |

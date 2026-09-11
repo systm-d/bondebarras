@@ -5,6 +5,50 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Three-column TUI**, replacing the split-pane tree: organizations, the
+  current org's repositories, and the loaded repository's resources, each
+  its own column, visible together on a wide terminal and folding from the
+  **left** as it narrows (never the resources column) — three columns from
+  100 terminal columns wide, two from 78, one below that.
+- **Three-level safety marking** (`Resource.safety`) on every resource: ⛑
+  *safe* (nothing live references it), • *worth checking*, or unmarked
+  *keep* — computed once at scan time from the repository's own listings, at
+  no extra request.
+- **`[V]`**, alongside `[A]`: `[A]` selects every ⛑ row, `[V]` adds every •
+  row too. Neither ever takes a protected resource, and the status line
+  says how many such rows a press left unticked.
+- **Two per-repository gauges**, at the head of the resources column: Actions
+  cache usage against GitHub's documented (but API-unexposed) 10 GiB
+  per-repository ceiling, and Actions minutes against the free monthly
+  allowance — both uncapped past 100 %, since GitHub itself does not clamp
+  there either.
+- **Load-after-pause with a per-session cache**: a repository's resources
+  load once the cursor rests on it for 300 ms, are kept for the rest of the
+  session, and `Entrée` forces an immediate reload, bypassing both the pause
+  and the cache. A repository whose listing is on its way, or failed, shows
+  `(chargement…)` / `(échec du chargement)` instead of an empty list.
+- **A progress row**, between the status line and the footer, while a purge,
+  an archive, or a repository load runs — a real, counted done/total, never
+  an estimate. Several purges running at once share one bar.
+- The footer now always opens with the movement keys (`←`/`→`, `↑`/`↓`)
+  before the active column's own actions, so navigating the TUI no longer
+  depends on discovering undocumented keys.
+
+### Changed
+
+- **`[A]` now takes ⛑ (safe) rows rather than ⚑ rows** — the ⚑ stale-PR
+  caches are among them, since a closed or merged PR always classifies as
+  safe.
+- `espace`, `A`, `V`, `s`, and `f` now act **only in the column that has
+  focus**; `d` acts only from the column owning its plan (the resources
+  column deletes, the repositories column archives the ticked repository).
+  A key that used to reach the resource list from any pane no longer does,
+  even when that list is off screen at a narrow width.
+
 ## [0.5.0] - 2026-07-29
 
 ### Added
