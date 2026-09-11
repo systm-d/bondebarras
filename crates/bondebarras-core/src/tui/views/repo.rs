@@ -283,34 +283,50 @@ fn repo_gauge_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     lines
 }
 
-/// Renders the resources column: its block, at its head the repository's
-/// two gauges (`tui::views::gauges`, spec §5) and then — when the title
-/// cannot hold it — the sizeless warning (`column_head`), and under them the
-/// resource list, as a stateful list so ratatui scrolls to keep the
-/// selection visible. On a 69-cache repo, an 80x24 terminal only fits about
-/// 19 rows without this — the plain `render_widget` used before left most of
-/// them unreachable.
+/// Renders the resources column: its block, at its head the name of the
+/// repository it shows (`tui::views::shown`), that repository's two gauges
+/// (`tui::views::gauges`, spec §5) and then — when the title cannot hold it
+/// — the sizeless warning (`column_head`), and under them the resource list,
+/// as a stateful list so ratatui scrolls to keep the selection visible. On a
+/// 69-cache repo, an 80x24 terminal only fits about 19 rows without this —
+/// the plain `render_widget` used before left most of them unreachable.
+///
+/// While that repository's listing is on its way, or failed, the column
+/// draws no list, no count and no gauge: `tui::views::shown` says which.
 pub fn render(app: &mut App, f: &mut Frame, area: Rect) {
     let focused = app.focus == Focus::Resources;
+    let shown = app.shown();
+    let listing = shown.draws_resources();
 
     // Everything below until `app.res_state` reads `app` through shared
     // borrows only; the items own their strings (`ListItem<'static>`), so
     // those borrows end once the items are built.
-    let visible = app.visible_resources();
+    let visible = if listing {
+        app.visible_resources()
+    } else {
+        Vec::new()
+    };
     let has_sizeless = visible.iter().any(|r| !r.kind.has_known_size());
     // The title's room is the top border between its two corners.
-    let (title, warning_lines) = column_head(
-        visible.len(),
-        app.selection_bytes(),
-        has_sizeless,
-        area.width.saturating_sub(2),
-    );
+    let (title, warning_lines) = if listing {
+        column_head(
+            visible.len(),
+            app.selection_bytes(),
+            has_sizeless,
+            area.width.saturating_sub(2),
+        )
+    } else {
+        (views::shown::BARE_TITLE.to_string(), Vec::new())
+    };
 
     let block = views::column_block(title, focused);
     let inner = block.inner(area);
     f.render_widget(block, area);
 
-    let mut head = repo_gauge_lines(app, inner.width);
+    let mut head = views::shown::head_lines(&shown, inner.width);
+    if listing {
+        head.extend(repo_gauge_lines(app, inner.width));
+    }
     head.extend(warning_lines);
     let list_area = if head.is_empty() {
         inner

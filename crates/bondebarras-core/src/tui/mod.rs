@@ -6,10 +6,10 @@ pub mod views;
 
 use crate::api::{Client, caches};
 use crate::clean::{self, Plan, Progress};
-use crate::model::{OrgSummary, ResourceKind};
+use crate::model::{OrgSummary, Resource, ResourceKind};
 use crate::scan;
 use anyhow::Result;
-use app::{App, Focus, View};
+use app::{App, Focus, Load, View};
 use crossterm::cursor::Show;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use crossterm::execute;
@@ -19,7 +19,7 @@ use crossterm::terminal::{
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
 /// How long a draw waits for a key before looping. Short enough that deletion
@@ -69,96 +69,38 @@ where
 {
     let mut pending: Option<Plan> = None;
     let (tx, mut rx) = mpsc::unbounded_channel::<Progress>();
+    let (landings_tx, mut landings) = mpsc::unbounded_channel::<Landing>();
 
     while !app.should_quit {
+        // Spec §3: the resources column follows the repository under the
+        // column-2 cursor, and its load starts once that cursor has rested
+        // `app::LOAD_PAUSE`. Checked on every pass — after each key, and on
+        // each `TICK` when no key comes — so the load starts within one tick
+        // of the pause ending. `App::follow_cursor` says what arms it.
+        if let Some(load) = app.follow_cursor(Instant::now()) {
+            spawn_load(&client, &landings_tx, load);
+        }
+
         terminal.draw(|f| views::render(&mut app, f, pending.as_ref()))?;
 
         // Drain deletion progress without blocking the draw.
         while let Ok(msg) = rx.try_recv() {
-            match msg {
-                Progress::Done {
-                    kind,
-                    id,
-                    owner,
-                    repo,
-                } => {
-                    if kind == ResourceKind::Repository {
-                        // Not a deletion: the repository stays in the tree,
-                        // now read-only. `owner`/`repo` name the archive
-                        // this message is actually about — Findings 3 and 4
-                        // of the final review: reading `app.selected_repo`
-                        // here instead, as an earlier version did, updated
-                        // whatever the tree currently had ticked, which a
-                        // second archive started before this one landed
-                        // could easily have replaced.
-                        app.archive_done(&owner, &repo);
-                    } else {
-                        app.resources.retain(|r| !(r.kind == kind && r.id == id));
-                        app.selected.remove(&(kind, id));
-                    }
-                }
-                Progress::Failed {
-                    kind,
-                    id,
-                    reason,
-                    owner,
-                    repo,
-                } => {
-                    if kind == ResourceKind::Repository {
-                        app.archive_failed(&owner, &repo);
-                        app.status = format!("Erreur : archivage de {repo} refusé — {reason}");
-                    } else {
-                        app.selected.remove(&(kind, id));
-                        app.status = format!("Erreur : suppression de {id} — {reason}");
-                    }
-                }
-                Progress::Finished {
-                    freed,
-                    failures,
-                    deleted,
-                    deleted_sizeless,
-                    archived_repo,
-                } => {
-                    // One purge is done. `purge_finished` only disarms the
-                    // quit guard once every in-flight purge has settled — a
-                    // second purge started before this one landed must keep
-                    // `q` guarded.
-                    app.purge_finished();
-                    // `archived_repo` comes straight off this message —
-                    // `clean::execute` computed it from its own `Plan` — not
-                    // from a shared `archiving_target` local the way an
-                    // earlier version of this loop did: a second archive
-                    // confirmed before this `Finished` landed could
-                    // overwrite that local before this one ever read it. See
-                    // `Progress::Finished`'s own doc comment (Findings 3 and
-                    // 4 of the final review).
-                    app.status = purge_finished_status(
-                        archived_repo.as_deref(),
-                        freed,
-                        failures,
-                        deleted,
-                        deleted_sizeless,
-                    );
-
-                    // The recap above talks about bytes freed; the orgs column
-                    // must agree on the same frame, not show the pre-purge
-                    // total for the org the purge just happened in. One
-                    // request is enough — a stale number would be worse than
-                    // just leaving the old one if this fails.
-                    //
-                    // Reads `purging_org`, not `loaded`: the purge runs on a
-                    // spawned task while this loop keeps handling keys, so the
-                    // user can load a different repo — possibly in a
-                    // different org — before `Finished` lands. `loaded` would
-                    // then name the wrong org. `take()` both reads it and
-                    // clears it, success or not.
-                    if let Some(org_login) = app.purging_org.take()
-                        && let Ok(repos) = caches::usage_by_repository(&client, &org_login).await
-                    {
-                        app.refresh_org_cache(&org_login, repos);
-                    }
-                }
+            // A purge's `Finished` writes a recap of bytes freed; the orgs
+            // column must agree on the same frame, not show the pre-purge
+            // total for the org the purge just happened in. One request is
+            // enough — a stale number would be worse than just leaving the
+            // old one if this fails. `apply_progress` says which org.
+            if let Some(org_login) = apply_progress(&mut app, msg)
+                && let Ok(repos) = caches::usage_by_repository(&client, &org_login).await
+            {
+                app.refresh_org_cache(&org_login, repos);
             }
+        }
+
+        // Listings that landed, each with the `Load` it was started under:
+        // `App::land_load` drops the ones superseded since.
+        while let Ok((load, outcome)) = landings.try_recv() {
+            app.land_load(load, outcome);
         }
 
         if !event::poll(TICK)? {
@@ -279,22 +221,12 @@ where
                 Focus::Resources => app.res_cursor = app.res_cursor.saturating_sub(1),
             },
             KeyCode::Enter => {
-                // Stage 2: load the selected repository on demand. The target
-                // is cloned out first — holding a borrow on `app.orgs` while
-                // assigning `app.status` would not compile.
-                //
-                // Calls `repo_detail_with_warnings` directly, not the
-                // `repo_detail` stderr wrapper: Finding 5 of the final
-                // review needs the failed family names as data so
-                // `App::finish_loading` can put them where the user is
-                // actually looking, `app.status` — the wrapper's `eprintln!`
-                // writes to a stream the alternate screen hides.
-                if let Some((org, repo)) = app.current_target() {
-                    app.status = format!("Chargement de {org}/{repo} …");
-                    match scan::repo_detail_with_warnings(&client, &org, &repo).await {
-                        Ok((items, failed)) => app.finish_loading(org, repo, items, failed),
-                        Err(e) => app.status = format!("Erreur : {e}"),
-                    }
+                // Spec §3: load the repository under the column-2 cursor
+                // now, without waiting for the pause. `App::force_load`
+                // requests nothing when its listing is already shown or on
+                // its way.
+                if let Some(load) = app.force_load() {
+                    spawn_load(&client, &landings_tx, load);
                 }
             }
             // `espace`, `s`, `A` and `f` act on the focused column only — see
@@ -348,6 +280,126 @@ fn purge_finished_status(
             format!("Bon débarras ! {recap}.")
         } else {
             format!("Bon débarras ! {recap}, {failures} échec(s).")
+        }
+    }
+}
+
+/// A listing as it lands back in the event loop: the `Load` it was started
+/// under, and what `scan::repo_detail_with_warnings` returned.
+type Landing = (Load, Result<(Vec<Resource>, Vec<&'static str>)>);
+
+/// Fetches `load`'s listing on a spawned task and sends it back, with its
+/// `Load`, on `landings`.
+///
+/// Spawned, not awaited — the purge's shape. `Entrée` used to await the nine
+/// listings inline, freezing the draw and the keys for the whole load; a
+/// load that starts on its own after a pause cannot do that, the cursor has
+/// to stay free while it runs, and a cursor free to leave is what the
+/// `Load`'s generation exists for. A task on the runtime the purges already
+/// run on, not a thread.
+///
+/// Calls `repo_detail_with_warnings` directly, not the `repo_detail` stderr
+/// wrapper: Finding 5 of the final review needs the failed family names as
+/// data so `App::finish_loading` can put them where the user is actually
+/// looking — the wrapper's `eprintln!` writes to a stream the alternate
+/// screen hides.
+fn spawn_load(client: &Arc<Client>, landings: &mpsc::UnboundedSender<Landing>, load: Load) {
+    let client = Arc::clone(client);
+    let landings = landings.clone();
+    tokio::spawn(async move {
+        let outcome = scan::repo_detail_with_warnings(&client, &load.org, &load.repo).await;
+        // A closed channel means the event loop has ended — the user quit —
+        // and there is no one left to show the listing to.
+        let _ = landings.send((load, outcome));
+    });
+}
+
+/// Applies one purge message to `app`, and returns the org whose cache
+/// figures the loop must refresh when it is a purge's `Finished`.
+///
+/// Split out of `event_loop` so what each message changes can be asserted on
+/// without a terminal; the refresh needs the client and stays in the loop.
+///
+/// Every item outcome — a deletion, a refused one, an archive — invalidates
+/// its repository's kept listing (`App::forget`), under the identity the
+/// message carries, never the repository under the cursor, which can have
+/// moved since the purge began. At the item rather than at `Finished`:
+/// `Finished` names no repository (`archived_repo` is an archive's bare
+/// name, without its org), and between a first deletion and `Finished` a
+/// listing kept from before the purge would show what was just deleted as
+/// soon as the cursor came back to it. A refused deletion invalidates too: a
+/// timeout can hide one GitHub carried out.
+fn apply_progress(app: &mut App, msg: Progress) -> Option<String> {
+    match msg {
+        Progress::Done {
+            kind,
+            id,
+            owner,
+            repo,
+        } => {
+            if kind == ResourceKind::Repository {
+                // Not a deletion: the repository stays in the tree, now
+                // read-only. `owner`/`repo` name the archive this message is
+                // actually about — Findings 3 and 4 of the final review:
+                // reading `app.selected_repo` here instead, as an earlier
+                // version did, updated whatever the tree currently had
+                // ticked, which a second archive started before this one
+                // landed could easily have replaced.
+                app.archive_done(&owner, &repo);
+            } else {
+                app.resource_deleted(kind, id, &owner, &repo);
+            }
+            app.forget((&owner, &repo));
+            None
+        }
+        Progress::Failed {
+            kind,
+            id,
+            reason,
+            owner,
+            repo,
+        } => {
+            if kind == ResourceKind::Repository {
+                app.archive_failed(&owner, &repo);
+                app.status = format!("Erreur : archivage de {repo} refusé — {reason}");
+            } else {
+                app.resource_failed(kind, id, &owner, &repo);
+                app.status = format!("Erreur : suppression de {id} — {reason}");
+            }
+            app.forget((&owner, &repo));
+            None
+        }
+        Progress::Finished {
+            freed,
+            failures,
+            deleted,
+            deleted_sizeless,
+            archived_repo,
+        } => {
+            // One purge is done. `purge_finished` only disarms the quit
+            // guard once every in-flight purge has settled — a second purge
+            // started before this one landed must keep `q` guarded.
+            app.purge_finished();
+            // `archived_repo` comes straight off this message —
+            // `clean::execute` computed it from its own `Plan` — not from a
+            // shared `archiving_target` local the way an earlier version of
+            // the loop did: a second archive confirmed before this
+            // `Finished` landed could overwrite that local before this one
+            // ever read it. See `Progress::Finished`'s own doc comment
+            // (Findings 3 and 4 of the final review).
+            app.status = purge_finished_status(
+                archived_repo.as_deref(),
+                freed,
+                failures,
+                deleted,
+                deleted_sizeless,
+            );
+            // Reads `purging_org`, not `loaded`: the purge runs on a spawned
+            // task while the loop keeps handling keys, so the user can move
+            // to a different repo — possibly in a different org — before
+            // `Finished` lands. `loaded` would then name the wrong org.
+            // `take()` both reads it and clears it, success or not.
+            app.purging_org.take()
         }
     }
 }
@@ -622,6 +674,159 @@ mod tests {
         let mut app = App::new(vec![]);
         request_quit(&mut app);
         assert!(app.should_quit);
+    }
+
+    /// One org, `systm-d`, holding josephine then claudine.
+    fn app_with_two_repositories() -> App {
+        let repo = |name: &str| crate::model::RepoSummary {
+            name: name.into(),
+            cache_bytes: 0,
+            cache_count: 0,
+            private: false,
+            age_days: 5,
+            class: crate::repos::RepoClass::Archivable,
+        };
+        App::new(vec![crate::model::OrgSummary {
+            login: "systm-d".into(),
+            cache_bytes: 0,
+            cache_count: 0,
+            repos: vec![repo("josephine"), repo("claudine")],
+            billing: None,
+        }])
+    }
+
+    fn branch_named(name: &str) -> crate::model::Resource {
+        crate::model::Resource {
+            kind: ResourceKind::Branch,
+            id: crate::api::refs::resource_id(name),
+            label: name.into(),
+            size_bytes: 0,
+            age_days: 3,
+            git_ref: None,
+            stale_pr: false,
+            protected: false,
+            branch_class: Some(crate::refs::BranchClass::Merged),
+            safety: crate::safety::Safety::Keep,
+        }
+    }
+
+    /// Every purge outcome for claudine — a deletion, a refused deletion, an
+    /// archive — lands while the cursor is on josephine, both cached. The
+    /// entry that goes is claudine's, the identity the message carries; a
+    /// purge resolved against the cursor would drop josephine's instead.
+    #[test]
+    fn a_purge_outcome_invalidates_its_own_repository_not_the_cursors() {
+        let outcomes = [
+            Progress::Done {
+                kind: ResourceKind::Cache,
+                id: 1,
+                owner: "systm-d".into(),
+                repo: "claudine".into(),
+            },
+            Progress::Failed {
+                kind: ResourceKind::Cache,
+                id: 1,
+                reason: "timeout".into(),
+                owner: "systm-d".into(),
+                repo: "claudine".into(),
+            },
+            Progress::Done {
+                kind: ResourceKind::Repository,
+                id: 1,
+                owner: "systm-d".into(),
+                repo: "claudine".into(),
+            },
+        ];
+        for outcome in outcomes {
+            let mut app = app_with_two_repositories();
+            app.remember(("systm-d".into(), "josephine".into()), vec![]);
+            app.remember(("systm-d".into(), "claudine".into()), vec![]);
+            assert!(app.follow_cursor(std::time::Instant::now()).is_none());
+            let label = format!("{outcome:?}");
+
+            apply_progress(&mut app, outcome);
+
+            assert!(
+                app.cached(("systm-d", "claudine")).is_none(),
+                "the purged repository's entry survived {label}"
+            );
+            assert!(
+                app.cached(("systm-d", "josephine")).is_some(),
+                "the cursor's repository was invalidated instead, on {label}"
+            );
+        }
+    }
+
+    /// The in-flight half: a purge landing for claudine leaves josephine's
+    /// listing, in flight under the cursor, to land and show.
+    #[test]
+    fn a_purge_elsewhere_leaves_the_cursors_listing_in_flight_alone() {
+        let mut app = app_with_two_repositories();
+        assert!(app.follow_cursor(std::time::Instant::now()).is_none());
+        let load = app.force_load().expect("josephine's load starts");
+
+        apply_progress(
+            &mut app,
+            Progress::Done {
+                kind: ResourceKind::Cache,
+                id: 1,
+                owner: "systm-d".into(),
+                repo: "claudine".into(),
+            },
+        );
+        app.land_load(load, Ok((vec![branch_named("feature/x")], vec![])));
+
+        assert_eq!(app.loaded, Some(("systm-d".into(), "josephine".into())));
+        assert_eq!(app.resources.len(), 1);
+    }
+
+    /// A branch's id is a hash of its name (`api::refs::resource_id`), so
+    /// `feature/x` has the same id in every repository. A deletion — or a
+    /// refused one — landing for claudine must leave josephine's row and
+    /// tick alone, now that the list on screen follows the cursor. The same
+    /// message for josephine is the positive control.
+    #[test]
+    fn a_deletion_in_another_repository_leaves_the_shown_list_alone() {
+        let mut app = app_with_two_repositories();
+        let row = branch_named("feature/x");
+        let tick = (row.kind, row.id);
+        app.remember(("systm-d".into(), "josephine".into()), vec![row]);
+        assert!(app.follow_cursor(std::time::Instant::now()).is_none());
+        app.selected.insert(tick);
+        let outcome = |kind_done: bool, repo: &str| {
+            if kind_done {
+                Progress::Done {
+                    kind: tick.0,
+                    id: tick.1,
+                    owner: "systm-d".into(),
+                    repo: repo.into(),
+                }
+            } else {
+                Progress::Failed {
+                    kind: tick.0,
+                    id: tick.1,
+                    reason: "422".into(),
+                    owner: "systm-d".into(),
+                    repo: repo.into(),
+                }
+            }
+        };
+
+        apply_progress(&mut app, outcome(false, "claudine"));
+        apply_progress(&mut app, outcome(true, "claudine"));
+        assert_eq!(
+            app.resources.len(),
+            1,
+            "claudine's deletion removed josephine's row"
+        );
+        assert!(
+            app.selected.contains(&tick),
+            "claudine's purge unticked josephine's row"
+        );
+
+        apply_progress(&mut app, outcome(true, "josephine"));
+        assert!(app.resources.is_empty());
+        assert!(app.selected.is_empty());
     }
 
     /// Spec §2's key table: `→` and `Tab` go to the next column, `←` to the

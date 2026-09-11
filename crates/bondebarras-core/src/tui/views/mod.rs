@@ -11,6 +11,7 @@ pub mod gauges;
 pub mod orgs;
 pub mod repo;
 pub mod repos;
+pub mod shown;
 
 use crate::clean::Plan;
 use crate::tui::app::{App, Focus, View};
@@ -41,9 +42,10 @@ const FOOTER_QUIT: &str = "  [q] quitter";
 /// actually handles: a footer promising a key that does nothing is the same
 /// defect as one hiding a key that works.
 ///
-/// `[Entrée] charger` leads the orgs and repos columns because it is the
-/// only thing that loads a repository's resources. `[d]` keeps Finding 8 of
-/// the v0.5 final review: it archives from the repos column
+/// `[Entrée] charger` leads the orgs and repos columns: it loads the
+/// repository under the repos cursor at once, where resting the cursor there
+/// waits for the pause first (spec §3, `App::follow_cursor`). `[d]` keeps
+/// Finding 8 of the v0.5 final review: it archives from the repos column
 /// (`App::take_focused_plan`) and deletes from the other two, and each
 /// label says which.
 fn column_actions(focus: Focus) -> &'static [&'static str] {
@@ -338,9 +340,10 @@ fn header_text(app: &App, columns: Option<&ColumnAreas>) -> String {
 /// - The orgs column gone while the repos column shows: the org under the
 ///   cursor, whose repositories those are.
 /// - The repos column gone while the resources column shows: the repository
-///   those resources were loaded from — `app.loaded`, not the repos cursor,
-///   for the reason `App::take_plan` gives: the two differ the moment the
-///   cursor moves after a load.
+///   those resources were loaded from — `app.loaded`, which follows the
+///   repos cursor (`App::follow_cursor`) and is `None` while the next
+///   listing is on its way. The resources column names its repository
+///   itself in every state (`tui::views::shown`).
 /// - Otherwise nothing: all three columns are on screen, or the orgs column
 ///   is alone and depends on nothing hidden.
 fn hidden_context(app: &App, columns: &ColumnAreas) -> Option<String> {
@@ -364,8 +367,9 @@ fn hidden_context(app: &App, columns: &ColumnAreas) -> Option<String> {
 /// must not permanently bury, so it outranks a passive filter indicator.
 ///
 /// But active typing outranks even that: `app.status` is only ever cleared
-/// on a successful `Enter` load, so after any purge, cancel, or error it
-/// stays set indefinitely. Giving it priority unconditionally made every
+/// when a clean listing replaces the warning a load left there
+/// (`App::finish_loading`), so after any purge, cancel, or error it stays
+/// set indefinitely. Giving it priority unconditionally made every
 /// keystroke into the filter invisible — no text, no cursor — the moment any
 /// status message was pending, even though the keystrokes were still
 /// filtering the list underneath. `filter_mode` is checked first so the
