@@ -181,22 +181,59 @@ pub async fn repo_detail_with_warnings(
     // whenever `default_branch` is empty — see its own doc comment, and
     // `api::refs::default_branch`'s. Also not one of the seven families.
     let default_branch = default_branch_r.unwrap_or_default();
+    let branches = take(branches_r, "branches", &mut failed);
+    // Read off `branches` before it is moved into `branch_resources` below:
+    // the safety classification (this function's tail) also needs the set of
+    // branches that still exist, and this is the one place that can supply
+    // it without a second request.
+    let live_branches: HashSet<String> = branches.iter().map(|b| b.name.clone()).collect();
     items.extend(branch_resources(
-        take(branches_r, "branches", &mut failed),
+        branches,
         &default_branch,
         &closed.merged_refs,
     ));
     items.extend(tag_resources(take(tags_r, "tags", &mut failed)));
-    items.extend(asset_resources(take(
-        assets_r,
-        "assets de releases",
-        &mut failed,
-    )));
+    let assets = take(assets_r, "assets de releases", &mut failed);
+    // Same reasoning as `live_branches` above: read before the move.
+    let release_tags = distinct_release_tags(&assets);
+    items.extend(asset_resources(assets));
 
     mark_stale(&mut items, &closed.numbers);
 
+    // The safety classification, in the single code path that assembles
+    // every family's listing — a `RepoContext` built entirely from data this
+    // function already holds, at zero extra HTTP cost. This must run after
+    // `mark_stale`: `classify`'s cache and workflow-run rules both read
+    // `stale_pr`. A future `repo_detail_ticking` (task 6) is meant to reuse
+    // this same path rather than duplicate it.
+    let ctx = crate::safety::RepoContext {
+        merged_refs: closed.merged_refs,
+        live_branches,
+        default_branch,
+        release_tags,
+    };
+    for item in items.iter_mut() {
+        item.safety = crate::safety::classify(item, &ctx);
+    }
+
     items.sort_by_key(|i| std::cmp::Reverse(i.size_bytes));
     Ok((items, failed))
+}
+
+/// Distinct release tags, newest first, in the order the releases API
+/// returned them — built from the already-fetched asset listing instead of a
+/// second call, since `releases::assets` flattens each release's tag onto
+/// every one of its assets. A release with zero assets contributes no tag,
+/// but nothing here ever asks about such a release: `classify_asset` only
+/// ever looks up the tag an actual asset's own label carries.
+fn distinct_release_tags(assets: &[ReleaseAsset]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for a in assets {
+        if !out.contains(&a.release_tag) {
+            out.push(a.release_tag.clone());
+        }
+    }
+    out
 }
 
 /// Unwrap a family listing's result to its default on failure, recording its
@@ -1411,6 +1448,104 @@ mod tests {
             Some(BranchClass::Protected),
             "an unknown default-branch name must classify an unmatched branch toward Protected, \
              not Live, so the TUI's individual-selection guard still covers it"
+        );
+    }
+
+    /// Task 2: `repo_detail` must compute `Resource.safety` itself, from the
+    /// same nine listings it already fetches — zero extra requests. Two
+    /// caches distinguish the wiring from an implementation that would mark
+    /// every resource the same level: one sits on a merged pull request's
+    /// branch (`Safe`, via `merged_refs`), the other on the default branch
+    /// (`Keep`, via `default_branch`). A fixture with only one of the two
+    /// could not tell a real classifier from one that always answers with
+    /// that one level.
+    #[tokio::test]
+    async fn repo_detail_marks_a_cache_on_a_merged_branch_safe_and_one_on_main_kept() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/surete/actions/caches"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "actions_caches": [
+                    { "id": 1, "key": "cache-merged", "ref": "refs/heads/claude/landing-3jbqk4",
+                      "size_in_bytes": 1000, "last_accessed_at": "2026-06-01T00:00:00Z" },
+                    { "id": 2, "key": "cache-main", "ref": "refs/heads/main",
+                      "size_in_bytes": 1000, "last_accessed_at": "2026-06-01T00:00:00Z" }
+                ]
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/surete/actions/artifacts"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({ "artifacts": [] })),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/surete/actions/runs"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({ "workflow_runs": [] })),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/orgs/systm-d/packages/container/surete/versions"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/surete/pulls"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                { "number": 31, "state": "closed", "merged_at": "2026-07-24T13:33:32Z",
+                  "head": { "ref": "claude/landing-3jbqk4" } }
+            ])))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/surete/branches"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                { "name": "main", "protected": true }
+            ])))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/surete/tags"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/surete/releases"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/surete"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "default_branch": "main"
+            })))
+            .mount(&server)
+            .await;
+
+        let client = Client::with_base("t0ken", &server.uri()).unwrap();
+        let items = repo_detail(&client, "systm-d", "surete").await.unwrap();
+
+        let caches: Vec<&Resource> = items
+            .iter()
+            .filter(|r| r.kind == ResourceKind::Cache)
+            .collect();
+        assert_eq!(caches.len(), 2);
+        let merged = caches.iter().find(|r| r.id == 1).unwrap();
+        let on_main = caches.iter().find(|r| r.id == 2).unwrap();
+        assert_eq!(
+            merged.safety,
+            crate::safety::Safety::Safe,
+            "a cache on a merged pull request's branch must be safe"
+        );
+        assert_eq!(
+            on_main.safety,
+            crate::safety::Safety::Keep,
+            "a cache on the default branch must be kept"
         );
     }
 
