@@ -4,6 +4,12 @@
 //! Minutes cannot be cleaned up retroactively: once burnt they are burnt. All
 //! this module can do is say *where they went*, which is the only useful
 //! answer for the Actions-minutes axis of the problem.
+//!
+//! Actions storage is the other axis, and unlike minutes it can be acted on:
+//! it is billed in GB-hours — every hour a gigabyte of artifacts exists — so
+//! deleting artifacts stops the accumulation, though never the hours already
+//! counted. The usage report already carries it per repository; naming the
+//! repository holding it is the same job as naming the one burning minutes.
 
 use std::collections::HashSet;
 
@@ -17,7 +23,7 @@ pub struct UsageItem {
     pub quantity: f64,
     pub unit_type: String,
     pub gross: f64,
-    /// The part absorbed by the free allowance.
+    /// The part absorbed by the plan's included allowance.
     pub discount: f64,
     /// What is actually paid.
     pub net: f64,
@@ -56,6 +62,83 @@ pub fn included_minutes_for(plan: Option<&str>) -> Option<u64> {
     }
 }
 
+/// The usage report's Actions storage SKU.
+const ACTIONS_STORAGE_SKU: &str = "Actions storage";
+
+/// The unit GitHub bills Actions storage in.
+const GIGABYTE_HOURS: &str = "GigabyteHours";
+
+/// One row of the storage breakdown: which repository held how many
+/// GB-hours in the month.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StorageLine {
+    pub repo: String,
+    pub gbh: f64,
+}
+
+/// A plan's included Actions storage for one month, in GB-hours, with the
+/// hour base it was computed on — the Billing tab states that base, because
+/// it is an open measurement (720 or 744 hours, see the design spec).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct StorageQuota {
+    pub gbh: f64,
+    pub hours: u32,
+}
+
+/// Included Actions storage for an organization's plan, in GB — GitHub's
+/// table. `None` for no plan or an unknown one, exactly like
+/// `included_minutes_for`.
+pub fn included_storage_gb_for(plan: Option<&str>) -> Option<f64> {
+    match plan? {
+        "free" => Some(0.5),
+        "team" => Some(2.0),
+        "enterprise" => Some(50.0),
+        _ => None,
+    }
+}
+
+/// Hours in a `YYYY-MM` month: its days × 24.
+///
+/// GitHub's documentation converts GB-hours to GB-months "by dividing by the
+/// hours in the month (usually 720 hours for a 30-day month)". exec-d's
+/// September 2026 report suggests a 744-hour base instead; that is an open
+/// measurement, and this is the one place to change if it is confirmed.
+/// `None` for anything that is not a real month.
+pub fn hours_in_month(month: &str) -> Option<u32> {
+    let (year, mon) = month.split_once('-')?;
+    let year: i32 = year.parse().ok()?;
+    let mon: u32 = mon.parse().ok()?;
+    let first = chrono::NaiveDate::from_ymd_opt(year, mon, 1)?;
+    let next = if mon == 12 {
+        chrono::NaiveDate::from_ymd_opt(year + 1, 1, 1)?
+    } else {
+        chrono::NaiveDate::from_ymd_opt(year, mon + 1, 1)?
+    };
+    u32::try_from((next - first).num_days() * 24).ok()
+}
+
+/// A plan's included storage for `month`, in GB-hours: included GB × the
+/// month's hours. `None` when either is unknown — and then no percentage.
+pub fn storage_quota(plan: Option<&str>, month: &str) -> Option<StorageQuota> {
+    let gb = included_storage_gb_for(plan)?;
+    let hours = hours_in_month(month)?;
+    Some(StorageQuota {
+        gbh: gb * f64::from(hours),
+        hours,
+    })
+}
+
+/// `YYYY-MM` for an instant, in UTC — how the "current month" of the repos
+/// column and `scan --json` is named. Takes the instant rather than reading
+/// the clock, so it stays testable.
+pub fn month_of(now: chrono::DateTime<chrono::Utc>) -> String {
+    now.format("%Y-%m").to_string()
+}
+
+fn is_actions_storage(item: &UsageItem) -> bool {
+    item.sku == ACTIONS_STORAGE_SKU && item.unit_type == GIGABYTE_HOURS
+}
+
 /// How many Linux-equivalent minutes one minute of this runner costs.
 ///
 /// `None` means the SKU is unknown — a new runner family GitHub added. The
@@ -79,7 +162,8 @@ impl BillingReport {
         out
     }
 
-    /// Minutes charged against the free allowance, in Linux equivalents.
+    /// Minutes charged against the plan's included allowance, in Linux
+    /// equivalents.
     ///
     /// Only private repos are counted: a public repository's Actions runs are
     /// free and unlimited, so it never draws on the allowance. `gross <=
@@ -152,6 +236,50 @@ impl BillingReport {
         out.dedup();
         out
     }
+
+    /// Actions storage used in the month, in GB-hours, public repositories
+    /// included: the documentation says a public repository's *minutes* are
+    /// free, but says nothing of its storage, and the report discounts both
+    /// kinds alike. Counting it is the cautious reading, and the tab says so.
+    pub fn storage_gbh(&self, month: &str) -> f64 {
+        self.items
+            .iter()
+            .filter(|i| i.month == month && is_actions_storage(i))
+            .map(|i| i.quantity)
+            .sum()
+    }
+
+    /// One repository's Actions storage in the month, in GB-hours. A
+    /// repository the report does not list for that month held none.
+    pub fn storage_gbh_for_repo(&self, month: &str, repo: &str) -> f64 {
+        self.items
+            .iter()
+            .filter(|i| i.month == month && i.repo == repo && is_actions_storage(i))
+            .map(|i| i.quantity)
+            .sum()
+    }
+
+    /// Storage per repository for the month, heaviest first — the storage
+    /// counterpart of `minute_lines`: an alert says the quota is nearly
+    /// used, this says which repository to go and clean.
+    pub fn storage_lines(&self, month: &str) -> Vec<StorageLine> {
+        let mut out: Vec<StorageLine> = Vec::new();
+        for i in self
+            .items
+            .iter()
+            .filter(|i| i.month == month && is_actions_storage(i))
+        {
+            match out.iter_mut().find(|l| l.repo == i.repo) {
+                Some(line) => line.gbh += i.quantity,
+                None => out.push(StorageLine {
+                    repo: i.repo.clone(),
+                    gbh: i.quantity,
+                }),
+            }
+        }
+        out.sort_by(|a, b| b.gbh.total_cmp(&a.gbh));
+        out
+    }
 }
 
 #[cfg(test)]
@@ -174,6 +302,21 @@ mod tests {
 
     fn private_repos(names: &[&str]) -> HashSet<String> {
         names.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// One `Actions storage` line, in GigabyteHours, as GitHub reports it.
+    fn storage(month: &str, gbh: f64, repo: &str) -> UsageItem {
+        UsageItem {
+            month: month.into(),
+            product: "actions".into(),
+            sku: "Actions storage".into(),
+            quantity: gbh,
+            unit_type: "GigabyteHours".into(),
+            gross: 0.0,
+            discount: 0.0,
+            net: 0.0,
+            repo: repo.into(),
+        }
     }
 
     #[test]
@@ -233,8 +376,8 @@ mod tests {
     }
 
     /// Locks finding 1 (critical): GitHub discounts a private repo still
-    /// inside its free allowance exactly like a public repo — `gross ==
-    /// discount` for both. The old `.filter(|i| i.gross > i.discount)`
+    /// inside its plan's included allowance exactly like a public repo —
+    /// `gross == discount` for both. The old `.filter(|i| i.gross > i.discount)`
     /// therefore dropped this item too, and `included_minutes` read 0 right
     /// up until GitHub actually started billing. Figures are the real ones
     /// measured on SecondBrain-io/monolith-back in July 2026. Proved RED
@@ -387,8 +530,8 @@ mod tests {
     }
 
     /// Same bug as `included_minutes`, for the breakdown: a private repo
-    /// still covered by the free allowance is fully discounted just like a
-    /// public one, so the old `gross > discount` filter hid it from the one
+    /// still covered by the plan's included allowance is fully discounted
+    /// just like a public one, so the old `gross > discount` filter hid it from the one
     /// view meant to name the repository burning the allowance. Figures are
     /// the real ones measured on SecondBrain-io/monolith-back in July 2026.
     #[test]
@@ -412,5 +555,167 @@ mod tests {
         );
         assert_eq!(lines[0].repo, "monolith-back");
         assert_eq!(lines[0].quantity, 24_632);
+    }
+
+    /// The counterpart of `storage_line_items_do_not_pollute_the_minutes_gauge`:
+    /// the storage total must not pick up minutes, another month, or another
+    /// product's GigabyteHours.
+    #[test]
+    fn storage_gbh_sums_only_actions_storage_gigabyte_hours() {
+        // An illustrative GigabyteHours line of another product: its exact SKU
+        // name is not under test, only that it is not Actions storage.
+        let mut other_product = storage("2026-09", 500.0, "disconnected");
+        other_product.product = "codespaces".into();
+        other_product.sku = "Codespaces storage".into();
+        // An Actions storage line in another unit: the SKU half of the filter
+        // alone cannot fail without this — the GigabyteHours half must too.
+        let mut odd = storage("2026-09", 999.0, "disconnected");
+        odd.unit_type = "Minutes".into();
+        let r = BillingReport {
+            items: vec![
+                storage("2026-09", 359.88, "disconnected"),
+                storage("2026-09", 11.21, "ptitjardinier-app"),
+                item(
+                    "2026-09",
+                    "Actions Linux",
+                    1_004.0,
+                    6.024,
+                    6.024,
+                    "disconnected",
+                ),
+                storage("2026-08", 100.0, "disconnected"),
+                other_product,
+                odd,
+            ],
+        };
+        // exec-d's real September lines for the two repositories #13 names.
+        // The report's 371.85 total also counts 0.76 GB-h the issue does not
+        // attribute; the fixture does not invent a repository for them.
+        let got = r.storage_gbh("2026-09");
+        assert!((got - 371.09).abs() < 1e-9, "got {got}");
+    }
+
+    #[test]
+    fn storage_lines_rank_exec_d_september() {
+        let r = BillingReport {
+            items: vec![
+                // Lightest first, so the ranking has work to do.
+                storage("2026-09", 11.21, "ptitjardinier-app"),
+                storage("2026-09", 359.88, "disconnected"),
+                // Minutes must never rank a repository.
+                item(
+                    "2026-09",
+                    "Actions Linux",
+                    5_000.0,
+                    30.0,
+                    30.0,
+                    "ptitjardinier-app",
+                ),
+            ],
+        };
+        assert_eq!(
+            r.storage_lines("2026-09"),
+            vec![
+                StorageLine {
+                    repo: "disconnected".into(),
+                    gbh: 359.88
+                },
+                StorageLine {
+                    repo: "ptitjardinier-app".into(),
+                    gbh: 11.21
+                },
+            ]
+        );
+    }
+
+    /// One row per repository: two storage items of the same repository and
+    /// month add up rather than producing two rows.
+    #[test]
+    fn storage_lines_merge_items_of_one_repo() {
+        let r = BillingReport {
+            items: vec![
+                storage("2026-09", 1.5, "alertU"),
+                storage("2026-09", 2.25, "alertU"),
+            ],
+        };
+        let lines = r.storage_lines("2026-09");
+        assert_eq!(lines.len(), 1);
+        assert!((lines[0].gbh - 3.75).abs() < 1e-9, "got {}", lines[0].gbh);
+    }
+
+    #[test]
+    fn storage_gbh_for_repo_reads_one_repo() {
+        let r = BillingReport {
+            items: vec![
+                storage("2026-09", 359.88, "disconnected"),
+                storage("2026-09", 11.21, "ptitjardinier-app"),
+                storage("2026-08", 100.0, "disconnected"),
+            ],
+        };
+        let got = r.storage_gbh_for_repo("2026-09", "disconnected");
+        assert!((got - 359.88).abs() < 1e-9, "got {got}");
+        let quiet = r.storage_gbh_for_repo("2026-09", "quiet");
+        assert!(quiet.abs() < 1e-9, "got {quiet}");
+    }
+
+    #[test]
+    fn included_storage_follows_the_plan() {
+        assert_eq!(included_storage_gb_for(Some("free")), Some(0.5));
+        assert_eq!(included_storage_gb_for(Some("team")), Some(2.0));
+        assert_eq!(included_storage_gb_for(Some("enterprise")), Some(50.0));
+        assert_eq!(included_storage_gb_for(Some("pro")), None);
+        assert_eq!(included_storage_gb_for(None), None);
+    }
+
+    /// The hour base is the displayed month's own — days × 24, GitHub's
+    /// documented formula. A 720 constant fails on July, a 744 constant on
+    /// September. See the spec's open measurement on 720 vs 744 before
+    /// changing this.
+    #[test]
+    fn hours_in_month_counts_the_displayed_months_days() {
+        assert_eq!(hours_in_month("2026-09"), Some(720));
+        assert_eq!(hours_in_month("2026-07"), Some(744));
+        assert_eq!(hours_in_month("2026-02"), Some(672));
+        assert_eq!(hours_in_month("2028-02"), Some(696));
+        assert_eq!(hours_in_month("2026-12"), Some(744));
+        assert_eq!(hours_in_month("2026-13"), None);
+        assert_eq!(hours_in_month(""), None);
+    }
+
+    #[test]
+    fn storage_quota_is_included_gb_times_month_hours() {
+        // exec-d in September on Free, its plan until 2026-09-10: 0.5 × 720.
+        assert_eq!(
+            storage_quota(Some("free"), "2026-09"),
+            Some(StorageQuota {
+                gbh: 360.0,
+                hours: 720
+            })
+        );
+        // On Team, its current plan: 2 × 720.
+        assert_eq!(
+            storage_quota(Some("team"), "2026-09"),
+            Some(StorageQuota {
+                gbh: 1_440.0,
+                hours: 720
+            })
+        );
+        assert_eq!(
+            storage_quota(Some("free"), "2026-07"),
+            Some(StorageQuota {
+                gbh: 372.0,
+                hours: 744
+            })
+        );
+        assert_eq!(storage_quota(None, "2026-09"), None);
+        assert_eq!(storage_quota(Some("team"), ""), None);
+    }
+
+    #[test]
+    fn month_of_formats_year_and_month() {
+        let t = chrono::DateTime::parse_from_rfc3339("2026-09-10T08:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        assert_eq!(month_of(t), "2026-09");
     }
 }
