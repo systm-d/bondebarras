@@ -105,6 +105,29 @@ pub(crate) fn cells(text: &str) -> usize {
     Span::raw(text).width()
 }
 
+/// `text` broken at spaces into lines at most `width` cells wide — for the
+/// explanations the resources column puts on rows of their own (the size
+/// explanation, the gauges' caveat, warning and reason). A word wider than
+/// `width` still gets a line of its own, and clips there; no word of those
+/// explanations is that wide at any width the column is drawn at.
+pub(crate) fn wrap_words(text: &str, width: usize) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut line = String::new();
+    for word in text.split(' ') {
+        if !line.is_empty() && cells(&line) + 1 + cells(word) > width {
+            lines.push(std::mem::take(&mut line));
+        }
+        if !line.is_empty() {
+            line.push(' ');
+        }
+        line.push_str(word);
+    }
+    if !line.is_empty() {
+        lines.push(line);
+    }
+    lines
+}
+
 /// How many columns `View::Orgs` draws side by side.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Columns {

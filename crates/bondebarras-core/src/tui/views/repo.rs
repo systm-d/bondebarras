@@ -329,32 +329,11 @@ fn column_head(
     if !has_sizeless || views::cells(&title) <= room {
         return (title, Vec::new());
     }
-    let lines = wrap_words(SIZELESS_WARNING, room)
+    let lines = views::wrap_words(SIZELESS_WARNING, room)
         .into_iter()
         .map(|line| Line::from(Span::styled(line, theme::status_warn())))
         .collect();
     (list_title(count, bytes, false), lines)
-}
-
-/// `text` broken at spaces into lines at most `width` cells wide. A word
-/// wider than `width` still gets a line of its own, and clips there; no word
-/// of `SIZELESS_WARNING` is that wide at any width this column is drawn at.
-fn wrap_words(text: &str, width: usize) -> Vec<String> {
-    let mut lines = Vec::new();
-    let mut line = String::new();
-    for word in text.split(' ') {
-        if !line.is_empty() && views::cells(&line) + 1 + views::cells(word) > width {
-            lines.push(std::mem::take(&mut line));
-        }
-        if !line.is_empty() {
-            line.push(' ');
-        }
-        line.push_str(word);
-    }
-    if !line.is_empty() {
-        lines.push(line);
-    }
-    lines
 }
 
 /// Actions minutes this repository burnt in the most recent month its org's
@@ -1450,11 +1429,12 @@ mod tests {
         app.resources = vec![res(false)];
 
         for width in 60..=200u16 {
-            // 13 rows: the 3 fixed header/status/footer rows this crate's
-            // real layout always reserves, plus the same 10-row body height
-            // the file's other sweep tests used before the columns.
+            // 30 rows: tall enough for the whole head at every width. The
+            // explanations wrap onto rows of their own in a narrow column,
+            // and a head without the room yields whole gauges to the list
+            // (`the_column_head_keeps_each_part_whole_or_drops_it_across_swept_heights`).
             let (_, rendered) =
-                views::testing::focused_column(&mut app, Focus::Resources, width, 13);
+                views::testing::focused_column(&mut app, Focus::Resources, width, 30);
 
             assert!(
                 rendered.contains("Cache"),
@@ -1476,6 +1456,142 @@ mod tests {
                 rendered.contains("50"),
                 "minutes percent clipped at width {width}:\n{rendered}"
             );
+        }
+    }
+
+    /// `org_with_gauged_repo`'s repository, `private` or not, holding
+    /// `cache_bytes` of cache, loaded, listing a cache and a package version
+    /// — the version's `—` brings the size explanation into the head too.
+    fn gauged_app(private: bool, cache_bytes: u64) -> App {
+        let mut org = org_with_gauged_repo();
+        org.repos[0].private = private;
+        org.repos[0].cache_bytes = cache_bytes;
+        let mut app = App::new(vec![org]);
+        app.loaded = Some(("systm-d".to_string(), "josephine".to_string()));
+        app.resources = vec![res(false), package_resource()];
+        app
+    }
+
+    /// What the gauges say, word for word as the user reads them — typed out
+    /// here rather than read from the production strings, so a change to
+    /// what the screen says cannot pass unnoticed.
+    const CACHE_CAVEAT: &str = "(plafond GitHub, non exposé par l'API)";
+    const EVICTION: &str = "⚠ évince : GitHub supprime déjà les caches les moins récemment lus, \
+                            y compris ceux de la branche par défaut, au profit des PR fermées";
+    const PUBLIC_REASON: &str =
+        "0 % (dépôt public : minutes Actions gratuites et illimitées, hors plafond)";
+
+    /// Final review I4 and smoke S1: spec §5 wants the hardcoded ceiling
+    /// said ("la jauge le dit") and a public repository's 0 % given with its
+    /// reason; §7 wants nothing cut. Each gauge was one line, clipped at the
+    /// column's border: at 80 columns `12.4 Go / 10` lost its unit — reading
+    /// as 124 % — and the caveat, the eviction warning and the public reason
+    /// went mid-word.
+    ///
+    /// Swept over every terminal width from 60 to 200 on the resources
+    /// column's real rect, for a public repository over its ceiling and a
+    /// private one under it: each gauge's percentage and figures, with their
+    /// units, stand whole on one row; the caveat, the eviction warning and
+    /// the public reason read whole once the column's rows are joined — on
+    /// the gauge's row where they fit, on rows of their own otherwise.
+    #[test]
+    fn every_gauge_figure_and_explanation_stays_whole_across_swept_widths() {
+        let mut public = gauged_app(false, 12_360_000_000);
+        let mut private = gauged_app(true, 4_000_000_000);
+        for width in 60..=200u16 {
+            let (_, column) =
+                views::testing::focused_column(&mut public, Focus::Resources, width, 40);
+            let prose = views::testing::unwrapped(&column);
+            let cache = row_holding(&column, "115 %");
+            assert!(
+                cache.contains("12.4 Go / 10 Gio"),
+                "the cache figures are cut at width {width}: {cache:?}\n{column}"
+            );
+            for phrase in [CACHE_CAVEAT, EVICTION, PUBLIC_REASON] {
+                assert!(
+                    prose.contains(phrase),
+                    "{phrase:?} is not whole at width {width}:\n{column}"
+                );
+            }
+
+            let (_, column) =
+                views::testing::focused_column(&mut private, Focus::Resources, width, 40);
+            let prose = views::testing::unwrapped(&column);
+            let cache = row_holding(&column, "37 %");
+            assert!(
+                cache.contains("4.0 Go / 10 Gio"),
+                "the cache figures are cut at width {width}: {cache:?}\n{column}"
+            );
+            let minutes = row_holding(&column, "50 %");
+            assert!(
+                minutes.contains("1000 / 2000"),
+                "the minutes figures are cut at width {width}: {minutes:?}\n{column}"
+            );
+            assert!(
+                prose.contains(CACHE_CAVEAT),
+                "the ceiling caveat is not whole at width {width}:\n{column}"
+            );
+            assert!(
+                !column.contains("évince"),
+                "a cache under its ceiling warns of eviction at width {width}:\n{column}"
+            );
+        }
+    }
+
+    /// Final review I2 and I4 together: on a short terminal the head gives
+    /// its lines to the list, and what it keeps it keeps whole — a gauge
+    /// with its figures and every line of its explanation, the size
+    /// explanation in full (ruling B), or none of them. Swept over every
+    /// height from 3 to 40 at widths across the three layouts, public
+    /// repository over its ceiling: whatever part of the head is on screen
+    /// reads whole, and no explanation stays on screen without its gauge.
+    #[test]
+    fn the_column_head_keeps_each_part_whole_or_drops_it_across_swept_heights() {
+        for width in [60u16, 78, 80, 99, 100, 101, 120, 160, 200] {
+            for height in 3u16..=40 {
+                let mut app = gauged_app(false, 12_360_000_000);
+                let (_, column) =
+                    views::testing::focused_column(&mut app, Focus::Resources, width, height);
+                let prose = views::testing::unwrapped(&column);
+                let at = format!("at {width}x{height}:\n{column}");
+
+                let cache_shown = column.contains("Cache");
+                if cache_shown {
+                    let cache = row_holding(&column, "Cache");
+                    assert!(
+                        cache.contains("115 %") && cache.contains("12.4 Go / 10 Gio"),
+                        "the cache gauge's figures are cut {at}"
+                    );
+                    assert!(
+                        prose.contains(CACHE_CAVEAT) && prose.contains(EVICTION),
+                        "the cache gauge shows without all of its explanation {at}"
+                    );
+                } else {
+                    assert!(
+                        !column.contains("plafond") && !column.contains("évince"),
+                        "a cache gauge's explanation shows without its gauge {at}"
+                    );
+                }
+
+                if column.contains("Minutes") {
+                    assert!(
+                        prose.contains(PUBLIC_REASON),
+                        "the minutes gauge shows without its reason {at}"
+                    );
+                } else {
+                    assert!(
+                        !column.contains("dépôt public"),
+                        "the public reason shows without its gauge {at}"
+                    );
+                }
+
+                if column.contains("n'expose") {
+                    assert!(
+                        prose.contains(EXPLANATION),
+                        "the size explanation is cut {at}"
+                    );
+                }
+            }
         }
     }
 }

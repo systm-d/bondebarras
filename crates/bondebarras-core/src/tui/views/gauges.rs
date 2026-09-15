@@ -7,7 +7,8 @@
 
 use crate::billing::FREE_MINUTES_PER_MONTH;
 use crate::model::human_size;
-use crate::tui::theme;
+use crate::tui::{theme, views};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
 /// GitHub's documented per-repository Actions cache ceiling: 10 GiB.
@@ -41,80 +42,129 @@ pub(crate) fn percent(used: u64, ceiling: u64) -> u64 {
     }
 }
 
-/// Width of the filled portion of the bar, in cells.
+/// Widest the filled portion of a bar gets, in cells — the same maximum
+/// `views::billing::gauge_line` uses.
+const BAR_CELLS: usize = 20;
+
+/// How far in an explanation starts on a row of its own.
+const INDENT: &str = "  ";
+
+/// The cache gauge's caveat: its ceiling is GitHub's documented figure, not
+/// one read from a response.
+const CACHE_CAVEAT: &str = "(plafond GitHub, non exposé par l'API)";
+
+/// What a cache gauge past 100 % adds.
+const EVICTION: &str = "⚠ évince : GitHub supprime déjà les caches les moins récemment lus, y \
+                        compris ceux de la branche par défaut, au profit des PR fermées";
+
+/// Why a public repository's minutes gauge reads 0 %.
+const PUBLIC_REASON: &str =
+    "(dépôt public : minutes Actions gratuites et illimitées, hors plafond)";
+
+/// The filled portion of a bar, in at most `room` cells.
 ///
 /// Capped independently of `percent` (which is never capped) so a gauge well
 /// past its ceiling still draws a legible, full-looking bar instead of one
-/// that would need hundreds of cells. Also capped by the available `width`,
-/// scaled down from the same 20-cell maximum `views::billing::gauge_line`
-/// uses, so the bar never pushes the percentage or the eviction warning off
-/// the edge of a narrow pane.
-fn bar(percent: u64, width: u16) -> String {
-    let capacity = (width as usize).saturating_sub(30).clamp(4, 20);
+/// that would need hundreds of cells. Capped by `room` too — the cells its
+/// row leaves once the figures have theirs — so the bar is the part that
+/// gives in a narrow column, never the figures.
+fn bar(percent: u64, room: usize) -> String {
+    let capacity = room.min(BAR_CELLS);
     let filled = ((percent as usize) * capacity / 100).min(capacity);
     "█".repeat(filled)
 }
 
+/// A gauge's figures row, `width` cells at most while its figures fit: the
+/// label, the bar in whatever room is left, the percentage, then `figures`
+/// — used against ceiling, with their units. Only the bar shrinks.
+fn figures_row(label: &str, pct: u64, figures: &str, width: u16) -> String {
+    let tail = format!("  {pct:>3} %   {figures}");
+    let room = usize::from(width).saturating_sub(views::cells(label) + views::cells(&tail));
+    format!("{label}{}{tail}", bar(pct, room))
+}
+
+/// `text` on rows of its own, indented, broken at spaces to `width` cells
+/// (`views::wrap_words`): every word on screen, none cut at the border.
+fn own_rows(text: &str, style: Style, width: u16) -> Vec<Line<'static>> {
+    let room = usize::from(width).saturating_sub(INDENT.len());
+    views::wrap_words(text, room)
+        .into_iter()
+        .map(|row| Line::from(Span::styled(format!("{INDENT}{row}"), style)))
+        .collect()
+}
+
+/// A figures row and its `explanation`: on the same row when the whole row
+/// fits in `width`, otherwise the figures alone and the explanation on rows
+/// of its own under them — the rule `views::repo::column_head` follows for
+/// the size explanation (ruling B). Never clipped either way.
+fn explained(figures: String, style: Style, explanation: &str, width: u16) -> Vec<Line<'static>> {
+    let beside = format!(" {explanation}");
+    if views::cells(&figures) + views::cells(&beside) <= usize::from(width) {
+        return vec![Line::from(vec![
+            Span::styled(figures, style),
+            Span::styled(beside, style),
+        ])];
+    }
+    let mut lines = vec![Line::from(Span::styled(figures, style))];
+    lines.extend(own_rows(explanation, style, width));
+    lines
+}
+
 /// Cache usage against GitHub's documented, hardcoded, 10 GiB per-repository
-/// ceiling.
+/// ceiling, in a column `width` cells wide.
 ///
 /// Never clamped at 100 %: past it, GitHub itself is already evicting the
 /// least-recently-read caches — including the default branch's — to make
 /// room for closed pull requests' still-warm ones. Clamping the number would
 /// hide exactly the fact this gauge exists to show.
 ///
-/// The bar and the percentage come right after the label, before the byte
-/// count and the "not exposed by the API" caveat: at the narrowest width
-/// this pane renders at, a `Line` that overflows clips from the right, and
-/// the percentage — the one figure this gauge exists to show — must survive
-/// that clip even when the trailing explanation does not.
+/// Nothing is clipped at any width the column is drawn at (final review
+/// I4): the percentage and the `used / 10 Gio` figures stay whole on the
+/// gauge's row, the bar shrinking to leave them room — cut, `12.4 Go / 10`
+/// read as 124 % — and the caveat and the eviction warning go on rows of
+/// their own when the row cannot hold them.
 pub fn cache_gauge_line(used: u64, width: u16) -> Vec<Line<'static>> {
     let pct = percent(used, CACHE_CEILING_BYTES);
-    let mut lines = vec![Line::from(Span::styled(
-        format!(
-            "Cache   {}  {pct:>3} %   {} / 10 Gio (plafond GitHub, non exposé par l'API)",
-            bar(pct, width),
-            human_size(used),
-        ),
-        theme::text_style(),
-    ))];
+    let figures = figures_row(
+        "Cache   ",
+        pct,
+        &format!("{} / 10 Gio", human_size(used)),
+        width,
+    );
+    let mut lines = explained(figures, theme::text_style(), CACHE_CAVEAT, width);
     if pct > 100 {
-        lines.push(Line::from(Span::styled(
-            "  ⚠ évince : GitHub supprime déjà les caches les moins récemment lus, y \
-             compris ceux de la branche par défaut, au profit des PR fermées"
-                .to_string(),
-            theme::status_warn(),
-        )));
+        lines.extend(own_rows(EVICTION, theme::status_warn(), width));
     }
     lines
 }
 
 /// Actions minutes against the free monthly allowance
-/// (`billing::FREE_MINUTES_PER_MONTH`).
+/// (`billing::FREE_MINUTES_PER_MONTH`), in a column `width` cells wide.
 ///
 /// A public repository's Actions runs are free and unlimited — GitHub's own
 /// billing report never even lists them against the allowance (see
 /// `billing::BillingReport::included_minutes`) — so it always reads 0 %, but
 /// with the reason spelled out: a bare 0 % would otherwise read as
 /// comfortable headroom, when it actually means this repository cannot
-/// consume the allowance at all.
+/// consume the allowance at all. The reason goes on rows of its own when
+/// the gauge's row cannot hold it, never clipped.
 pub fn minutes_gauge_line(used: u64, is_public: bool, width: u16) -> Vec<Line<'static>> {
     if is_public {
-        return vec![Line::from(Span::styled(
-            "Minutes    0 % (dépôt public : minutes Actions gratuites et illimitées, \
-             hors plafond)"
-                .to_string(),
+        return explained(
+            "Minutes    0 %".to_string(),
             theme::muted(),
-        ))];
+            PUBLIC_REASON,
+            width,
+        );
     }
     let pct = percent(used, FREE_MINUTES_PER_MONTH);
-    vec![Line::from(Span::styled(
-        format!(
-            "Minutes {}  {pct:>3} %   {used} / {FREE_MINUTES_PER_MONTH}",
-            bar(pct, width),
-        ),
-        theme::text_style(),
-    ))]
+    let figures = figures_row(
+        "Minutes ",
+        pct,
+        &format!("{used} / {FREE_MINUTES_PER_MONTH}"),
+        width,
+    );
+    vec![Line::from(Span::styled(figures, theme::text_style()))]
 }
 
 #[cfg(test)]
