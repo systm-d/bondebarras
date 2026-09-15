@@ -15,8 +15,8 @@ use crate::tui::views::cells;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::Style;
-use ratatui::text::Span;
-use ratatui::widgets::{Gauge, Paragraph};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::Paragraph;
 
 /// A purge's label.
 pub(crate) const DELETION: &str = "suppression";
@@ -56,11 +56,10 @@ impl Work {
 
     /// Ratio in 0..=1. `total == 0` yields 0, never a division by zero.
     ///
-    /// Never above 1 either: ratatui's `Gauge` panics on a ratio outside
-    /// 0..=1, and a panic in a draw ends the interface with a purge still
-    /// running. A count past its total would be a bug, and the `done/total`
-    /// written beside the bar shows it as it is; the bar stays full rather
-    /// than take the purge down with it.
+    /// Never above 1 either: the bar fills `ratio` of its cells, and a count
+    /// past its total would ask for more cells than the row has. That count
+    /// would be a bug, and the `done/total` written beside the bar shows it
+    /// as it is; the bar stays full.
     pub fn ratio(&self) -> f64 {
         if self.total == 0 {
             0.0
@@ -108,9 +107,12 @@ pub fn shown(app: &App) -> Option<&Work> {
 /// `done/total` written out — a percentage alone does not say whether two
 /// items remain or two hundred.
 ///
-/// The bar is a ratatui `Gauge` with no label of its own: the percentage it
-/// would centre there says less than the count beside it. Its track is drawn
-/// in the border colour so the bar's full length shows while it is empty.
+/// The bar is drawn as cells rather than with ratatui's `Gauge`: a `Gauge`
+/// centres a label on the bar, and even an empty one blanks — colours
+/// swapped — the cell it is centred on once the fill passes it, a gap in the
+/// middle of the bar (smoke S4). The fill runs unbroken from the bar's start
+/// for `ratio` of its cells, and the track is drawn in the border colour so
+/// the bar's full length shows while it is empty.
 pub(crate) fn render(work: &Work, f: &mut Frame, area: Rect) {
     let label = format!(" {}  ", work.label);
     let count = format!("  {}/{} ", work.done, work.total);
@@ -126,11 +128,14 @@ pub(crate) fn render(work: &Work, f: &mut Frame, area: Rect) {
         Paragraph::new(Span::styled(label, theme::text_style())),
         label_area,
     );
+    let cells_wide = usize::from(bar_area.width);
+    let filled = ((cells_wide as f64) * work.ratio()).round() as usize;
+    let bar = Style::default().fg(theme::PRIMARY).bg(theme::BORDER);
     f.render_widget(
-        Gauge::default()
-            .ratio(work.ratio())
-            .label("")
-            .gauge_style(Style::default().fg(theme::PRIMARY).bg(theme::BORDER)),
+        Paragraph::new(Line::from(vec![
+            Span::styled("█".repeat(filled.min(cells_wide)), bar),
+            Span::styled(" ".repeat(cells_wide.saturating_sub(filled)), bar),
+        ])),
         bar_area,
     );
     f.render_widget(
@@ -172,9 +177,9 @@ mod tests {
         assert_eq!(w.ratio(), 1.0);
     }
 
-    /// ratatui's `Gauge` panics on a ratio above 1, and a panic in a draw
-    /// ends the interface with a purge still running. A count past its total
-    /// is a bug, but it must draw — full, with its real count beside it.
+    /// A count past its total is a bug, but it must draw — full, with its
+    /// real count beside it — never take the interface down with a purge
+    /// still running.
     #[test]
     fn a_count_past_its_total_draws_a_full_bar_not_a_panic() {
         let w = Work {
@@ -469,5 +474,53 @@ mod tests {
             .expect("a fresh load follows");
         app.load_ticked(suspect.generation());
         assert_eq!(load_bar(&app), Some((0, TOTAL_CALLS)));
+    }
+
+    /// Smoke S4: the filled part of the bar showed a blank cell in its middle
+    /// (`████…████ ██████`). ratatui's `Gauge` centres its label, and an
+    /// empty one still blanks, colours swapped, the cell it is centred on
+    /// once the fill passes it.
+    ///
+    /// Swept over every width from 60 to 200 and every count of a seven-item
+    /// purge, on the progress row's real rect: between the label and the
+    /// count, the filled cells run unbroken from the bar's start for as many
+    /// cells as the ratio gives, only track follows, and every cell of the
+    /// bar keeps the track's colour behind it.
+    #[test]
+    fn the_progress_bar_fills_without_a_gap_across_swept_widths() {
+        const TOTAL: usize = 7;
+        for width in 60..=200u16 {
+            for done in 0..=TOTAL {
+                let mut app = App::new(vec![]);
+                app.purge = Some(Work {
+                    label: DELETION.into(),
+                    done,
+                    total: TOTAL,
+                });
+                let buf = testing::draw(&mut app, width, 12);
+                let (rows, _) = testing::layout(&app, width, 12);
+                let row = testing::text_in(&buf, rows.progress);
+                let label = cells(&format!(" {DELETION}  "));
+                let count = cells(&format!("  {done}/{TOTAL} "));
+                let bar_width = usize::from(rows.progress.width) - label - count;
+                let expected = (bar_width as f64 * done as f64 / TOTAL as f64).round() as usize;
+                let bar: Vec<&ratatui::buffer::Cell> = (0..bar_width)
+                    .map(|i| &buf[(rows.progress.x + (label + i) as u16, rows.progress.y)])
+                    .collect();
+                let filled = bar.iter().take_while(|c| c.symbol() == "█").count();
+                assert_eq!(
+                    filled, expected,
+                    "the fill stops short of {expected} cells at width {width}, {done}/{TOTAL}: {row:?}"
+                );
+                assert!(
+                    bar[filled..].iter().all(|c| c.symbol() == " "),
+                    "a filled cell after a gap at width {width}, {done}/{TOTAL}: {row:?}"
+                );
+                assert!(
+                    bar.iter().all(|c| c.bg == theme::BORDER),
+                    "a bar cell lost the track's colour at width {width}, {done}/{TOTAL}: {row:?}"
+                );
+            }
+        }
     }
 }
