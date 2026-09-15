@@ -138,7 +138,7 @@ column beside its checkbox:
 resource GitHub itself protects — a tagged package version, the default or a
 protected branch, a live but unmerged one, every tag — and if either key
 leaves protected rows unticked, the status line says how many (a live
-branch left unticked is named as such). Individual selection (`Espace`)
+branch left unticked is named as such). Individual selection (`espace`)
 stays available one row at a time regardless of level.
 
 - Nothing this tool deletes is reversible on GitHub's side, so it never
@@ -253,9 +253,9 @@ focused column alone, `←`/`→` change which one).
  systm-d      36.4 Go  josephine          5 j        12.4 Go  Cache   ████████████▓ 115 %
  SecondBrain… 14.9 Go  claudine          12 j        11.8 Go  Minutes ▓▓▓▓▓▓▓▓▓▓▓▓▓   0 %
  delfour-co    161 Mo  alertU     déjà archivé         8.0 Go ────────────────────────────
- exec-d         71 Mo  anonymous          3 j          4.3 Go [ ]⛑ cache v0-rust-cov…  467Mo PR#54 ⚑
-                                                                [ ]• artif github-pages    1.1Mo  40j
-                                                                [ ]  asset josephine-0.… 4.0Mo (v0.12.0)
+ exec-d         71 Mo  anonymous          3 j          4.3 Go [ ]⛑ cache v0-rust-cover…  467Mo PR#54 ⚑
+                                                                [ ]• artif github-pages    1.1Mo 40j
+                                                                [ ]  asset jos… (v0.12.0)  4.0Mo 2j
 ```
 
 *(A sketch of the layout, not a screenshot — column widths not to scale.)*
@@ -284,12 +284,15 @@ Movement works from any column, in every layout:
 | `↑` / `↓` | Move the cursor within the focused column |
 | `Entrée` | Force an immediate reload of the repository under the repositories-column cursor, skipping the 300 ms pause and any cached listing |
 
-`Espace`, `A`, `V`, `s`, and `f` act **only in the column that has focus** —
-the footer always shows which keys apply where:
+`espace`, `A`, `V`, `s`, and `f` act **only in the column that has focus** —
+the footer always shows which keys apply where. When the terminal is too
+narrow for all of them, it keeps `[d]` first wherever `d` acts, then the
+selection keys (`[espace]`, `[A]`, `[V]`), then the rest — `[d]` is announced
+at every width from 60 columns:
 
 | Key | Organizations | Repositories | Resources |
 | --- | --- | --- | --- |
-| `Espace` | — | tick/untick *that* repository for archiving (one at a time) | check/uncheck the row under the cursor |
+| `espace` | — | tick/untick *that* repository for archiving (one at a time) | check/uncheck the row under the cursor |
 | `A` | — | — | select every ⛑ *safe* row |
 | `V` | — | — | also select every • *worth-checking* row |
 | `s` | — | — | cycle sort: size → age → name |

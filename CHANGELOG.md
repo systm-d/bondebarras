@@ -34,12 +34,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **A progress row**, between the status line and the footer, while a purge,
   an archive, or a repository load runs — a real, counted done/total, never
   an estimate. Several purges running at once share one bar.
-- The footer now always opens with the movement keys (`←`/`→`, `↑`/`↓`)
-  before the active column's own actions, so navigating the TUI no longer
-  depends on discovering undocumented keys.
 
 ### Changed
 
+- The footer now always opens with the movement keys (`←`/`→`, `↑`/`↓`)
+  before the active column's own actions, so navigating the TUI no longer
+  depends on discovering undocumented keys. When the terminal is too narrow
+  for every action, it keeps `[d]` first wherever `d` acts, then the
+  selection keys (`[espace]`, `[A]`, `[V]`), then the rest — `[d]` is
+  announced at every width from 60 columns.
+- `Entrée` no longer moves focus to the resources column nor clears the
+  filter: it forces a fresh load of the repository under the repositories
+  column's cursor, skipping the pause and the cache. A listing lands on its
+  own time, so it leaves focus and the filter to the user's keys.
+- The resources column's title labels its size as the ticked rows' —
+  `cochés 0 o` — which it always was, unlabelled.
 - **`[A]` now takes ⛑ (safe) rows rather than ⚑ rows** — the ⚑ stale-PR
   caches are among them, since a closed or merged PR always classifies as
   safe.

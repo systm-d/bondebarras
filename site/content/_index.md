@@ -127,13 +127,13 @@ cta2 = "Install"
 <div class="tui-panels">
 <div class="tui-col"><div class="col-title">Orgs</div><div class="row sel">systm-d      37.2 Go</div><div class="row dim">SecondBrain  13.9 Go</div></div>
 <div class="tui-col"><div class="col-title">Dépôts</div><div class="row">another-repo  9.8 Go</div><div class="row sel">ci-heavy     11.1 Go</div></div>
-<div class="tui-col grow"><div class="col-title">69 éléments · 11.1 Go</div><div class="row sel">[x]⛑ cache  coverage-linux-x64            261.0 Mo  <span class="stale">PR#32 ⚑</span></div><div class="row">[x]⛑ cache  coverage-linux-x64            261.0 Mo  <span class="stale">PR#25 ⚑</span></div><div class="row">[ ]  cache  ubuntu-22.04-test              257.0 Mo  12j</div><div class="row">[x]  artif  build-output                    1.1 Mo  <span class="stale">PR#32 ⚑</span></div></div>
+<div class="tui-col grow"><div class="col-title">69 éléments · cochés 522.0 Mo</div><div class="row sel">[x]⛑ cache  coverage-linux-x64               261Mo  <span class="stale">PR#32 ⚑</span></div><div class="row">[x]⛑ cache  coverage-linux-x64               261Mo  <span class="stale">PR#25 ⚑</span></div><div class="row">[ ]  cache  ubuntu-22.04-test                257Mo  12j</div><div class="row">[ ]• artif  build-output                     1.1Mo  45j</div></div>
 </div>
-<div class="tui-foot"><span class="key">←/→</span> colonne<span class="key">↑/↓</span> ligne<span class="key">espace</span> cocher<span class="key">A</span> sûrs<span class="key">V</span> +à vérifier<span class="key">d</span> supprimer<span class="key">f</span> filtrer<span class="key">s</span> trier<span class="key">b</span> billing<span class="key">q</span> quitter</div>
+<div class="tui-foot"><span class="key">←/→</span> col.<span class="key">↑/↓</span> ligne<span class="key">espace</span> cocher<span class="key">A</span> sûrs<span class="key">V</span> +à vérifier<span class="key">d</span> supprimer<span class="key">f</span> filtrer<span class="key">s</span> trier<span class="key">b</span> billing<span class="key">q</span> quitter</div>
 </div>
 </div>
 </div>
-<figcaption>Left to right: organizations, this org's repositories, and the selected one's resources — ⛑ marks a row safe to delete, ⚑ a cache pinned to a closed pull request.</figcaption>
+<figcaption>Left to right: organizations, this org's repositories, and the selected one's resources — ⛑ marks a row safe to delete, • one worth checking, ⚑ a cache pinned to a closed pull request. A wide-terminal sketch: on a narrower one the footer keeps [d] first, then the selection keys.</figcaption>
 </figure>
 <figure class="shot">
 <div class="term-window">
