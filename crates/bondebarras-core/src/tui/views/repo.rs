@@ -411,7 +411,12 @@ fn repo_gauges(app: &App, width: u16) -> (Vec<Line<'static>>, Vec<Line<'static>>
     } else {
         0
     };
-    let minutes = gauges::minutes_gauge_line(minutes_used, !repo.private, width);
+    let minutes = gauges::minutes_gauge_line(
+        minutes_used,
+        !repo.private,
+        crate::billing::included_minutes_for(org.plan.as_deref()),
+        width,
+    );
     (cache, minutes)
 }
 
@@ -1426,7 +1431,7 @@ mod tests {
                 class: crate::repos::RepoClass::Archivable,
             }],
             billing: Some(report),
-            ..Default::default()
+            plan: Some("free".into()),
         }
     }
 
@@ -1510,6 +1515,7 @@ mod tests {
                             y compris ceux de la branche par défaut, au profit des PR fermées";
     const PUBLIC_REASON: &str =
         "0 % (dépôt public : minutes Actions gratuites et illimitées, hors plafond)";
+    const UNKNOWN_PLAN: &str = "1000 min · formule inconnue, pas de quota";
 
     /// Final review I4 and smoke S1: spec §5 wants the hardcoded ceiling
     /// said ("la jauge le dit") and a public repository's 0 % given with its
@@ -1519,15 +1525,20 @@ mod tests {
     /// went mid-word.
     ///
     /// Swept over every terminal width from 60 to 200 on the resources
-    /// column's real rect, for a public repository over its ceiling and a
-    /// private one under it: each gauge's percentage and figures, with their
-    /// units, stand whole on one row; the caveat, the eviction warning and
-    /// the public reason read whole once the column's rows are joined — on
-    /// the gauge's row where they fit, on rows of their own otherwise.
+    /// column's real rect, for a public repository over its ceiling, a
+    /// private one under it, and that private one in an org whose plan was
+    /// not read (#11): each gauge's percentage and figures, with their
+    /// units, stand whole on one row; the caveat, the eviction warning, the
+    /// public reason and the unknown plan's explanation read whole once the
+    /// column's rows are joined — on the gauge's row where they fit, on rows
+    /// of their own otherwise — and the unknown plan's minutes row carries
+    /// no percentage at all.
     #[test]
     fn every_gauge_figure_and_explanation_stays_whole_across_swept_widths() {
         let mut public = gauged_app(false, 12_360_000_000);
         let mut private = gauged_app(true, 4_000_000_000);
+        let mut unknown_plan = gauged_app(true, 4_000_000_000);
+        unknown_plan.orgs[0].plan = None;
         for width in 60..=200u16 {
             let (_, column) =
                 views::testing::focused_column(&mut public, Focus::Resources, width, 40);
@@ -1564,6 +1575,20 @@ mod tests {
             assert!(
                 !column.contains("évince"),
                 "a cache under its ceiling warns of eviction at width {width}:\n{column}"
+            );
+
+            let (_, column) =
+                views::testing::focused_column(&mut unknown_plan, Focus::Resources, width, 40);
+            let prose = views::testing::unwrapped(&column);
+            let minutes = row_holding(&column, "Minutes");
+            assert!(
+                minutes.contains("1000 min") && !minutes.contains('%'),
+                "the unknown plan's minutes row is cut or has a percentage at width \
+                 {width}: {minutes:?}\n{column}"
+            );
+            assert!(
+                prose.contains(UNKNOWN_PLAN),
+                "the unknown plan's explanation is not whole at width {width}:\n{column}"
             );
         }
     }

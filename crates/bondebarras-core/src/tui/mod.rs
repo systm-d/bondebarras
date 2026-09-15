@@ -172,15 +172,7 @@ where
             match key.code {
                 KeyCode::Char('q') | KeyCode::Esc => request_quit(&mut app),
                 KeyCode::Char('b') => app.view = View::Orgs,
-                KeyCode::Left => app.month_cursor = app.month_cursor.saturating_sub(1),
-                KeyCode::Right => {
-                    let max = app
-                        .orgs
-                        .get(app.org_cursor)
-                        .and_then(|o| o.billing.as_ref())
-                        .map_or(0, |b| b.months().len().saturating_sub(1));
-                    app.month_cursor = (app.month_cursor + 1).min(max);
-                }
+                KeyCode::Left | KeyCode::Right => page_months(&mut app, key.code),
                 _ => {}
             }
             continue;
@@ -457,6 +449,24 @@ fn column_after(focus: Focus, code: KeyCode) -> Option<Focus> {
         KeyCode::Right | KeyCode::Tab => Some(focus.next()),
         KeyCode::Left => Some(focus.previous()),
         _ => None,
+    }
+}
+
+/// `←`/`→` on the Billing tab, paging through the org's report. The tab
+/// opens on the newest month — `month_cursor` counts back from it
+/// (`views::billing::displayed_month`) — so `←` goes to an older month and
+/// `→` back toward the newest, each stopping at its end. Any other key
+/// leaves the cursor alone.
+fn page_months(app: &mut App, code: KeyCode) {
+    let oldest = app
+        .orgs
+        .get(app.org_cursor)
+        .and_then(|o| o.billing.as_ref())
+        .map_or(0, |b| b.months().len().saturating_sub(1));
+    match code {
+        KeyCode::Left => app.month_cursor = (app.month_cursor + 1).min(oldest),
+        KeyCode::Right => app.month_cursor = app.month_cursor.saturating_sub(1),
+        _ => {}
     }
 }
 
@@ -816,7 +826,9 @@ mod tests {
     /// The final review's I2 probe as a fixture: a repository whose name
     /// (`SecondBrain-organisation/claudine-landing-positioning`) takes two
     /// lines of a narrow resources column, private and over its cache
-    /// ceiling — both gauges, and the eviction warning — with sizeless rows
+    /// ceiling — both gauges, and the eviction warning; no plan read, so the
+    /// minutes gauge is the taller unknown-plan one, with its `formule
+    /// inconnue` explanation (#11) — with sizeless rows
     /// whose explanation leaves the title, and package versions whose class
     /// takes a second line of their list item. Loaded, focus on the
     /// resources. The biggest row, under the cursor, is a ⛑ cache: `espace`,
@@ -1637,6 +1649,58 @@ mod tests {
             Some(Focus::Resources)
         );
         assert_eq!(column_after(Focus::Repos, KeyCode::Down), None);
+    }
+
+    /// The Billing tab opens on the report's newest month (pre-flight 5.1),
+    /// so `←` pages back to older months and stops at the oldest, and `→`
+    /// comes forward again and stops at the newest. With the arrows the
+    /// 0.5.0 way round, `←` would be dead on opening and `→` would leave the
+    /// current month. Read off the Billing panel's real rect, three months.
+    #[test]
+    fn billing_left_pages_to_older_months_and_right_back_to_newer() {
+        let minutes = |month: &str| crate::billing::UsageItem {
+            month: month.into(),
+            product: "actions".into(),
+            sku: "Actions Linux".into(),
+            quantity: 10.0,
+            unit_type: "Minutes".into(),
+            gross: 0.06,
+            discount: 0.06,
+            net: 0.0,
+            repo: "disconnected".into(),
+        };
+        let mut app = App::new(vec![OrgSummary {
+            login: "exec-d".into(),
+            billing: Some(crate::billing::BillingReport {
+                items: vec![minutes("2026-09"), minutes("2026-07"), minutes("2026-08")],
+            }),
+            ..Default::default()
+        }]);
+        app.view = View::Billing;
+        let shown = |app: &mut App| {
+            let buf = views::testing::draw(app, 100, 30);
+            let (rows, _) = views::testing::layout(app, 100, 30);
+            let body = views::testing::text_in(&buf, rows.body);
+            ["2026-07", "2026-08", "2026-09"]
+                .into_iter()
+                .filter(|month| body.contains(&format!("{month} ·")))
+                .collect::<Vec<_>>()
+        };
+
+        assert_eq!(shown(&mut app), ["2026-09"], "on opening");
+        let mut pressed = Vec::new();
+        for (key, expected) in [
+            (KeyCode::Left, "2026-08"),
+            (KeyCode::Left, "2026-07"),
+            (KeyCode::Left, "2026-07"),
+            (KeyCode::Right, "2026-08"),
+            (KeyCode::Right, "2026-09"),
+            (KeyCode::Right, "2026-09"),
+        ] {
+            page_months(&mut app, key);
+            pressed.push(key);
+            assert_eq!(shown(&mut app), [expected], "after {pressed:?}");
+        }
     }
 
     /// Final review minor, promoted (F-M2): `↓` on the last org and `↑` on

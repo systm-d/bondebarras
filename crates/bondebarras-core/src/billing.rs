@@ -40,9 +40,6 @@ pub struct MinuteLine {
     pub equivalent: u64,
 }
 
-/// Free Actions allowance for an organization, in Linux-equivalent minutes.
-pub const FREE_MINUTES_PER_MONTH: u64 = 2_000;
-
 /// Included Actions minutes per month for an organization's GitHub plan, in
 /// Linux-equivalent minutes — GitHub's own table.
 ///

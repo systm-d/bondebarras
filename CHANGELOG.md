@@ -23,9 +23,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   says how many such rows a press left unticked.
 - **Two per-repository gauges**, at the head of the resources column: Actions
   cache usage against GitHub's documented (but API-unexposed) 10 GiB
-  per-repository ceiling, and Actions minutes against the free monthly
-  allowance — both uncapped past 100 %, since GitHub itself does not clamp
-  there either.
+  per-repository ceiling, and Actions minutes against the allowance of the
+  organization's plan — `formule inconnue`, with no percentage, when the plan
+  cannot be read — both uncapped past 100 %, since GitHub itself does not
+  clamp there either.
 - **Load-after-pause with a per-session cache**: a repository's resources
   load once the cursor rests on it for 300 ms, are kept for the rest of the
   session, and `Entrée` forces an immediate reload, bypassing both the pause
@@ -34,6 +35,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **A progress row**, between the status line and the footer, while a purge,
   an archive, or a repository load runs — a real, counted done/total, never
   an estimate. Several purges running at once share one bar.
+- `scan --json`: `plan` and `minutes_allowance` per organization, `null` when
+  unknown. (#11)
 
 ### Changed
 
@@ -62,6 +65,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   JWT; its default one pulls `rsa` (RUSTSEC-2023-0071, no fix available),
   so bondebarras selects `aws-lc-rs` instead. Precompiled packages are
   unaffected.
+- Billing tab: the minutes gauge measures against the allowance of the
+  organization's current plan — `free` 2,000, `team` 3,000, `enterprise`
+  50,000 — read from `GET /orgs/{org}` at stage 1, instead of the Free plan's
+  2,000 for every organization. Measured on 2026-09-10: exec-d (Team) read
+  50 % for 1,004 minutes where 33 % is right; SecondBrain-io (Enterprise) read
+  901 % for 18,016 where 36 % is right. An unreadable or unknown plan shows
+  the total and `formule inconnue`, with no percentage anywhere. (#11)
+- The Billing tab opens on the report's most recent month, not its oldest:
+  `←` pages back to older months, `→` forward to newer ones. (#11)
 
 ### Fixed
 

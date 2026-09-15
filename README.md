@@ -92,8 +92,9 @@ again by anything.
   cache usage against GitHub's documented (but API-unexposed) 10 GiB
   per-repository ceiling — past 100 % it warns that GitHub is already
   evicting least-recently-read caches to make room — and Actions minutes
-  against the free monthly allowance. Neither is ever clamped at 100 %: a
-  number past the ceiling is real, not an error.
+  against the allowance of the organization's plan (`formule inconnue`, with
+  no percentage, when the plan cannot be read). Neither is ever clamped at
+  100 %: a number past the ceiling is real, not an error.
 - **A progress row** appears between the status line and the footer while a
   purge, an archive, or a repository load is running, with a real, counted
   done/total — never an estimate.
@@ -107,18 +108,26 @@ again by anything.
   merged branches, tags, and release assets — none of them come back once
   deleted) — followed by a background purge with a per-item result. The TUI
   stays responsive throughout.
-- **Billing tab** — per-organization Actions-minutes usage against the free
-  allowance, month by month, with a per-repository breakdown of what is
-  burning it. The gauge counts **private repositories only**: GitHub's usage
-  report discounts a private repo still inside its allowance exactly like a
-  public one, so visibility — not the discount fields — is the only signal
-  that tells them apart, and a public repo's Actions runs are free and
-  unlimited regardless of volume. On the author's own account,
-  `SecondBrain-io`'s `monolith-back` burnt **24,632 private
-  Linux-equivalent minutes in July 2026** — exactly the kind of runaway usage
-  the tab exists to surface, since minutes cannot be reclaimed after the
-  fact. (That org is on a different plan, so no allowance percentage is
-  given here.)
+- **Billing tab** — per-organization Actions-minutes usage against the
+  allowance of the organization's **current plan** (`free` 2,000, `team`
+  3,000, `enterprise` 50,000 minutes a month), month by month, with a
+  per-repository breakdown of what is burning it. The plan comes from
+  `GET /orgs/{org}`, which only tells an owner: when it cannot be read, or
+  names a plan bondebarras has no figure for, the tab shows the total and says
+  `formule inconnue` — **never a percentage against a guessed allowance**.
+  Every month the tab pages through is measured against today's plan, and the
+  tab says so (`quota documenté de la formule actuelle`). On `enterprise`, the
+  allowance belongs to the enterprise account and is shared by its
+  organizations, so the percentage is a minimum. The gauge counts **private
+  repositories only**: GitHub's usage report discounts a private repo still
+  inside its allowance exactly like a public one, so visibility — not the
+  discount fields — is the only signal that tells them apart, and a public
+  repo's Actions runs are free and unlimited regardless of volume. On the
+  author's own account, `SecondBrain-io`'s `monolith-back` burnt **24,632
+  private Linux-equivalent minutes in July 2026** — exactly the kind of
+  runaway usage the tab exists to surface, since minutes cannot be reclaimed
+  after the fact. (That org is on `enterprise`: 49 % of its 50,000 included
+  minutes — a minimum, since that allowance is shared across the enterprise.)
 - **Headless CLI** — `bondebarras scan --json` for a machine-readable
   overview, and `bondebarras clean` for non-interactive cleanup, e.g. from a
   cron job.
@@ -343,6 +352,11 @@ bondebarras clean --org exec-d --repo terminus --assets --older-than 180 --yes
 | `--stale-pr` | Restricts `clean` to resources flagged ⚑ (attached to a closed PR) |
 | `--older-than <days>` | Restricts `clean` to resources at least that old |
 | `--yes` | Confirms without a prompt |
+
+`scan --json` prints one object per organization: `org`, `cache_bytes`,
+`cache_count`, `billing_readable` and `repos`, plus `plan` (the plan name, or
+`null` when it cannot be read) and `minutes_allowance` (that plan's included
+minutes, or `null` — never a default).
 
 **Without `--yes`, `clean` prints the plan and deletes nothing** — the same
 dry-run-by-default rule as the TUI's confirmation modal, just without a

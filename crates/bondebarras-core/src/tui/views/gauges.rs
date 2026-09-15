@@ -1,11 +1,12 @@
 //! Two per-repository gauges: Actions cache usage against GitHub's
 //! documented (but API-unexposed) per-repository ceiling, and Actions
-//! minutes against the free monthly allowance.
+//! minutes against the allowance of the organization's plan
+//! (`billing::included_minutes_for`) — with no percentage when that
+//! allowance is unknown.
 //!
 //! Drawn at the head of the resources column (`tui::views::repo`), for the
 //! repository its resources were loaded from.
 
-use crate::billing::FREE_MINUTES_PER_MONTH;
 use crate::model::human_size;
 use crate::tui::{theme, views};
 use ratatui::style::Style;
@@ -22,18 +23,19 @@ pub const CACHE_CEILING_BYTES: u64 = 10 * 1024 * 1024 * 1024;
 /// `used / ceiling` as a whole percentage.
 ///
 /// A pure `(used, ceiling)` function, not `(used)` alone against a baked-in
-/// constant: the cache ceiling is a compile-time constant today, but the
-/// minutes ceiling already reads from `billing::FREE_MINUTES_PER_MONTH`, and
-/// issue #11 will replace that single source with a per-plan figure that can
-/// legitimately be unknown (ceiling zero).
+/// constant: the cache ceiling is a compile-time constant, but the minutes
+/// ceiling is the org's plan allowance (`billing::included_minutes_for`).
+/// An unknown allowance never reaches here — its gauges show no percentage
+/// at all — yet a zero ceiling still reads 0 %, never a division by zero.
 ///
 /// `pub(crate)`, not private: `views::billing::gauge_line` shares this exact
 /// business rule (an uncapped, zero-guarded percentage) rather than keeping
 /// its own copy of the same formula — the two gauges here and the Billing
 /// tab's gauge would otherwise need to change in lockstep with no single
-/// source of truth. This is also where the module's zero-ceiling test
-/// already lives, so both call sites stay covered by one test rather than
-/// two that could drift apart.
+/// source of truth. Each call site has its own zero-ceiling test:
+/// `gauges::tests::a_zero_ceiling_does_not_divide_by_zero` here, and
+/// `views::billing::tests::a_zero_allowance_does_not_divide_by_zero` through
+/// the Billing tab's gauge.
 pub(crate) fn percent(used: u64, ceiling: u64) -> u64 {
     if ceiling == 0 {
         0
@@ -60,6 +62,10 @@ const EVICTION: &str = "⚠ évince : GitHub supprime déjà les caches les moin
 /// Why a public repository's minutes gauge reads 0 %.
 const PUBLIC_REASON: &str =
     "(dépôt public : minutes Actions gratuites et illimitées, hors plafond)";
+
+/// Why a minutes gauge gives a total and no percentage: no allowance is
+/// known for the org's plan.
+const UNKNOWN_PLAN: &str = "· formule inconnue, pas de quota";
 
 /// The filled portion of a bar, in at most `room` cells.
 ///
@@ -138,17 +144,27 @@ pub fn cache_gauge_line(used: u64, width: u16) -> Vec<Line<'static>> {
     lines
 }
 
-/// Actions minutes against the free monthly allowance
-/// (`billing::FREE_MINUTES_PER_MONTH`), in a column `width` cells wide.
+/// Actions minutes against the allowance of the org's plan
+/// (`billing::included_minutes_for`), in a column `width` cells wide.
 ///
 /// A public repository's Actions runs are free and unlimited — GitHub's own
 /// billing report never even lists them against the allowance (see
 /// `billing::BillingReport::included_minutes`) — so it always reads 0 %, but
 /// with the reason spelled out: a bare 0 % would otherwise read as
 /// comfortable headroom, when it actually means this repository cannot
-/// consume the allowance at all. The reason goes on rows of its own when
-/// the gauge's row cannot hold it, never clipped.
-pub fn minutes_gauge_line(used: u64, is_public: bool, width: u16) -> Vec<Line<'static>> {
+/// consume the allowance at all.
+///
+/// With no known `allowance` — no plan read, or a plan this crate has no
+/// figure for — the total is real and a percentage would be invented, so the
+/// gauge gives the total and says why: the same rule as a package version's
+/// size. Either explanation goes on rows of its own when the gauge's row
+/// cannot hold it, never clipped.
+pub fn minutes_gauge_line(
+    used: u64,
+    is_public: bool,
+    allowance: Option<u64>,
+    width: u16,
+) -> Vec<Line<'static>> {
     if is_public {
         return explained(
             "Minutes    0 %".to_string(),
@@ -157,13 +173,16 @@ pub fn minutes_gauge_line(used: u64, is_public: bool, width: u16) -> Vec<Line<'s
             width,
         );
     }
-    let pct = percent(used, FREE_MINUTES_PER_MONTH);
-    let figures = figures_row(
-        "Minutes ",
-        pct,
-        &format!("{used} / {FREE_MINUTES_PER_MONTH}"),
-        width,
-    );
+    let Some(allowance) = allowance else {
+        return explained(
+            format!("Minutes  {used} min"),
+            theme::muted(),
+            UNKNOWN_PLAN,
+            width,
+        );
+    };
+    let pct = percent(used, allowance);
+    let figures = figures_row("Minutes ", pct, &format!("{used} / {allowance}"), width);
     vec![Line::from(Span::styled(figures, theme::text_style()))]
 }
 
@@ -202,8 +221,23 @@ mod tests {
     fn a_public_repo_reads_zero_with_its_reason() {
         // A bare 0 % would read as comfortable headroom. It means this
         // repository cannot consume the allowance at all.
-        let line = text(&minutes_gauge_line(0, true, 60));
+        let line = text(&minutes_gauge_line(0, true, Some(3_000), 60));
         assert!(line.contains("public"), "got: {line}");
+    }
+
+    #[test]
+    fn minutes_gauge_divides_by_the_plans_allowance() {
+        // exec-d on Team: 1 004 of 3 000. Against the old 2 000, 50 %.
+        let line = text(&minutes_gauge_line(1_004, false, Some(3_000), 60));
+        assert!(line.contains(" 33 %"), "got: {line}");
+        assert!(line.contains("1004 / 3000"), "got: {line}");
+    }
+
+    #[test]
+    fn minutes_gauge_without_a_plan_shows_no_percentage() {
+        let line = text(&minutes_gauge_line(1_004, false, None, 60));
+        assert!(!line.contains('%'), "got: {line}");
+        assert!(line.contains("formule inconnue"), "got: {line}");
     }
 
     /// Amended (2026-09-11, controller): the un-amended version of this test

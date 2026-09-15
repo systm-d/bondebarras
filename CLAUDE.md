@@ -79,6 +79,14 @@ shim).
   `ResourceKind::PackageVersion`; never estimate or extrapolate one. The TUI
   shows `—` instead of formatting that zero, with a header line spelling out
   why — see `tui::views::repo::column_head`.
+- **No allowance, no percentage.** An organization's included Actions
+  minutes come from `billing::included_minutes_for` — `free`, `team`,
+  `enterprise`, nothing else — fed by `OrgSummary.plan`, which GitHub only
+  returns to an owner. An unread or unknown plan yields `None`, and every
+  gauge then shows the total and `formule inconnue`, never a percentage
+  against a guessed figure. `tui::views::gauges::percent` is the crate's
+  only percentage arithmetic, shared by the column-3 gauges and the Billing
+  tab.
 - **A purge's progress messages are tagged with the repository its plan
   concerns, recorded at launch.** `tui::spawn_purge` labels every message it
   forwards on the purge channel with `(plan.owner, plan.repo)`, since
