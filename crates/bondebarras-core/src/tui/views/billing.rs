@@ -31,6 +31,10 @@ const DELETION_DOES_NOT_REFUND: [&str; 2] = [
     "  mais ne rend pas les GB-heures déjà comptées.",
 ];
 
+/// What the storage gauge says for a report with no month at all: no month
+/// means no hour count, hence no quota, but the plan is still known.
+const NO_USAGE: &str = "aucun usage signalé";
+
 /// One line summarising allowance consumption.
 ///
 /// Deliberately not clamped at 100 %: an org well past its included minutes
@@ -292,18 +296,21 @@ fn minutes_block(
 /// deleting can and cannot do about it. No request of its own: the usage
 /// report stage 1 loaded already carries every line.
 fn storage_block(report: &BillingReport, month: &str, plan: Option<&str>) -> Vec<Line<'static>> {
+    let used = report.storage_gbh(month);
+    // An empty month is a report with no usage: its missing quota is for
+    // want of an hour count, and `formule inconnue` would contradict the
+    // header naming the plan.
+    let gauge = if month.is_empty() {
+        format!("{used:.2} GB-h   {NO_USAGE}")
+    } else {
+        storage_gauge_line(used, billing::storage_quota(plan, month))
+    };
     let mut lines = vec![
         Line::from(Span::styled(
             "Stockage Actions · GB-heures, dépôts publics compris",
             theme::text_style(),
         )),
-        Line::from(Span::styled(
-            storage_gauge_line(
-                report.storage_gbh(month),
-                billing::storage_quota(plan, month),
-            ),
-            theme::text_style(),
-        )),
+        Line::from(Span::styled(gauge, theme::text_style())),
     ];
     lines.extend(breakdown(
         &report.storage_lines(month),
@@ -891,6 +898,26 @@ mod tests {
         });
         let mut app = billing_app(org);
         assert_shown_at_every_size(&mut app, "0.00 / 1 440 GB-h");
+        assert_absent_at_every_width(&mut app, "-0");
+    }
+
+    /// A readable report with no usage at all has no month, so no hour count
+    /// and no storage quota — but the plan is known, and the header names it.
+    /// The gauge must not claim `formule inconnue` under `formule team`.
+    #[test]
+    fn the_storage_block_says_no_usage_without_a_month() {
+        let mut org = exec_d_september();
+        org.plan = Some("team".into());
+        org.billing = Some(BillingReport { items: Vec::new() });
+        let mut app = billing_app(org);
+        // Positive anchors: the readable tab and its storage block are drawn.
+        assert_shown_at_every_size(&mut app, "exec-d · formule team");
+        assert_shown_at_every_size(
+            &mut app,
+            "Stockage Actions · GB-heures, dépôts publics compris",
+        );
+        assert_shown_at_every_size(&mut app, "0.00 GB-h   aucun usage signalé");
+        assert_absent_at_every_width(&mut app, "formule inconnue");
         assert_absent_at_every_width(&mut app, "-0");
     }
 
