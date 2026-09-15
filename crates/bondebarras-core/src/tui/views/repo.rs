@@ -291,8 +291,13 @@ fn spans_with_label(r: &Resource, checked: bool, label: String) -> Vec<Span<'sta
 /// are empty", which is the opposite of the truth.
 const SIZELESS_WARNING: &str = "⚠ GitHub n'expose pas la taille de certaines ressources";
 
-/// The resources column's title: the column's name, then item count and
-/// byte tally, plus `SIZELESS_WARNING` when `with_warning` is true.
+/// The resources column's title: the column's name, then the item count
+/// and the size of the ticked rows (`App::selection_bytes`) — what `d` would
+/// free — plus `SIZELESS_WARNING` when `with_warning` is true.
+///
+/// Smoke S3: that size stood bare, and `353 éléments · 0 o` over caches of
+/// about 400 Mo each read as a listing weighing nothing. It says what it
+/// counts: `cochés 0 o`.
 ///
 /// Debt 2 of the v0.4 final review: the warning used to hang on
 /// `has_packages`, fed by `render`'s own `kind ==
@@ -300,13 +305,25 @@ const SIZELESS_WARNING: &str = "⚠ GitHub n'expose pas la taille de certaines r
 /// were branches or tags carried the same `—` markers with no banner to
 /// explain them. Generalised to whatever `has_known_size` calls sizeless,
 /// the one place that already enumerates every such kind.
-fn list_title(count: usize, bytes: u64, with_warning: bool) -> String {
-    let size = human_size(bytes);
+fn list_title(count: usize, ticked_bytes: u64, with_warning: bool) -> String {
+    let ticked = human_size(ticked_bytes);
     if with_warning {
-        format!(" RESSOURCES · {count} éléments · {size} · {SIZELESS_WARNING} ")
+        format!(" RESSOURCES · {count} éléments · cochés {ticked} · {SIZELESS_WARNING} ")
     } else {
-        format!(" RESSOURCES · {count} éléments · {size} ")
+        format!(" RESSOURCES · {count} éléments · cochés {ticked} ")
     }
+}
+
+/// `list_title` without the word `éléments` nor the warning, for a column
+/// too narrow for the whole title: its border clips from the right, and the
+/// ticked size — the figure that matters before `d` — would go first. This
+/// one takes 33 cells and the count's digits, so the column's narrowest
+/// inside, 38 cells, holds it for up to 99 999 rows.
+fn compact_title(count: usize, ticked_bytes: u64) -> String {
+    format!(
+        " RESSOURCES · {count} · cochés {} ",
+        human_size(ticked_bytes)
+    )
 }
 
 /// The column's title, and the lines to draw at the head of the column when
@@ -317,7 +334,9 @@ fn list_title(count: usize, bytes: u64, with_warning: bool) -> String {
 /// whatever overflows it from the right — the warning, its last part, is
 /// what went. So the warning rides in the title only when the whole title
 /// fits; otherwise the title drops it and it becomes lines of its own inside
-/// the column, broken at spaces (`wrap_words`) so every word stays on screen.
+/// the column, broken at spaces (`views::wrap_words`) so every word stays on
+/// screen. A title still too wide without it drops `éléments` too
+/// (`compact_title`), so the ticked size is never the part clipped.
 fn column_head(
     count: usize,
     bytes: u64,
@@ -325,15 +344,25 @@ fn column_head(
     room: u16,
 ) -> (String, Vec<Line<'static>>) {
     let room = usize::from(room);
-    let title = list_title(count, bytes, has_sizeless);
-    if !has_sizeless || views::cells(&title) <= room {
-        return (title, Vec::new());
+    let with_warning = list_title(count, bytes, true);
+    if has_sizeless && views::cells(&with_warning) <= room {
+        return (with_warning, Vec::new());
     }
-    let lines = views::wrap_words(SIZELESS_WARNING, room)
-        .into_iter()
-        .map(|line| Line::from(Span::styled(line, theme::status_warn())))
-        .collect();
-    (list_title(count, bytes, false), lines)
+    let full = list_title(count, bytes, false);
+    let title = if views::cells(&full) <= room {
+        full
+    } else {
+        compact_title(count, bytes)
+    };
+    let lines = if has_sizeless {
+        views::wrap_words(SIZELESS_WARNING, room)
+            .into_iter()
+            .map(|line| Line::from(Span::styled(line, theme::status_warn())))
+            .collect()
+    } else {
+        Vec::new()
+    };
+    (title, lines)
 }
 
 /// Actions minutes this repository burnt in the most recent month its org's
@@ -1591,6 +1620,54 @@ mod tests {
                         "the size explanation is cut {at}"
                     );
                 }
+            }
+        }
+    }
+
+    /// Smoke S3: the title read `RESSOURCES · 353 éléments · 0 o` over caches
+    /// of about 400 Mo each. That figure is the size of the ticked rows
+    /// (`App::selection_bytes`) — what `d` would free — not the listing's
+    /// total, and unlabelled it read as "these 353 rows weigh nothing".
+    ///
+    /// Swept over every width from 60 to 200 on the resources column's real
+    /// rect, with sized caches, nothing ticked and then the biggest ticked:
+    /// the title's row names the figure as what is ticked, whole — `cochés
+    /// 0 o`, then `cochés 467.0 Mo` — and never shows a bare `éléments · 0 o`.
+    #[test]
+    fn the_title_says_its_size_is_the_ticked_rows_across_swept_widths() {
+        let mut app = App::new(vec![]);
+        app.resources = vec![
+            Resource {
+                id: 1,
+                size_bytes: 467_000_000,
+                ..res(false)
+            },
+            Resource {
+                id: 2,
+                size_bytes: 12_000_000,
+                ..res(false)
+            },
+        ];
+        for width in 60..=200u16 {
+            for (ticked, figure, bare) in [
+                (false, "cochés 0 o", "éléments · 0 o"),
+                (true, "cochés 467.0 Mo", "éléments · 467.0 Mo"),
+            ] {
+                app.selected.clear();
+                if ticked {
+                    app.selected.insert((ResourceKind::Cache, 1));
+                }
+                let (_, column) =
+                    views::testing::focused_column(&mut app, Focus::Resources, width, 12);
+                let title = column.lines().next().unwrap_or_default();
+                assert!(
+                    title.contains("RESSOURCES") && title.contains(figure),
+                    "the title does not say {figure:?} whole at width {width}: {title:?}"
+                );
+                assert!(
+                    !title.contains(bare),
+                    "the title shows an unlabelled size at width {width}: {title:?}"
+                );
             }
         }
     }
