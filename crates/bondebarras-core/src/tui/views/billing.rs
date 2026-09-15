@@ -31,8 +31,8 @@ const DELETION_DOES_NOT_REFUND: [&str; 2] = [
     "  mais ne rend pas les GB-heures déjà comptées.",
 ];
 
-/// What the storage gauge says for a report with no month at all: no month
-/// means no hour count, hence no quota, but the plan is still known.
+/// What the storage gauge says for a report with no month at all: without a
+/// month there is no hour count to build a quota from, whatever the plan.
 const NO_USAGE: &str = "aucun usage signalé";
 
 /// One line summarising allowance consumption.
@@ -60,7 +60,18 @@ pub fn gauge_line(used: u64, allowance: Option<u64>) -> String {
 
 /// The gauge's bar: one cell per 10 %, at most 20 so overshoot stays legible.
 fn bar(percent: u64) -> String {
-    "█".repeat((percent as usize / 10).min(20))
+    capped_bar(percent, 20)
+}
+
+/// Widest the storage gauge's bar gets, in cells — half the minutes bar.
+/// The storage line also carries the hour base, which must stay whole in a
+/// 60-column frame however far past 100 % the organization is: a clipped
+/// `base 72` would be a wrong figure.
+const STORAGE_BAR_CELLS: usize = 10;
+
+/// One cell per 10 %, at most `cells`.
+fn capped_bar(percent: u64, cells: usize) -> String {
+    "█".repeat((percent as usize / 10).min(cells))
 }
 
 /// A storage figure in hundredths of a GB-hour — the usage report's own
@@ -88,7 +99,7 @@ pub fn storage_gauge_line(used: f64, quota: Option<StorageQuota>) -> String {
     format!(
         "{used:.2} / {} GB-h   {}  {} %   base {} h",
         thousands(quota.gbh.round() as u64),
-        bar(percent),
+        capped_bar(percent, STORAGE_BAR_CELLS),
         percent,
         quota.hours
     )
@@ -139,11 +150,14 @@ fn minute_line_row(line: &MinuteLine) -> Line<'static> {
 }
 
 /// One row of the storage breakdown: the repository, cut to its 20 cells so
-/// the GB-hours keep their column, then its GB-hours.
+/// the GB-hours keep their column, a space, then its GB-hours right-aligned
+/// on 13 cells (room for `99999.99 GB-h`). The space is written out rather
+/// than left to the padding: a figure as wide as its field has none, and a
+/// cut name would run into it.
 fn storage_line_row(line: &StorageLine) -> Line<'static> {
     let amount = format!("{:.2} GB-h", line.gbh);
     Line::from(Span::styled(
-        format!("   {}{amount:>12}", views::fit(&line.repo, 20)),
+        format!("   {} {amount:>13}", views::fit(&line.repo, 20)),
         theme::muted(),
     ))
 }
@@ -297,9 +311,9 @@ fn minutes_block(
 /// report stage 1 loaded already carries every line.
 fn storage_block(report: &BillingReport, month: &str, plan: Option<&str>) -> Vec<Line<'static>> {
     let used = report.storage_gbh(month);
-    // An empty month is a report with no usage: its missing quota is for
-    // want of an hour count, and `formule inconnue` would contradict the
-    // header naming the plan.
+    // An empty month is a report with no usage: the quota is missing for
+    // want of an hour count, whatever the plan, so `formule inconnue` would
+    // give the wrong reason.
     let gauge = if month.is_empty() {
         format!("{used:.2} GB-h   {NO_USAGE}")
     } else {
@@ -936,7 +950,71 @@ mod tests {
             .collect()
         };
         let long = text("ptitjardinier-app-monorepo");
-        assert_eq!(long, "   ptitjardinier-app-m… 359.88 GB-h");
+        assert_eq!(long, "   ptitjardinier-app-m…   359.88 GB-h");
         assert_eq!(long.chars().count(), text("disconnected").chars().count());
+    }
+
+    /// An org whose only usage is `gbh` GB-hours of Actions storage in
+    /// September, on `plan`.
+    fn storage_only(plan: &str, gbh: f64) -> OrgSummary {
+        let mut org = exec_d_september();
+        org.plan = Some(plan.into());
+        org.billing = Some(BillingReport {
+            items: vec![usage(
+                "2026-09",
+                "Actions storage",
+                "GigabyteHours",
+                gbh,
+                0.0,
+                "disconnected",
+            )],
+        });
+        org
+    }
+
+    /// Past 100 % the bar grows, and a 20-cell bar pushed the hour base off a
+    /// 60-column frame: `base 72` is a wrong figure, in exactly the case the
+    /// tab exists for. Each org overshoots its own plan's quota, and each
+    /// line would pass 58 cells with a 20-cell bar (63, 60 and 62).
+    #[test]
+    fn the_storage_gauge_keeps_its_hour_base_whole_past_its_quota() {
+        // Team: 2 880 of 2 GB × 720 h.
+        let mut app = billing_app(storage_only("team", 2_880.0));
+        assert_shown_at_every_size(&mut app, "200 %   base 720 h");
+        // Enterprise: 54 000 of 50 GB × 720 h.
+        let mut app = billing_app(storage_only("enterprise", 54_000.0));
+        assert_shown_at_every_size(&mut app, "150 %   base 720 h");
+        // Free: 3 612.34 of 0.5 GB × 720 h, a four-digit used figure.
+        let mut app = billing_app(storage_only("free", 3_612.34));
+        assert_shown_at_every_size(&mut app, "1003 %   base 720 h");
+    }
+
+    /// The no-usage wording is for an empty month only. A month with usage
+    /// and no known plan keeps `formule inconnue` on the storage line itself;
+    /// the minutes line says it too, so the needle is the storage text whole.
+    #[test]
+    fn the_storage_block_keeps_formule_inconnue_for_a_month_with_usage() {
+        let mut app = billing_app(exec_d_september());
+        assert_shown_at_every_size(&mut app, "371.85 GB-h   formule inconnue, pas de quota");
+        assert_absent_at_every_width(&mut app, NO_USAGE);
+    }
+
+    /// A name cut to its 20 cells beside a five-digit figure: one space still
+    /// parts them, or the row reads as a single word.
+    #[test]
+    fn the_storage_block_parts_a_cut_name_from_a_five_digit_figure() {
+        let mut org = exec_d_september();
+        org.billing = Some(BillingReport {
+            items: vec![usage(
+                "2026-09",
+                "Actions storage",
+                "GigabyteHours",
+                12_345.67,
+                0.0,
+                "ptitjardinier-app-monorepo",
+            )],
+        });
+        let mut app = billing_app(org);
+        assert_shown_at_every_size(&mut app, "ptitjardinier-app-m… 12345.67 GB-h");
     }
 }
