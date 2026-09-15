@@ -167,6 +167,13 @@ pub struct App {
     pub repo_state: ListState,
     /// Persistent cursor state for the resources column. Same reason.
     pub res_state: ListState,
+    /// Whether the last frame had too few lines to draw one row of the
+    /// resources list — written by `tui::views::repo::render`, the one place
+    /// that knows. While it is, the list keys and `d` do nothing from the
+    /// resources column (`tui::column_action`, `tui::plan_for_d`): they would
+    /// act on rows no frame showed. Final review I2 — ruling A's hidden list,
+    /// by height rather than width.
+    pub(crate) resources_too_short: bool,
     /// The org a running purge belongs to, for the post-purge cache refresh.
     /// The user can navigate away while it runs — purges execute on a
     /// spawned task while the event loop keeps handling keys — so `loaded`
@@ -287,6 +294,7 @@ impl App {
             org_state: ListState::default(),
             repo_state: ListState::default(),
             res_state: ListState::default(),
+            resources_too_short: false,
             purging_org: None,
             view: View::Orgs,
             month_cursor: 0,

@@ -382,32 +382,67 @@ fn repo_minutes_used(org: &crate::model::OrgSummary, repo_name: &str) -> u64 {
 
 /// The two gauges for the repository whose resources this column currently
 /// shows (`app.loaded`, not wherever the repos cursor has since wandered —
-/// same reasoning as `App::take_plan`). Empty before anything has loaded, or
-/// if the loaded repository has since left its org's list (an org refresh,
-/// say): there is nothing to gauge yet.
-fn repo_gauge_lines(app: &App, width: u16) -> Vec<Line<'static>> {
+/// same reasoning as `App::take_plan`), as `(cache, minutes)`: two parts of
+/// the column's head, each whole or absent (`head_within`). Both empty
+/// before anything has loaded, or if the loaded repository has since left
+/// its org's list (an org refresh, say): there is nothing to gauge yet.
+fn repo_gauges(app: &App, width: u16) -> (Vec<Line<'static>>, Vec<Line<'static>>) {
     let Some((org_login, repo_name)) = app.loaded.as_ref() else {
-        return Vec::new();
+        return (Vec::new(), Vec::new());
     };
     let Some(org) = app.orgs.iter().find(|o| &o.login == org_login) else {
-        return Vec::new();
+        return (Vec::new(), Vec::new());
     };
     let Some(repo) = org.repos.iter().find(|r| &r.name == repo_name) else {
-        return Vec::new();
+        return (Vec::new(), Vec::new());
     };
 
-    let mut lines = gauges::cache_gauge_line(repo.cache_bytes, width);
+    let cache = gauges::cache_gauge_line(repo.cache_bytes, width);
     let minutes_used = if repo.private {
         repo_minutes_used(org, &repo.name)
     } else {
         0
     };
-    lines.extend(gauges::minutes_gauge_line(
-        minutes_used,
-        !repo.private,
-        width,
-    ));
-    lines
+    let minutes = gauges::minutes_gauge_line(minutes_used, !repo.private, width);
+    (cache, minutes)
+}
+
+/// In place of the list when the column has too few lines for one of its
+/// rows (final review I2).
+const TOO_SHORT: &str = "(fenêtre trop basse)";
+
+/// The column's title when it has no line inside its borders at all, for
+/// `TOO_SHORT` to stand in on.
+const TOO_SHORT_TITLE: &str = " RESSOURCES · fenêtre trop basse ";
+
+/// One part of the column's head: its lines, and how late it yields them.
+struct HeadPart {
+    lines: Vec<Line<'static>>,
+    /// The part with the lowest rank yields first.
+    rank: u8,
+}
+
+/// The column's head within `budget` lines: its parts in the order given,
+/// each whole or absent, the lowest-ranked dropped first until the rest
+/// fits.
+///
+/// A part is never cut — ruling B for the size explanation, and the same
+/// for a gauge (spec §5: its caveat, its warning, its reason) and for the
+/// repository's name. A lower part never stays while a higher one went.
+fn head_within(mut parts: Vec<HeadPart>, budget: usize) -> Vec<Line<'static>> {
+    let lines = |parts: &[HeadPart]| parts.iter().map(|p| p.lines.len()).sum::<usize>();
+    while lines(&parts) > budget {
+        let Some(lowest) = parts
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, p)| p.rank)
+            .map(|(i, _)| i)
+        else {
+            break;
+        };
+        parts.remove(lowest);
+    }
+    parts.into_iter().flat_map(|p| p.lines).collect()
 }
 
 /// Renders the resources column: its block, at its head the name of the
@@ -418,6 +453,16 @@ fn repo_gauge_lines(app: &App, width: u16) -> Vec<Line<'static>> {
 /// 69-cache repo, an 80x24 terminal only fits about 19 rows without this —
 /// the plain `render_widget` used before left most of them unreachable.
 ///
+/// The list comes first (final review I2): the head takes only the lines
+/// left once the list has room for its tallest row — a package version's
+/// row takes two, and ratatui draws nothing of a row taller than its area.
+/// When the height runs short the head yields whole parts, lowest first: the
+/// minutes gauge, then the cache gauge, then the size explanation, then the
+/// repository's name (`head_within`). With too few lines for even one row,
+/// the column draws no list and says so (`TOO_SHORT`), and records it in
+/// `App::resources_too_short`, which keeps the list keys and `d` from acting
+/// on rows no frame shows.
+///
 /// While that repository's listing is on its way, or failed, the column
 /// draws no list, no count and no gauge: `tui::views::shown` says which.
 pub fn render(app: &mut App, f: &mut Frame, area: Rect) {
@@ -425,36 +470,67 @@ pub fn render(app: &mut App, f: &mut Frame, area: Rect) {
     let shown = app.shown();
     let listing = shown.draws_resources();
 
-    // Everything below until `app.res_state` reads `app` through shared
-    // borrows only; the items own their strings (`ListItem<'static>`), so
-    // those borrows end once the items are built.
+    // The column's inside: the title does not change it.
+    let inner = views::column_block("", focused).inner(area);
+
+    // Everything below until `app.resources_too_short` reads `app` through
+    // shared borrows only; the rows own their strings (`Line<'static>`), so
+    // those borrows end once the rows are built.
     let visible = if listing {
         app.visible_resources()
     } else {
         Vec::new()
     };
     let has_sizeless = visible.iter().any(|r| !r.kind.has_known_size());
+    let label_width = label_width_in(inner.width);
+    let rows: Vec<Vec<Line<'static>>> = visible
+        .iter()
+        .map(|r| row_lines(r, app.selected.contains(&(r.kind, r.id)), label_width))
+        .collect();
+    let tallest = rows.iter().map(Vec::len).max().unwrap_or(1);
     // The title's room is the top border between its two corners.
     let (title, warning_lines) = if listing {
         column_head(
             visible.len(),
             app.selection_bytes(),
             has_sizeless,
-            area.width.saturating_sub(2),
+            inner.width,
         )
     } else {
         (views::shown::BARE_TITLE.to_string(), Vec::new())
     };
+    let head = if listing {
+        let (cache, minutes) = repo_gauges(app, inner.width);
+        let part = |lines, rank| HeadPart { lines, rank };
+        head_within(
+            vec![
+                part(views::shown::head_lines(&shown, inner.width), 3),
+                part(cache, 1),
+                part(minutes, 0),
+                part(warning_lines, 2),
+            ],
+            usize::from(inner.height).saturating_sub(tallest),
+        )
+    } else {
+        views::shown::head_lines(&shown, inner.width)
+    };
 
-    let block = views::column_block(title, focused);
-    let inner = block.inner(area);
-    f.render_widget(block, area);
-
-    let mut head = views::shown::head_lines(&shown, inner.width);
-    if listing {
-        head.extend(repo_gauge_lines(app, inner.width));
+    let too_short = listing && usize::from(inner.height) < tallest;
+    app.resources_too_short = too_short;
+    let title = if too_short && inner.height == 0 {
+        TOO_SHORT_TITLE.to_string()
+    } else {
+        title
+    };
+    f.render_widget(views::column_block(title, focused), area);
+    if too_short {
+        f.render_widget(
+            Paragraph::new(Span::styled(TOO_SHORT, theme::muted())),
+            inner,
+        );
+        return;
     }
-    head.extend(warning_lines);
+
     let list_area = if head.is_empty() {
         inner
     } else {
@@ -465,14 +541,7 @@ pub fn render(app: &mut App, f: &mut Frame, area: Rect) {
         list_area
     };
 
-    let label_width = label_width_in(list_area.width);
-    let items: Vec<ListItem<'static>> = visible
-        .into_iter()
-        .map(|r| {
-            let checked = app.selected.contains(&(r.kind, r.id));
-            ListItem::new(row_lines(r, checked, label_width))
-        })
-        .collect();
+    let items: Vec<ListItem<'static>> = rows.into_iter().map(ListItem::new).collect();
 
     app.res_state.select(if items.is_empty() {
         None

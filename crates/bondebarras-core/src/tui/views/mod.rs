@@ -314,6 +314,9 @@ pub fn render(app: &mut App, f: &mut Frame, pending: Option<&Plan>) {
         rows.header,
     );
 
+    // Written again by `repo::render` whenever the resources column is drawn;
+    // a frame without that column shows no list to be too short for.
+    app.resources_too_short = false;
     match columns {
         Some(columns) => {
             if let Some(area) = columns.orgs {

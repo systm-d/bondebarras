@@ -521,8 +521,15 @@ fn request_quit(app: &mut App) {
 /// In a terminal `A` is Shift+a: spec §4.2's "Maj+A" is no keystroke of its
 /// own. So `[A]` keeps its key and its narrower meaning, and the • level
 /// takes a key of its own, `V`, rather than widening the one `A` has been.
+///
+/// None of them acts from the resources column while the last frame drew no
+/// row of its list (`App::resources_too_short`) — the same hidden list, by
+/// height: a terminal a dozen lines high left the column's head every line,
+/// and `A` ticked rows nobody saw (final review I2). The column says the
+/// window is too short instead.
 fn column_action(app: &mut App, code: KeyCode) {
     match (app.focus, code) {
+        (Focus::Resources, _) if app.resources_too_short => {}
         (Focus::Resources, KeyCode::Char(' ')) => app.toggle_selected(),
         (Focus::Resources, KeyCode::Char('A')) => app.select_safe(),
         (Focus::Resources, KeyCode::Char('V')) => app.select_safe_and_check(),
@@ -538,9 +545,16 @@ fn column_action(app: &mut App, code: KeyCode) {
 /// column, the ticked repository from the repos column, nothing from the
 /// orgs column — and none when it holds nothing to do.
 ///
+/// None either from the resources column while the last frame drew no row of
+/// its list (`App::resources_too_short`): Tier 1's bare confirmation does not
+/// list its items, and none would be on screen (final review I2).
+///
 /// Split out of `event_loop` so what `d` opens can be asserted on without a
 /// terminal.
 fn plan_for_d(app: &App) -> Option<Plan> {
+    if app.focus == Focus::Resources && app.resources_too_short {
+        return None;
+    }
     app.take_focused_plan()
         .filter(|plan| !plan.items.is_empty())
 }
@@ -782,6 +796,197 @@ mod tests {
         app.focus = Focus::Resources;
         let plan = plan_for_d(&app).expect("d confirms the ticked resource");
         assert_eq!(plan.items.iter().map(|r| r.id).collect::<Vec<_>>(), vec![3]);
+    }
+
+    /// The final review's I2 probe as a fixture: a repository whose name
+    /// (`SecondBrain-organisation/claudine-landing-positioning`) takes two
+    /// lines of a narrow resources column, private and over its cache
+    /// ceiling — both gauges, and the eviction warning — with sizeless rows
+    /// whose explanation leaves the title, and package versions whose class
+    /// takes a second line of their list item. Loaded, focus on the
+    /// resources. The biggest row, under the cursor, is a ⛑ cache: `espace`,
+    /// `A` and `V` each tick something whenever they act.
+    fn app_with_a_tall_resources_head() -> App {
+        const ORG: &str = "SecondBrain-organisation";
+        const REPO: &str = "claudine-landing-positioning";
+        let report = crate::billing::BillingReport {
+            items: vec![crate::billing::UsageItem {
+                month: "2026-07".into(),
+                product: "actions".into(),
+                sku: "Actions Linux".into(),
+                quantity: 1_000.0,
+                unit_type: "Minutes".into(),
+                gross: 6.0,
+                discount: 0.0,
+                net: 6.0,
+                repo: REPO.into(),
+            }],
+        };
+        let mut app = App::new(vec![crate::model::OrgSummary {
+            login: ORG.into(),
+            cache_bytes: 12_360_000_000,
+            cache_count: 2,
+            repos: vec![crate::model::RepoSummary {
+                name: REPO.into(),
+                cache_bytes: 12_360_000_000,
+                cache_count: 2,
+                private: true,
+                age_days: 5,
+                class: crate::repos::RepoClass::Archivable,
+            }],
+            billing: Some(report),
+        }]);
+        app.loaded = Some((ORG.into(), REPO.into()));
+        let cache = |id: u64, size_bytes: u64, safety: Safety| crate::model::Resource {
+            kind: ResourceKind::Cache,
+            id,
+            label: format!("v0-rust-coverage-Linux-x64-{id}"),
+            size_bytes,
+            age_days: 40,
+            git_ref: Some("refs/heads/feature/x".into()),
+            stale_pr: false,
+            protected: false,
+            branch_class: None,
+            safety,
+        };
+        let version = |id: u64, digest: &str, class| {
+            let v = crate::packages::PackageVersion {
+                id,
+                digest: digest.into(),
+                tags: vec![],
+                age_days: 5,
+            };
+            crate::model::Resource {
+                kind: ResourceKind::PackageVersion,
+                id,
+                label: crate::scan::version_label(&v, class),
+                size_bytes: 0,
+                age_days: 5,
+                git_ref: None,
+                stale_pr: false,
+                protected: false,
+                branch_class: None,
+                safety: Safety::Safe,
+            }
+        };
+        app.resources = vec![
+            cache(1, 467_000_000, Safety::Safe),
+            cache(2, 12_000_000, Safety::Check),
+            version(
+                3,
+                "sha256:9a26c70801010123223adb5e73ff703aca86c15e19b30124ede5628a1e185826",
+                crate::packages::VersionClass::Untagged,
+            ),
+            version(
+                4,
+                "sha256:1d7018e5672547cced06883706367832e5f1be5fa90bc2038ad308e19958e80e",
+                crate::packages::VersionClass::OrphanedAttestation,
+            ),
+        ];
+        app.focus = Focus::Resources;
+        app
+    }
+
+    /// Final review I2: the resources column's head — the repository's name,
+    /// the gauges, the size explanation — took every line it wanted and left
+    /// the list the rest, down to none. At 80×12 `A` ticked rows no frame
+    /// showed and `d` built a plan of them: ruling A's defect, by height.
+    ///
+    /// Swept over every height from 3 to 40 at several widths, with and
+    /// without a progress row, each key pressed on a fresh app after a real
+    /// frame, read off the resources column's real rect: `espace`, `A`, `V`,
+    /// `f`, `s` and `d` act exactly when a row of the list is on screen —
+    /// never without one, and not refused while one shows — and a column
+    /// with no row says the window is too short. Every failing size is
+    /// collected, so the output names each one.
+    ///
+    /// Under both the size sort, a one-line cache under the cursor, and the
+    /// name sort, a package version whose class takes its item's second line:
+    /// ratatui draws nothing of a row taller than the list's area, so one
+    /// line left for the list is not a row on screen.
+    #[test]
+    fn list_keys_act_only_while_a_row_of_the_resource_list_is_on_screen() {
+        use std::collections::BTreeMap;
+        let mut failures: BTreeMap<(String, u16, bool, String), Vec<u16>> = BTreeMap::new();
+        let rows_shown = |column: &str| column.contains("[ ]") || column.contains("[x]");
+
+        for (bar, sort) in [
+            (false, SortKey::Size),
+            (true, SortKey::Size),
+            (false, SortKey::Name),
+            (true, SortKey::Name),
+        ] {
+            for width in [60u16, 78, 80, 100, 120, 160, 200] {
+                for height in 3u16..=40 {
+                    let fresh = |tick: bool| {
+                        let mut app = app_with_a_tall_resources_head();
+                        app.sort = sort;
+                        if bar {
+                            app.purge = Some(views::progress::Work::new("suppression", 4));
+                        }
+                        if tick {
+                            app.selected.insert((ResourceKind::Cache, 1));
+                        }
+                        let buf = views::testing::draw(&mut app, width, height);
+                        let (_, columns) = views::testing::layout(&app, width, height);
+                        let rect = columns.resources.expect("the focused column is on screen");
+                        let column = views::testing::text_in(&buf, rect);
+                        (app, rect, column)
+                    };
+                    let mut fail = |what: &str| {
+                        failures
+                            .entry((what.to_string(), width, bar, format!("{sort:?}")))
+                            .or_default()
+                            .push(height);
+                    };
+
+                    let (_, rect, column) = fresh(false);
+                    let shown = rows_shown(&column);
+                    if !shown && rect.height >= 1 && !column.contains("fenêtre trop basse") {
+                        fail("no row, and no stand-in saying the window is too short");
+                    }
+
+                    for key in [' ', 'A', 'V', 'f', 's'] {
+                        let (mut app, _, _) = fresh(false);
+                        column_action(&mut app, KeyCode::Char(key));
+                        let acted = match key {
+                            'f' => app.filter_mode,
+                            's' => app.sort != sort,
+                            _ => !app.selected.is_empty(),
+                        };
+                        if acted && !shown {
+                            fail(&format!("[{key}] acted with no row on screen"));
+                        }
+                        if !acted && shown {
+                            fail(&format!("[{key}] refused while a row is on screen"));
+                        }
+                    }
+
+                    let (app, _, column) = fresh(true);
+                    let planned = plan_for_d(&app).is_some();
+                    let shown = rows_shown(&column);
+                    if planned && !shown {
+                        fail("[d] built a plan with no row on screen");
+                    }
+                    if !planned && shown {
+                        fail("[d] refused while a row is on screen");
+                    }
+                }
+            }
+        }
+
+        assert!(
+            failures.is_empty(),
+            "{}",
+            failures
+                .iter()
+                .map(|((what, width, bar, sort), heights)| format!(
+                    "{what} — width {width}, sort {sort}{}, heights {heights:?}",
+                    if *bar { ", progress row" } else { "" }
+                ))
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
     }
 
     #[test]
