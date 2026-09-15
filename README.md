@@ -159,7 +159,8 @@ stays available one row at a time regardless of level.
 
 ### From source
 
-Rust ≥ 1.88 required.
+Rust ≥ 1.88 and a C compiler (gcc, clang, or MSVC's) required — the
+`aws-lc-rs` crypto backend builds a C library.
 
 ```sh
 git clone https://github.com/systm-d/bondebarras

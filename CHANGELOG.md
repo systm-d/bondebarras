@@ -57,6 +57,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   column deletes, the repositories column archives the ticked repository).
   A key that used to reach the resource list from any pane no longer does,
   even when that list is off screen at a narrow width.
+- Building from source now needs a C compiler alongside Rust. octocrab
+  0.54 requires a JWT crypto backend even though bondebarras never signs a
+  JWT; its default one pulls `rsa` (RUSTSEC-2023-0071, no fix available),
+  so bondebarras selects `aws-lc-rs` instead. Precompiled packages are
+  unaffected.
 
 ## [0.5.0] - 2026-07-29
 
