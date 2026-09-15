@@ -22,6 +22,9 @@ allow = [
     "Zlib",
     "MPL-2.0",
     "CC0-1.0",
+    # webpki-roots 1.x (Mozilla root certificates, pulled in by ureq): the CA data
+    # is published under this permissive data licence.
+    "CDLA-Permissive-2.0",
 ]
 confidence-threshold = 0.9
 
