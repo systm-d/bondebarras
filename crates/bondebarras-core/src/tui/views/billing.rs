@@ -80,6 +80,26 @@ fn minute_line_row(line: &MinuteLine) -> Line<'static> {
     ))
 }
 
+/// A usage-report amount, in the report's own currency.
+///
+/// `grossAmount`, `discountAmount` and `netAmount` are US dollars:
+/// `pricePerUnit` is 0.006 for `Actions Linux`, GitHub's published
+/// per-minute dollar rate. Suffixed like the `€` this replaces, never
+/// converted — this crate has no exchange rate and must not invent one.
+fn usd(amount: f64) -> String {
+    format!("{amount:.2} $")
+}
+
+/// The month's cost line: gross, covered by the allowance, actually billed.
+fn cost_line(gross: f64, covered: f64, billed: f64) -> String {
+    format!(
+        "Coûts   brut {}   couvert {}   facturé {}",
+        usd(gross),
+        usd(covered),
+        usd(billed)
+    )
+}
+
 pub fn render(app: &mut App, f: &mut Frame, area: Rect) {
     let Some(org) = app.orgs.get(app.org_cursor) else {
         f.render_widget(
@@ -158,9 +178,7 @@ pub fn render(app: &mut App, f: &mut Frame, area: Rect) {
             let (gross, covered, billed) = report.cost(&month);
             lines.push(Line::from(""));
             lines.push(Line::from(Span::styled(
-                format!(
-                    "Coûts   brut {gross:.2} €   couvert {covered:.2} €   facturé {billed:.2} €"
-                ),
+                cost_line(gross, covered, billed),
                 if billed > 0.0 {
                     theme::status_warn()
                 } else {
@@ -191,6 +209,152 @@ pub fn render(app: &mut App, f: &mut Frame, area: Rect) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::billing::{BillingReport, UsageItem};
+    use crate::model::{OrgSummary, RepoSummary};
+    use crate::tui::app::View;
+
+    /// One usage-report line with its unit spelled out: minutes and storage
+    /// share the report, and later tests need both. Fully discounted, as
+    /// exec-d's September report was.
+    fn usage(
+        month: &str,
+        sku: &str,
+        unit: &str,
+        quantity: f64,
+        gross: f64,
+        repo: &str,
+    ) -> UsageItem {
+        UsageItem {
+            month: month.into(),
+            product: "actions".into(),
+            sku: sku.into(),
+            quantity,
+            unit_type: unit.into(),
+            gross,
+            discount: gross,
+            net: 0.0,
+            repo: repo.into(),
+        }
+    }
+
+    fn private_repo(name: &str) -> RepoSummary {
+        RepoSummary {
+            name: name.into(),
+            cache_bytes: 0,
+            cache_count: 0,
+            private: true,
+            age_days: 0,
+            class: crate::repos::RepoClass::Archivable,
+        }
+    }
+
+    /// exec-d in September 2026, measured on 2026-09-10: 1 004 private
+    /// Linux-equivalent minutes (the org's real monthly total, attributed to
+    /// one repository for the fixture's sake) and 371.85 GB-hours of Actions
+    /// storage, both fully discounted.
+    fn exec_d_september() -> OrgSummary {
+        OrgSummary {
+            login: "exec-d".into(),
+            cache_bytes: 0,
+            cache_count: 0,
+            repos: vec![private_repo("disconnected")],
+            billing: Some(BillingReport {
+                items: vec![
+                    usage(
+                        "2026-09",
+                        "Actions Linux",
+                        "Minutes",
+                        1_004.0,
+                        6.024,
+                        "disconnected",
+                    ),
+                    usage(
+                        "2026-09",
+                        "Actions storage",
+                        "GigabyteHours",
+                        371.85,
+                        0.1249,
+                        "disconnected",
+                    ),
+                ],
+            }),
+        }
+    }
+
+    fn billing_app(org: OrgSummary) -> App {
+        let mut app = App::new(vec![org]);
+        app.view = View::Billing;
+        app
+    }
+
+    /// The whole screen, row by row, rendered through `views::render` — the
+    /// real layout, so the Billing panel gets the `Rect` it gets in
+    /// production, never the bare frame.
+    fn screen(app: &mut App, width: u16, height: u16) -> String {
+        let buf = crate::tui::views::testing::draw(app, width, height);
+        let (rows, _) = crate::tui::views::testing::layout(app, width, height);
+        crate::tui::views::testing::text_in(&buf, rows.body)
+    }
+
+    /// `needle` must be on screen at every width from 60 to 200 (at a height
+    /// that fits the whole tab), then at every height from the first one
+    /// that can hold its row up to 50 (at width 100). Sweeps, never samples:
+    /// this project once shipped a modal whose prompt vanished at exactly one
+    /// height per width.
+    fn assert_shown_at_every_size(app: &mut App, needle: &str) {
+        for width in 60..=200u16 {
+            let s = screen(app, width, 50);
+            assert!(s.contains(needle), "{needle:?} missing at {width}x50:\n{s}");
+        }
+        let tall = screen(app, 100, 50);
+        let row = tall
+            .lines()
+            .position(|l| l.contains(needle))
+            .unwrap_or_else(|| panic!("{needle:?} missing at 100x50:\n{tall}"));
+        // Below the needle's row: the panel's bottom border, the status row
+        // and the footer — the progress row is zero-high while nothing runs.
+        let floor = u16::try_from(row).unwrap() + 1 + 1 + 1 + 2;
+        for height in floor..=50 {
+            let s = screen(app, 100, height);
+            assert!(
+                s.contains(needle),
+                "{needle:?} missing at 100x{height}:\n{s}"
+            );
+        }
+    }
+
+    /// `needle` must appear nowhere on screen, at any width from 60 to 200.
+    fn assert_absent_at_every_width(app: &mut App, needle: &str) {
+        for width in 60..=200u16 {
+            let s = screen(app, width, 50);
+            assert!(
+                !s.contains(needle),
+                "{needle:?} present at {width}x50:\n{s}"
+            );
+        }
+    }
+
+    /// GitHub's amounts are US dollars (`pricePerUnit` 0.006 for Actions
+    /// Linux). The tab printed the right figure with the wrong currency.
+    /// Looks for the figure *with* its sign, so a stray `$` elsewhere cannot
+    /// satisfy it.
+    #[test]
+    fn the_rendered_cost_line_is_in_dollars_at_every_size() {
+        let mut app = billing_app(exec_d_september());
+        // 6.024 + 0.1249 = 6.1489, gross and covered alike.
+        assert_shown_at_every_size(&mut app, "brut 6.15 $");
+        assert_shown_at_every_size(&mut app, "facturé 0.00 $");
+        assert_absent_at_every_width(&mut app, "€");
+    }
+
+    #[test]
+    fn cost_line_reads_dollars_never_euros() {
+        let line = cost_line(6.1489, 6.1489, 0.0);
+        assert_eq!(
+            line,
+            "Coûts   brut 6.15 $   couvert 6.15 $   facturé 0.00 $"
+        );
+    }
 
     #[test]
     fn the_gauge_reports_overshoot_rather_than_capping_at_full() {

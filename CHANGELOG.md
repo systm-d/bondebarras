@@ -63,6 +63,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   so bondebarras selects `aws-lc-rs` instead. Precompiled packages are
   unaffected.
 
+### Fixed
+
+- Billing tab: amounts are shown in US dollars (`6.15 $`), the currency of
+  GitHub's usage report (`pricePerUnit` is 0.006 for Actions Linux). They were
+  printed with a `€` sign — the right figure in the wrong currency. Nothing is
+  converted: bondebarras has no exchange rate and does not invent one. (#12)
+
 ## [0.5.0] - 2026-07-29
 
 ### Added
