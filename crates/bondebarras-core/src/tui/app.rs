@@ -174,6 +174,13 @@ pub struct App {
     /// act on rows no frame showed. Final review I2 — ruling A's hidden list,
     /// by height rather than width.
     pub(crate) resources_too_short: bool,
+    /// Whether the last frame had no line inside the repos column to draw a
+    /// repository row on — written by `tui::views::repos::render`. While it
+    /// is, `espace` and `d` do nothing from the repos column
+    /// (`tui::column_action`, `tui::plan_for_d`): they would tick, or
+    /// archive, a repository no frame showed. Pre-flight 4.14 — final review
+    /// I2 in the repos column.
+    pub(crate) repos_too_short: bool,
     /// The org a running purge belongs to, for the post-purge cache refresh.
     /// The user can navigate away while it runs — purges execute on a
     /// spawned task while the event loop keeps handling keys — so `loaded`
@@ -295,6 +302,7 @@ impl App {
             repo_state: ListState::default(),
             res_state: ListState::default(),
             resources_too_short: false,
+            repos_too_short: false,
             purging_org: None,
             view: View::Orgs,
             month_cursor: 0,

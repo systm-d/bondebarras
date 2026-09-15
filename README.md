@@ -128,6 +128,21 @@ again by anything.
   runaway usage the tab exists to surface, since minutes cannot be reclaimed
   after the fact. (That org is on `enterprise`: 49 % of its 50,000 included
   minutes — a minimum, since that allowance is shared across the enterprise.)
+  Below the minutes, **Actions storage**, billed in GB-hours — every hour a
+  gigabyte of artifacts exists — against the plan's included storage
+  (`free` 0.5 GB, `team` 2 GB, `enterprise` 50 GB) times the hours of the
+  displayed month, a base the gauge states (`base 720 h`). Public
+  repositories' storage is counted: GitHub's documentation says their
+  minutes are free, and says nothing of their storage. The repositories
+  holding it are named, heaviest first, and the tab says what deleting
+  artifacts can and cannot do: it stops the accumulation, it does not refund
+  hours already counted. The repositories column shows, under a repository's
+  row, its GB-hours for the most recent month of the usage report — the
+  month the resources column's minutes gauge reads, named on the line — and
+  marks with ⚠ a repository whose caches are past the included 10 GiB
+  (10.7 Go as displayed), past which GitHub evicts, or bills the excess at
+  its hourly peak if the repository's cache limit was
+  raised.
 - **Headless CLI** — `bondebarras scan --json` for a machine-readable
   overview, and `bondebarras clean` for non-interactive cleanup, e.g. from a
   cron job.
@@ -356,7 +371,10 @@ bondebarras clean --org exec-d --repo terminus --assets --older-than 180 --yes
 `scan --json` prints one object per organization: `org`, `cache_bytes`,
 `cache_count`, `billing_readable` and `repos`, plus `plan` (the plan name, or
 `null` when it cannot be read) and `minutes_allowance` (that plan's included
-minutes, or `null` — never a default).
+minutes, or `null` — never a default). `billing_month` names the current
+month (`YYYY-MM`, in UTC), for which `storage_gbh` and
+`storage_allowance_gbh` are given per organization and `storage_gbh` per
+repository — `null` when billing or the plan cannot be read, never zero.
 
 **Without `--yes`, `clean` prints the plan and deletes nothing** — the same
 dry-run-by-default rule as the TUI's confirmation modal, just without a

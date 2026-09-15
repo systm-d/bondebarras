@@ -128,9 +128,10 @@ pub fn storage_quota(plan: Option<&str>, month: &str) -> Option<StorageQuota> {
     })
 }
 
-/// `YYYY-MM` for an instant, in UTC — how the "current month" of the repos
-/// column and `scan --json` is named. Takes the instant rather than reading
-/// the clock, so it stays testable.
+/// `YYYY-MM` for an instant, in UTC — how `scan --json` names the current
+/// month (`billing_month`). Takes the instant rather than reading the clock,
+/// so it stays testable. The TUI never reads the clock for a month: its
+/// columns read the newest month the usage report carries.
 pub fn month_of(now: chrono::DateTime<chrono::Utc>) -> String {
     now.format("%Y-%m").to_string()
 }

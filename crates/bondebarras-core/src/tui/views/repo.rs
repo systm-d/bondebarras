@@ -1600,10 +1600,37 @@ mod tests {
     /// height from 3 to 40 at widths across the three layouts, public
     /// repository over its ceiling: whatever part of the head is on screen
     /// reads whole, and no explanation stays on screen without its gauge.
+    ///
+    /// Task 5's review (T5-m3): the same sweep for a private repository in
+    /// an org whose plan was not read (#11), the taller unknown-plan minutes
+    /// gauge — its `formule inconnue, pas de quota` explanation stays with
+    /// its figures, whole, or goes with them.
     #[test]
     fn the_column_head_keeps_each_part_whole_or_drops_it_across_swept_heights() {
         for width in [60u16, 78, 80, 99, 100, 101, 120, 160, 200] {
             for height in 3u16..=40 {
+                let mut unknown_plan = gauged_app(true, 4_000_000_000);
+                unknown_plan.orgs[0].plan = None;
+                let (_, column) = views::testing::focused_column(
+                    &mut unknown_plan,
+                    Focus::Resources,
+                    width,
+                    height,
+                );
+                let at = format!("at {width}x{height}, no plan read:\n{column}");
+                if column.contains("Minutes") {
+                    assert!(
+                        views::testing::unwrapped(&column).contains(UNKNOWN_PLAN),
+                        "the unknown plan's minutes gauge shows without all of its \
+                         explanation {at}"
+                    );
+                } else {
+                    assert!(
+                        !column.contains("formule inconnue"),
+                        "the unknown plan's explanation shows without its gauge {at}"
+                    );
+                }
+
                 let mut app = gauged_app(false, 12_360_000_000);
                 let (_, column) =
                     views::testing::focused_column(&mut app, Focus::Resources, width, height);

@@ -20,6 +20,16 @@ use ratatui::text::{Line, Span};
 /// both gauge lines that use it say so.
 pub const CACHE_CEILING_BYTES: u64 = 10 * 1024 * 1024 * 1024;
 
+/// Whether a repository's caches are past the included 10 GiB.
+///
+/// Strictly above: exactly `CACHE_CEILING_BYTES` is still inside it. Past it,
+/// GitHub evicts the least recently read caches — or, if the repository's
+/// cache limit was raised above the included 10 GB, bills the excess at its
+/// hourly peak (GitHub's Actions billing documentation).
+pub fn cache_over_ceiling(cache_bytes: u64) -> bool {
+    cache_bytes > CACHE_CEILING_BYTES
+}
+
 /// `used / ceiling` as a whole percentage.
 ///
 /// A pure `(used, ceiling)` function, not `(used)` alone against a baked-in
@@ -28,14 +38,17 @@ pub const CACHE_CEILING_BYTES: u64 = 10 * 1024 * 1024 * 1024;
 /// An unknown allowance never reaches here — its gauges show no percentage
 /// at all — yet a zero ceiling still reads 0 %, never a division by zero.
 ///
-/// `pub(crate)`, not private: `views::billing::gauge_line` shares this exact
-/// business rule (an uncapped, zero-guarded percentage) rather than keeping
-/// its own copy of the same formula — the two gauges here and the Billing
-/// tab's gauge would otherwise need to change in lockstep with no single
-/// source of truth. Each call site has its own zero-ceiling test:
-/// `gauges::tests::a_zero_ceiling_does_not_divide_by_zero` here, and
-/// `views::billing::tests::a_zero_allowance_does_not_divide_by_zero` through
-/// the Billing tab's gauge.
+/// `pub(crate)`, not private: `views::billing::gauge_line` and
+/// `views::billing::storage_percent` (the storage ratio, in hundredths of a
+/// GB-hour) share this exact business rule (an uncapped, zero-guarded
+/// percentage) rather than keeping their own copy of the same formula — the
+/// two gauges here and the Billing tab's two would otherwise need to change
+/// in lockstep with no single source of truth. Each call site has its own
+/// zero-ceiling test: `gauges::tests::a_zero_ceiling_does_not_divide_by_zero`
+/// here, `views::billing::tests::a_zero_allowance_does_not_divide_by_zero`
+/// through the Billing tab's minutes gauge, and
+/// `views::billing::tests::storage_percent_is_the_shared_percentage_in_hundredths`
+/// for its storage ratio.
 pub(crate) fn percent(used: u64, ceiling: u64) -> u64 {
     if ceiling == 0 {
         0
@@ -247,9 +260,9 @@ mod tests {
     /// promises, since production can never actually reach a zero ceiling
     /// through that entry point. The percentage instead goes through a pure
     /// `(used, ceiling)` helper — `percent` — shared by both gauges, and this
-    /// calls it directly with a ceiling of zero: exactly the shape issue #11
-    /// will hit once the minutes ceiling becomes a data-dependent per-plan
-    /// figure that can legitimately be absent.
+    /// calls it directly with a ceiling of zero: the shape issue #11 gave the
+    /// minutes ceiling when it made it the plan's allowance, a figure read
+    /// from data rather than a constant.
     #[test]
     fn a_zero_ceiling_does_not_divide_by_zero() {
         assert_eq!(percent(0, 0), 0);
@@ -260,5 +273,14 @@ mod tests {
         // both NaN and +inf into a large *finite* u64, which no substring
         // check for "NaN"/"inf" would ever catch.
         assert_eq!(percent(100, 0), 0);
+    }
+
+    /// #13: exactly 10 GiB is still inside the included cache storage; one
+    /// byte more is not.
+    #[test]
+    fn cache_over_ceiling_is_strictly_above_ten_gibibytes() {
+        assert!(!cache_over_ceiling(CACHE_CEILING_BYTES));
+        assert!(cache_over_ceiling(CACHE_CEILING_BYTES + 1));
+        assert!(!cache_over_ceiling(0));
     }
 }

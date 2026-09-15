@@ -1,10 +1,10 @@
 //! Column 2: the repositories of the org under the cursor.
 
-use crate::model::{RepoSummary, human_size};
+use crate::model::{OrgSummary, RepoSummary, human_size};
 use crate::repos::RepoClass;
 use crate::tui::app::{App, Focus};
 use crate::tui::theme;
-use crate::tui::views;
+use crate::tui::views::{self, gauges};
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
@@ -16,14 +16,17 @@ use ratatui::widgets::{List, ListItem};
 /// hardcoding their own — the two must never be able to drift apart the way
 /// they did for Finding 2 of the v0.5 final review.
 ///
-/// Wide enough for the repository row's four columns — checkbox, name,
-/// status, cache — at their own widths below, plus the block's left/right
-/// border. Finding 2: the row used to be squeezed to fit a bare 26 columns
-/// by dropping the cache-byte column outright, in a tool whose entire point
-/// is volume; this widens the pane instead, past what the checkbox, the
-/// widest status (a leading separator space plus `déjà archivé`, 12
-/// characters) and the cache column together actually need — one column of
-/// slack past that spends on the separator itself, one stays unused. The
+/// Wide enough for the repository row's five columns — checkbox, name,
+/// status, ceiling mark, cache — at their own widths below, plus the block's
+/// left/right border. Finding 2: the row used to be squeezed to fit a bare
+/// 26 columns by dropping the cache-byte column outright, in a tool whose
+/// entire point is volume; this widens the pane instead, past what the
+/// checkbox, the widest status (`déjà archivé`, 12 characters) and the cache
+/// column together actually need. Of the two columns of slack past that,
+/// one spends on the status's leading separator space; the other, unused
+/// until #13, carries `ceiling_mark`. The row now fills all 36 inner cells
+/// with no margin left, which is why a repository's storage goes on a
+/// detail line of its own (`repo_item`) rather than on its row. The
 /// three-column design first set this column at 26 again, and was amended
 /// back to this width for the same reason (Amendement 2, 2026-09-11).
 pub(crate) const COLUMN_WIDTH: u16 = 38;
@@ -62,7 +65,8 @@ const REPO_NAME_WIDTH: usize = 10;
 ///   of this row dropped that column outright to fit a too-narrow pane — in
 ///   a tool whose whole point is showing where the volume is, the repos
 ///   column is exactly where a single repo's own share of it belongs on
-///   screen.
+///   screen. One cell before it, `ceiling_mark`: `⚠` past the included
+///   10 GiB, a space otherwise (#13).
 pub fn repo_row_spans(repo: &RepoSummary, checked: bool) -> Vec<Span<'static>> {
     let checkbox = match repo.class {
         RepoClass::Archivable if checked => "[x] ",
@@ -83,15 +87,17 @@ pub fn repo_row_spans(repo: &RepoSummary, checked: bool) -> Vec<Span<'static>> {
     // `views::fit` pads a short name but has nothing left to give a
     // truncated one (at or over `REPO_NAME_WIDTH`), so without it a name
     // like this project's own "bondebarras" (11 characters, truncated) ran
-    // straight into its status: "bondebarr…5 j". Both spend from the two
-    // columns `COLUMN_WIDTH` leaves unused past what the four columns
-    // themselves need; one is spent here, one stays spare.
+    // straight into its status: "bondebarr…5 j". The leading space spends
+    // one of the two columns `COLUMN_WIDTH` leaves past what the fields
+    // themselves need; the other is `ceiling_mark`'s cell, just before the
+    // cache figure.
     let status_col = format!(" {status:<12}");
 
     vec![
         Span::styled(checkbox.to_string(), theme::text_style()),
         Span::styled(views::fit(&repo.name, REPO_NAME_WIDTH), theme::text_style()),
         Span::styled(status_col, theme::muted()),
+        ceiling_mark(repo.cache_bytes),
         Span::styled(
             format!("{:>8}", human_size(repo.cache_bytes)),
             theme::muted(),
@@ -99,11 +105,78 @@ pub fn repo_row_spans(repo: &RepoSummary, checked: bool) -> Vec<Span<'static>> {
     ]
 }
 
+/// `⚠` before the cache figure of a repository past the included 10 GiB
+/// (`gauges::cache_over_ceiling`), a space otherwise, so figures stay
+/// aligned. The row has no room to say why; column 3's cache gauge does, the
+/// moment the repository is opened.
+pub fn ceiling_mark(cache_bytes: u64) -> Span<'static> {
+    if gauges::cache_over_ceiling(cache_bytes) {
+        Span::styled("⚠", theme::status_warn())
+    } else {
+        Span::raw(" ")
+    }
+}
+
+/// The detail line under a repository that held Actions storage in the
+/// newest month its org's usage report carries, naming that month, so the
+/// one holding it is found without opening every repository. On its own
+/// line because the repository row has no cell left once `ceiling_mark`
+/// takes its one.
+pub fn storage_detail_line(gbh: f64, month: &str) -> Line<'static> {
+    Line::from(Span::styled(
+        format!("  ↳ {gbh:.1} GB-h, {month}"),
+        theme::muted(),
+    ))
+}
+
+/// A repository's list item: its row, plus the storage detail line when
+/// `storage` — `(GB-hours, month)`, from `repo_storage_this_month` — has
+/// something to show. Only those repositories take a second line; the
+/// cursor still moves one repository at a time.
+pub fn repo_item(row: Vec<Span<'static>>, storage: Option<(f64, String)>) -> ListItem<'static> {
+    match storage {
+        Some((gbh, month)) => {
+            ListItem::new(vec![Line::from(row), storage_detail_line(gbh, &month)])
+        }
+        None => ListItem::new(Line::from(row)),
+    }
+}
+
+/// A repository's Actions storage in the newest month its org's usage
+/// report carries, as `(GB-hours, month)`: the month column 3's minutes
+/// gauge reads (`views::repo`'s `repo_minutes_used`), so the two columns
+/// never speak of different months, and drawing reads no clock.
+///
+/// `None` when there is nothing to show: billing unreadable (unknown, not
+/// zero), a report with no month in it, or a repository that held none that
+/// month (nothing to say).
+fn repo_storage_this_month(org: &OrgSummary, repo: &str) -> Option<(f64, String)> {
+    let report = org.billing.as_ref()?;
+    // The last of `BillingReport::months()`, without sorting every item of
+    // the report again for every row.
+    let month = report.items.iter().map(|i| i.month.as_str()).max()?;
+    let gbh = report.storage_gbh_for_repo(month, repo);
+    (gbh > 0.0).then(|| (gbh, month.to_string()))
+}
+
 /// Renders the repositories of the org under the cursor
 /// (`app.orgs[app.org_cursor].repos`) as a stateful list, for the same
-/// scrolling reason as `tui::views::orgs::render`.
+/// scrolling reason as `tui::views::orgs::render`, each with its storage
+/// detail line (`repo_item`) when the column has room for one.
+///
+/// Pre-flight 4.14, final review I2's defect in this column: ratatui draws
+/// nothing of an item taller than the list's area, so a two-line item under
+/// the cursor, in a column with one inner line, took the cursor's repository
+/// off screen. Detail lines are drawn only from two inner lines
+/// (`area.height >= 4`), so whatever line the column has, every item fits in
+/// it. With no inner line at all, no repository row can be drawn: the
+/// column records it in `App::repos_too_short`, which keeps `espace` and `d`
+/// from acting from this column on a repository no frame shows.
 pub fn render(app: &mut App, f: &mut Frame, area: Rect) {
     let focused = app.focus == Focus::Repos;
+    // The column's inside: the title does not change it.
+    let inner = views::column_block("", focused).inner(area);
+    let room_for_detail = inner.height >= 2;
 
     // Built first, from shared borrows only: the items own their strings, so
     // the borrow of `app` ends here, before `app.repo_state` is borrowed
@@ -119,12 +192,16 @@ pub fn render(app: &mut App, f: &mut Frame, area: Rect) {
                         .selected_repo
                         .as_ref()
                         .is_some_and(|(owner, name)| *owner == org.login && *name == repo.name);
-                    ListItem::new(Line::from(repo_row_spans(repo, checked)))
+                    repo_item(
+                        repo_row_spans(repo, checked),
+                        repo_storage_this_month(org, &repo.name).filter(|_| room_for_detail),
+                    )
                 })
                 .collect()
         })
         .unwrap_or_default();
 
+    app.repos_too_short = inner.height == 0;
     app.repo_state.select(if items.is_empty() {
         None
     } else {
@@ -141,7 +218,6 @@ pub fn render(app: &mut App, f: &mut Frame, area: Rect) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::OrgSummary;
     use crate::tui::views::testing;
 
     /// Flattens a row's spans to plain text for substring assertions —
@@ -358,6 +434,223 @@ mod tests {
             assert!(
                 !column.contains("josephine"),
                 "another org's repository is listed at width {width}:\n{column}"
+            );
+        }
+    }
+
+    /// Pre-flight 4.14: ratatui draws nothing of a list item taller than the
+    /// list's area, so a two-line repository item under the cursor, in a
+    /// column with one inner line, took the cursor's repository off screen.
+    ///
+    /// Swept over every height from 5 to 30 at 60, 80 and 100 columns (one,
+    /// two and three columns), on a fresh app each time, read off the repos
+    /// column's real rect: ten repositories all holding storage, the cursor
+    /// on the last — a public one, whose storage counts like any other. Its
+    /// name is on screen whenever the column has one inner line; its own
+    /// detail line whenever it has two; and with only one, no detail line
+    /// at all. Every failing size is collected, so the output names each.
+    #[test]
+    fn the_cursor_repository_stays_on_screen_at_every_height() {
+        let names = [
+            "alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf", "hotel", "india",
+            "vitrine",
+        ];
+        let fresh = || {
+            let repo = |name: &str| RepoSummary {
+                name: name.into(),
+                cache_bytes: 1_000,
+                cache_count: 1,
+                private: name != "vitrine",
+                age_days: 3,
+                class: RepoClass::Archivable,
+            };
+            let gbh = |name: &str| if name == "vitrine" { 7.5 } else { 42.0 };
+            let mut app = App::new(vec![OrgSummary {
+                login: "exec-d".into(),
+                repos: names.iter().map(|n| repo(n)).collect(),
+                billing: Some(crate::billing::BillingReport {
+                    items: names
+                        .iter()
+                        .map(|n| storage("2026-09", n, gbh(n)))
+                        .collect(),
+                }),
+                ..Default::default()
+            }]);
+            app.repo_cursor = names.len() - 1;
+            app
+        };
+
+        let mut failures = Vec::new();
+        for width in [60u16, 80, 100] {
+            for height in 5u16..=30 {
+                let mut app = fresh();
+                let (rect, column) = testing::focused_column(&mut app, Focus::Repos, width, height);
+                let inner = rect.height.saturating_sub(2);
+                let at = format!("{width}x{height} (inner {inner})");
+                if inner >= 1 && !column.contains("vitrine") {
+                    failures.push(format!("the cursor's repository is off screen at {at}"));
+                }
+                if inner >= 2 && !column.contains("↳ 7.5 GB-h, 2026-09") {
+                    failures.push(format!("the cursor's detail line is missing at {at}"));
+                }
+                if inner == 1 && column.contains('↳') {
+                    failures.push(format!("a detail line in a one-line column at {at}"));
+                }
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    /// One `Actions storage` usage item: `gbh` GB-hours held by `repo` in
+    /// `month`.
+    fn storage(month: &str, repo: &str, gbh: f64) -> crate::billing::UsageItem {
+        crate::billing::UsageItem {
+            month: month.into(),
+            product: "actions".into(),
+            sku: "Actions storage".into(),
+            quantity: gbh,
+            unit_type: "GigabyteHours".into(),
+            gross: 0.0,
+            discount: 0.0,
+            net: 0.0,
+            repo: repo.into(),
+        }
+    }
+
+    /// Storage as exec-d's report carried it on 2026-09-10 — `disconnected`
+    /// at 359.88 GB-hours in September, the newest month — plus an August
+    /// for both repositories, and a September in which `quiet` held none.
+    ///
+    /// Each figure tells a wrong reading apart: August's comes first and
+    /// last in the report, so only the newest month, not the first or the
+    /// last item's, gives September; `quiet`'s 0.0 shows only if a
+    /// repository with nothing to say still gets a line.
+    fn exec_d_report() -> crate::billing::BillingReport {
+        crate::billing::BillingReport {
+            items: vec![
+                storage("2026-08", "disconnected", 120.0),
+                storage("2026-09", "disconnected", 359.88),
+                storage("2026-09", "quiet", 0.0),
+                storage("2026-08", "quiet", 5.0),
+            ],
+        }
+    }
+
+    /// exec-d's `disconnected`, holding the newest month's storage, beside a
+    /// quiet repository; cursor on the first, focus on the repos.
+    /// `disconnected`'s `cache_bytes` is the only parameter.
+    fn exec_d_with_storage(disconnected_cache_bytes: u64) -> App {
+        let repo = |name: &str, cache_bytes: u64| RepoSummary {
+            name: name.into(),
+            cache_bytes,
+            cache_count: 1,
+            private: true,
+            age_days: 3,
+            class: RepoClass::Archivable,
+        };
+        let mut app = App::new(vec![OrgSummary {
+            login: "exec-d".into(),
+            repos: vec![
+                repo("disconnected", disconnected_cache_bytes),
+                repo("quiet", 1_000),
+            ],
+            billing: Some(exec_d_report()),
+            ..Default::default()
+        }]);
+        app.focus = Focus::Repos;
+        app
+    }
+
+    #[test]
+    fn repo_storage_detail_line_shows_gigabyte_hours() {
+        let text: String = storage_detail_line(359.88, "2026-09")
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert_eq!(text, "  ↳ 359.9 GB-h, 2026-09");
+        let quiet: String = ceiling_mark(gauges::CACHE_CEILING_BYTES)
+            .content
+            .to_string();
+        assert_eq!(quiet, " ", "exactly at the ceiling: no mark");
+        let marked: String = ceiling_mark(gauges::CACHE_CEILING_BYTES + 1)
+            .content
+            .to_string();
+        assert_eq!(marked, "⚠", "one byte past the ceiling: marked");
+    }
+
+    /// Pre-flight 5.2, arbitrage A: the column reads the newest month the
+    /// usage report carries — the month column 3's minutes gauge reads —
+    /// and never the clock. `None` whenever there is nothing to show:
+    /// billing unreadable (unknown, not zero), a readable report with no
+    /// month in it, a repository that held none in the newest month.
+    #[test]
+    fn repo_storage_this_month_reads_the_newest_reported_month_or_nothing() {
+        let org = |billing| OrgSummary {
+            login: "exec-d".into(),
+            billing,
+            ..Default::default()
+        };
+        let readable = org(Some(exec_d_report()));
+        assert_eq!(
+            repo_storage_this_month(&readable, "disconnected"),
+            Some((359.88, "2026-09".to_string()))
+        );
+        assert_eq!(
+            repo_storage_this_month(&readable, "quiet"),
+            None,
+            "none in the newest month, though some in an older one"
+        );
+        assert_eq!(repo_storage_this_month(&readable, "absent"), None);
+
+        assert_eq!(
+            repo_storage_this_month(&org(None), "disconnected"),
+            None,
+            "unreadable billing"
+        );
+        let no_months = org(Some(crate::billing::BillingReport { items: vec![] }));
+        assert_eq!(
+            repo_storage_this_month(&no_months, "disconnected"),
+            None,
+            "a readable report with no month"
+        );
+    }
+
+    /// #13: find the repository holding the storage without opening it, and
+    /// see a cache past 10 GiB marked — in the real layout, read off the
+    /// repos column's own rect (`testing::focused_column`), at every width
+    /// from 60 to 200 (one, two and three columns, focus on the repos so
+    /// the column is on screen in each) and at every height from 8. The
+    /// one-byte-under twin proves the ⚠ comes from the mark and nowhere
+    /// else: both caches display as `10.7 Go`, and only the one past 10 GiB
+    /// is marked.
+    #[test]
+    fn the_repos_column_shows_storage_and_the_ceiling_mark_at_every_width() {
+        let sizes = (60..=200u16)
+            .map(|w| (w, 30))
+            .chain((8..=30u16).map(|h| (100, h)));
+        let mut over = exec_d_with_storage(gauges::CACHE_CEILING_BYTES + 1);
+        let mut at = exec_d_with_storage(gauges::CACHE_CEILING_BYTES);
+        for (width, height) in sizes {
+            let (_, column) = testing::focused_column(&mut over, Focus::Repos, width, height);
+            assert!(
+                column.contains("↳ 359.9 GB-h, 2026-09"),
+                "the newest month's storage detail is missing at {width}x{height}:\n{column}"
+            );
+            assert!(
+                !column.contains("↳ 0.0") && !column.contains("2026-08"),
+                "a detail line for nothing, or for an older month, at {width}x{height}:\n{column}"
+            );
+            assert!(
+                column.contains("⚠ 10.7 Go"),
+                "ceiling mark or its figure missing at {width}x{height}:\n{column}"
+            );
+
+            let (_, column) = testing::focused_column(&mut at, Focus::Repos, width, height);
+            assert!(
+                !column.contains('⚠') && column.contains("10.7 Go"),
+                "a cache at exactly 10 GiB is marked, or its figure is gone, at \
+                 {width}x{height}:\n{column}"
             );
         }
     }

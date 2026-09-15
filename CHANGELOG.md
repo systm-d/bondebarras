@@ -37,6 +37,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   an estimate. Several purges running at once share one bar.
 - `scan --json`: `plan` and `minutes_allowance` per organization, `null` when
   unknown. (#11)
+- Billing tab: Actions storage, in GB-hours, against the plan's included
+  storage (`free` 0.5 GB, `team` 2 GB, `enterprise` 50 GB) times the
+  displayed month's hours — the base is written on the gauge — with the
+  heaviest repositories named and a fixed line saying deleting artifacts
+  stops the accumulation but refunds nothing already counted. Public
+  repositories' storage is counted, and the tab says so. No extra request:
+  the usage report loaded at stage 1 already carried it. Measured on
+  2026-09-10: exec-d at 371.85 GB-hours in September, 359.88 of them in
+  `disconnected`. (#13)
+- Repositories column: a repository's GB-hours for the most recent month of
+  the usage report, with that month, on a detail line under its row, and a
+  ⚠ before a cache footprint past the included 10 GiB (10.7 Go as
+  displayed). (#13)
+- `scan --json`: `billing_month`, `storage_gbh` and `storage_allowance_gbh`
+  per organization, `storage_gbh` per repository. (#13)
 
 ### Changed
 
