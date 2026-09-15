@@ -6,6 +6,7 @@
 use crate::billing::{FREE_MINUTES_PER_MONTH, MinuteLine, sku_multiplier};
 use crate::tui::app::App;
 use crate::tui::theme;
+use crate::tui::views::gauges;
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
@@ -20,13 +21,11 @@ const MAX_MINUTE_LINES: usize = 8;
 ///
 /// Deliberately not clamped at 100 %: an org at 818 % of its included minutes
 /// is exactly the situation the tab exists to surface, and a full bar would
-/// say nothing.
+/// say nothing. The percentage itself comes from `gauges::percent`, shared
+/// with the resource pane's own two gauges rather than kept as a second copy
+/// of the same uncapped, zero-guarded formula.
 pub fn gauge_line(used: u64, allowance: u64) -> String {
-    let percent = if allowance == 0 {
-        0
-    } else {
-        (used as f64 / allowance as f64 * 100.0).round() as u64
-    };
+    let percent = gauges::percent(used, allowance);
     let filled = (percent as usize / 10).min(20);
     format!(
         "{} / {}   {}  {} %",

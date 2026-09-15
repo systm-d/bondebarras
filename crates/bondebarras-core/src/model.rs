@@ -160,6 +160,8 @@ pub struct Resource {
     /// lets the TUI's individual-selection guard (`tui::app::App::
     /// toggle_selected`) tell "GitHub-backed" apart from "merely unmerged".
     pub branch_class: Option<crate::refs::BranchClass>,
+    /// How safe this resource is to delete — see `safety::classify`.
+    pub safety: crate::safety::Safety,
 }
 
 /// A resource's size, formatted for display.
@@ -194,7 +196,7 @@ pub struct RepoSummary {
     /// Days since the last push. Not proof of abandonment on its own — a
     /// finished, stable library does not move for two years without being
     /// dead — which is exactly why nothing in this crate ever preselects a
-    /// repository from it (see `tui::app::App::select_all_stale`'s own guard
+    /// repository from it (see `tui::app::App::select_safe`'s own guard
     /// and `commands::clean::select`'s permanent refusal). Shown to the human
     /// who decides, on the repository's own row in the tree.
     pub age_days: i64,
@@ -243,6 +245,7 @@ mod tests {
             stale_pr: false,
             protected: false,
             branch_class: None,
+            safety: crate::safety::Safety::Keep,
         }
     }
 

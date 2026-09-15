@@ -14,6 +14,7 @@ use crate::refs::{BranchClass, BranchRef, classify_branch};
 use crate::stale::is_stale;
 use anyhow::Result;
 use std::collections::HashSet;
+use tokio::sync::mpsc::UnboundedSender;
 
 /// Stage 1: cache aggregates and repository list for each org.
 ///
@@ -116,6 +117,49 @@ pub async fn repo_detail_with_warnings(
     owner: &str,
     repo: &str,
 ) -> Result<(Vec<Resource>, Vec<&'static str>)> {
+    detail(client, owner, repo, None).await
+}
+
+/// `repo_detail_with_warnings`, plus one tick per completed call.
+///
+/// The nine listings are joined, so without this the caller sees nothing
+/// between "started" and "all nine done" — a bar over that has two states
+/// and is worth less than the `(chargement…)` text it would replace.
+/// Each future sends its tick as it lands; ticks arrive in completion
+/// order, which is the order the user is actually waiting on.
+pub async fn repo_detail_ticking(
+    client: &Client,
+    owner: &str,
+    repo: &str,
+    tick: UnboundedSender<()>,
+) -> Result<(Vec<Resource>, Vec<&'static str>)> {
+    detail(client, owner, repo, Some(tick)).await
+}
+
+/// How many calls a repository's drill-down joins — the futures of
+/// `detail`'s `futures::join!`, right below — and so how many ticks
+/// `repo_detail_ticking` sends: the denominator of the TUI's load bar.
+///
+/// It must follow the number of futures joined there. A tenth call joined
+/// without raising it would push the bar past its end, and a tenth family's
+/// call left unticked would leave the bar full while that call still runs.
+/// `repo_detail_ticking_ticks_exactly_total_calls_times` anchors the two.
+pub const TOTAL_CALLS: usize = 9;
+
+/// The one code path behind `repo_detail_with_warnings` and
+/// `repo_detail_ticking`: the nine calls, joined, then every family's rows
+/// and their safety classification. `tick`, when given, gets one `()` per
+/// call as that call lands (`ticked`); dropped when this returns, which
+/// closes its channel.
+async fn detail(
+    client: &Client,
+    owner: &str,
+    repo: &str,
+    tick: Option<UnboundedSender<()>>,
+) -> Result<(Vec<Resource>, Vec<&'static str>)> {
+    let tick = tick.as_ref();
+    // `TOTAL_CALLS`, just above, counts these futures: one more or one
+    // fewer here means changing it too.
     let (
         caches_r,
         artifacts_r,
@@ -127,18 +171,18 @@ pub async fn repo_detail_with_warnings(
         assets_r,
         default_branch_r,
     ) = futures::join!(
-        caches::list(client, owner, repo),
-        artifacts::list(client, owner, repo),
-        runs::list(client, owner, repo),
+        ticked(caches::list(client, owner, repo), tick),
+        ticked(artifacts::list(client, owner, repo), tick),
+        ticked(runs::list(client, owner, repo), tick),
         // This account's convention: a repo's image, when it publishes one,
         // is named after the repo. A repo with no image 404s — `versions`
         // already turns that into an empty list, not an error.
-        packages::versions(client, owner, repo),
-        prs::closed_prs(client, owner, repo),
-        refs::branches(client, owner, repo),
-        refs::tags(client, owner, repo),
-        releases::assets(client, owner, repo),
-        refs::default_branch(client, owner, repo),
+        ticked(packages::versions(client, owner, repo), tick),
+        ticked(prs::closed_prs(client, owner, repo), tick),
+        ticked(refs::branches(client, owner, repo), tick),
+        ticked(refs::tags(client, owner, repo), tick),
+        ticked(releases::assets(client, owner, repo), tick),
+        ticked(refs::default_branch(client, owner, repo), tick),
     );
 
     let mut failed: Vec<&'static str> = Vec::new();
@@ -181,22 +225,79 @@ pub async fn repo_detail_with_warnings(
     // whenever `default_branch` is empty — see its own doc comment, and
     // `api::refs::default_branch`'s. Also not one of the seven families.
     let default_branch = default_branch_r.unwrap_or_default();
+    // A failed listing degrades to `BranchListing::default()`: no branch,
+    // and not complete.
+    let listing = take(branches_r, "branches", &mut failed);
+    // Read off the listing before its branches are moved into
+    // `branch_resources` below: the safety classification (this function's
+    // tail) also needs the set of branches that still exist, and this is the
+    // one place that can supply it without a second request. Kept only when
+    // the listing is whole — a failed or truncated one cannot say a branch is
+    // gone (final review I1).
+    let live_branches: Option<HashSet<String>> = listing
+        .complete
+        .then(|| listing.branches.iter().map(|b| b.name.clone()).collect());
     items.extend(branch_resources(
-        take(branches_r, "branches", &mut failed),
+        listing.branches,
         &default_branch,
         &closed.merged_refs,
     ));
     items.extend(tag_resources(take(tags_r, "tags", &mut failed)));
-    items.extend(asset_resources(take(
-        assets_r,
-        "assets de releases",
-        &mut failed,
-    )));
+    let assets = take(assets_r, "assets de releases", &mut failed);
+    // Same reasoning as `live_branches` above: read before the move.
+    let release_tags = distinct_release_tags(&assets);
+    items.extend(asset_resources(assets));
 
     mark_stale(&mut items, &closed.numbers);
 
+    // The safety classification, in the single code path that assembles
+    // every family's listing — a `RepoContext` built entirely from data this
+    // function already holds, at zero extra HTTP cost. This must run after
+    // `mark_stale`: `classify`'s cache and workflow-run rules both read
+    // `stale_pr`. `repo_detail_ticking` goes through this same path, not a
+    // copy of it.
+    let ctx = crate::safety::RepoContext {
+        merged_refs: closed.merged_refs,
+        live_branches,
+        default_branch,
+        release_tags,
+    };
+    for item in items.iter_mut() {
+        item.safety = crate::safety::classify(item, &ctx);
+    }
+
     items.sort_by_key(|i| std::cmp::Reverse(i.size_bytes));
     Ok((items, failed))
+}
+
+/// `call`, then one tick on `tick` as it lands — whatever it returned: a
+/// refused listing is a call done all the same.
+///
+/// The send's error is dropped on purpose: a closed channel means the user
+/// has left the screen, and a tick nobody reads must not fail a load that
+/// succeeded.
+async fn ticked<F: Future>(call: F, tick: Option<&UnboundedSender<()>>) -> F::Output {
+    let landed = call.await;
+    if let Some(tick) = tick {
+        let _ = tick.send(());
+    }
+    landed
+}
+
+/// Distinct release tags, newest first, in the order the releases API
+/// returned them — built from the already-fetched asset listing instead of a
+/// second call, since `releases::assets` flattens each release's tag onto
+/// every one of its assets. A release with zero assets contributes no tag,
+/// but nothing here ever asks about such a release: `classify_asset` only
+/// ever looks up the tag an actual asset's own label carries.
+fn distinct_release_tags(assets: &[ReleaseAsset]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for a in assets {
+        if !out.contains(&a.release_tag) {
+            out.push(a.release_tag.clone());
+        }
+    }
+    out
 }
 
 /// Unwrap a family listing's result to its default on failure, recording its
@@ -239,6 +340,7 @@ fn version_resources(versions: Vec<PackageVersion>) -> Vec<Resource> {
             protected: class == VersionClass::Tagged,
             // Only a `Branch` row carries a classification.
             branch_class: None,
+            safety: crate::safety::Safety::Keep,
         })
         .collect()
 }
@@ -322,6 +424,7 @@ fn branch_resources(
                 stale_pr: false,
                 protected: class != BranchClass::Merged,
                 branch_class: Some(class),
+                safety: crate::safety::Safety::Keep,
             }
         })
         .collect()
@@ -345,6 +448,7 @@ fn tag_resources(tags: Vec<String>) -> Vec<Resource> {
             protected: true,
             // Only a `Branch` row carries a classification.
             branch_class: None,
+            safety: crate::safety::Safety::Keep,
         })
         .collect()
 }
@@ -371,6 +475,7 @@ fn asset_resources(assets: Vec<ReleaseAsset>) -> Vec<Resource> {
             protected: false,
             // Only a `Branch` row carries a classification.
             branch_class: None,
+            safety: crate::safety::Safety::Keep,
         })
         .collect()
 }
@@ -399,6 +504,7 @@ mod tests {
             stale_pr: false,
             protected: false,
             branch_class: None,
+            safety: crate::safety::Safety::Keep,
         }
     }
 
@@ -1409,6 +1515,288 @@ mod tests {
         );
     }
 
+    /// Task 2: `repo_detail` must compute `Resource.safety` itself, from the
+    /// same nine listings it already fetches — zero extra requests. Two
+    /// caches distinguish the wiring from an implementation that would mark
+    /// every resource the same level: one sits on a merged pull request's
+    /// branch (`Safe`, via `merged_refs`), the other on the default branch
+    /// (`Keep`, via `default_branch`). A fixture with only one of the two
+    /// could not tell a real classifier from one that always answers with
+    /// that one level.
+    #[tokio::test]
+    async fn repo_detail_marks_a_cache_on_a_merged_branch_safe_and_one_on_main_kept() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/surete/actions/caches"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "actions_caches": [
+                    { "id": 1, "key": "cache-merged", "ref": "refs/heads/claude/landing-3jbqk4",
+                      "size_in_bytes": 1000, "last_accessed_at": "2026-06-01T00:00:00Z" },
+                    { "id": 2, "key": "cache-main", "ref": "refs/heads/main",
+                      "size_in_bytes": 1000, "last_accessed_at": "2026-06-01T00:00:00Z" }
+                ]
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/surete/actions/artifacts"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({ "artifacts": [] })),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/surete/actions/runs"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({ "workflow_runs": [] })),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/orgs/systm-d/packages/container/surete/versions"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/surete/pulls"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                { "number": 31, "state": "closed", "merged_at": "2026-07-24T13:33:32Z",
+                  "head": { "ref": "claude/landing-3jbqk4" } }
+            ])))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/surete/branches"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                { "name": "main", "protected": true }
+            ])))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/surete/tags"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/surete/releases"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/surete"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "default_branch": "main"
+            })))
+            .mount(&server)
+            .await;
+
+        let client = Client::with_base("t0ken", &server.uri()).unwrap();
+        let items = repo_detail(&client, "systm-d", "surete").await.unwrap();
+
+        let caches: Vec<&Resource> = items
+            .iter()
+            .filter(|r| r.kind == ResourceKind::Cache)
+            .collect();
+        assert_eq!(caches.len(), 2);
+        let merged = caches.iter().find(|r| r.id == 1).unwrap();
+        let on_main = caches.iter().find(|r| r.id == 2).unwrap();
+        assert_eq!(
+            merged.safety,
+            crate::safety::Safety::Safe,
+            "a cache on a merged pull request's branch must be safe"
+        );
+        assert_eq!(
+            on_main.safety,
+            crate::safety::Safety::Keep,
+            "a cache on the default branch must be kept"
+        );
+    }
+
+    /// `systm-d/{repo}` holding four caches, one per way `safety::classify`
+    /// can judge a cache, with its branches listing and its default-branch
+    /// lookup answering `branches` and `default_branch`:
+    ///
+    /// - id 1, on closed pull request 54's merge ref: safe through
+    ///   `stale_pr`, a fact the closed-PR listing proves on its own;
+    /// - id 2, on `claude/landing`, the head of merged pull request 31: safe
+    ///   through `merged_refs`, same listing;
+    /// - id 3, on `wip`, a live branch no pull request merged;
+    /// - id 4, on `main`, the default branch.
+    ///
+    /// The last two are the caches only the branches listing and the
+    /// default-branch lookup can tell apart from a vanished branch's.
+    async fn mount_four_caches(
+        server: &MockServer,
+        repo: &str,
+        branches: ResponseTemplate,
+        default_branch: ResponseTemplate,
+    ) {
+        let cache = |id: u64, git_ref: &str| {
+            serde_json::json!({
+                "id": id, "key": format!("cache-{id}"), "ref": git_ref,
+                "size_in_bytes": 1000 * id, "last_accessed_at": "2026-06-01T00:00:00Z"
+            })
+        };
+        let empty = |body: serde_json::Value| ResponseTemplate::new(200).set_body_json(body);
+        let routes = [
+            (
+                format!("/repos/systm-d/{repo}/actions/caches"),
+                empty(serde_json::json!({ "actions_caches": [
+                    cache(1, "refs/pull/54/merge"),
+                    cache(2, "refs/heads/claude/landing"),
+                    cache(3, "refs/heads/wip"),
+                    cache(4, "refs/heads/main"),
+                ] })),
+            ),
+            (
+                format!("/repos/systm-d/{repo}/actions/artifacts"),
+                empty(serde_json::json!({ "artifacts": [] })),
+            ),
+            (
+                format!("/repos/systm-d/{repo}/actions/runs"),
+                empty(serde_json::json!({ "workflow_runs": [] })),
+            ),
+            (
+                format!("/orgs/systm-d/packages/container/{repo}/versions"),
+                ResponseTemplate::new(404),
+            ),
+            (
+                format!("/repos/systm-d/{repo}/pulls"),
+                empty(serde_json::json!([
+                    { "number": 54, "state": "closed", "merged_at": null,
+                      "head": { "ref": "feature/abandoned" } },
+                    { "number": 31, "state": "closed", "merged_at": "2026-07-24T13:33:32Z",
+                      "head": { "ref": "claude/landing" } }
+                ])),
+            ),
+            (format!("/repos/systm-d/{repo}/branches"), branches),
+            (
+                format!("/repos/systm-d/{repo}/tags"),
+                empty(serde_json::json!([])),
+            ),
+            (
+                format!("/repos/systm-d/{repo}/releases"),
+                empty(serde_json::json!([])),
+            ),
+            (format!("/repos/systm-d/{repo}"), default_branch),
+        ];
+        for (route, response) in routes {
+            Mock::given(method("GET"))
+                .and(path(route))
+                .respond_with(response)
+                .mount(server)
+                .await;
+        }
+    }
+
+    /// Each of `mount_four_caches`' caches' safety level, by id, as
+    /// `repo_detail` classified it.
+    async fn cache_levels(server: &MockServer, repo: &str) -> Vec<(u64, crate::safety::Safety)> {
+        let client = Client::with_base("t0ken", &server.uri()).unwrap();
+        let mut levels: Vec<(u64, crate::safety::Safety)> = repo_detail(&client, "systm-d", repo)
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|r| r.kind == ResourceKind::Cache)
+            .map(|r| (r.id, r.safety))
+            .collect();
+        levels.sort_by_key(|&(id, _)| id);
+        levels
+    }
+
+    /// Final review I1: a branches listing that failed used to degrade to an
+    /// empty set of live branches, and the vanished-branch rule then read
+    /// every cache on a live branch as a cache on a branch that no longer
+    /// exists — ⛑, taken by `[A]`. Absence of data is not proof of absence:
+    /// `wip`'s cache must fall to `Check`. The two caches made safe by the
+    /// closed-PR listing alone keep their level, and `main`'s stays kept.
+    #[tokio::test]
+    async fn safety_never_reads_a_failed_branches_listing_as_vanished_branches() {
+        use crate::safety::Safety;
+        let server = MockServer::start().await;
+        mount_four_caches(
+            &server,
+            "refusee",
+            ResponseTemplate::new(403),
+            ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({ "default_branch": "main" })),
+        )
+        .await;
+
+        assert_eq!(
+            cache_levels(&server, "refusee").await,
+            vec![
+                (1, Safety::Safe),
+                (2, Safety::Safe),
+                (3, Safety::Check),
+                (4, Safety::Keep)
+            ],
+            "(id, level) of the closed PR's, merged head's, live branch's and main's caches"
+        );
+    }
+
+    /// The other way the branch set is incomplete: `api::refs::branches`
+    /// stops after its page cap. Every page here is full, so the listing is
+    /// cut there, and `wip` — past the last page read — is absent from what
+    /// was read. Its cache must fall to `Check`, not read as a vanished
+    /// branch's.
+    #[tokio::test]
+    async fn safety_never_reads_a_truncated_branches_listing_as_vanished_branches() {
+        use crate::safety::Safety;
+        let server = MockServer::start().await;
+        let full_page: Vec<serde_json::Value> = (1..=100)
+            .map(|n| serde_json::json!({ "name": format!("branch-{n}"), "protected": false }))
+            .collect();
+        mount_four_caches(
+            &server,
+            "tronquee",
+            ResponseTemplate::new(200).set_body_json(full_page),
+            ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({ "default_branch": "main" })),
+        )
+        .await;
+
+        assert_eq!(
+            cache_levels(&server, "tronquee").await,
+            vec![
+                (1, Safety::Safe),
+                (2, Safety::Safe),
+                (3, Safety::Check),
+                (4, Safety::Keep)
+            ],
+            "(id, level) of the closed PR's, merged head's, live branch's and main's caches"
+        );
+    }
+
+    /// The final review's joint blip: both calls hit `/repos/{o}/{r}`'s
+    /// endpoint family. With no default branch and no branch set, `main`'s
+    /// cache used to read ⛑ too. Neither `wip`'s nor `main`'s may be `Safe`;
+    /// the closed PR's and the merged head's still are.
+    #[tokio::test]
+    async fn safety_never_marks_the_default_branchs_cache_safe_when_neither_listing_answers() {
+        use crate::safety::Safety;
+        let server = MockServer::start().await;
+        mount_four_caches(
+            &server,
+            "muette",
+            ResponseTemplate::new(403),
+            ResponseTemplate::new(403),
+        )
+        .await;
+
+        assert_eq!(
+            cache_levels(&server, "muette").await,
+            vec![
+                (1, Safety::Safe),
+                (2, Safety::Safe),
+                (3, Safety::Check),
+                (4, Safety::Check)
+            ],
+            "(id, level) of the closed PR's, merged head's, live branch's and main's caches"
+        );
+    }
+
     #[tokio::test]
     async fn an_org_that_fails_is_dropped_not_fatal() {
         // `overview` tolerates a failing org so one broken permission does not
@@ -1904,5 +2292,143 @@ mod tests {
             .unwrap();
 
         assert!(failed.is_empty(), "got: {failed:?}");
+    }
+
+    /// Mounts the nine calls `repo_detail_with_warnings` joins for
+    /// `systm-d/{repo}`, each answering a healthy, empty page — and no
+    /// package published, like most repositories.
+    async fn mount_an_empty_repository(server: &MockServer, repo: &str) {
+        let empty = |body: serde_json::Value| ResponseTemplate::new(200).set_body_json(body);
+        let routes = [
+            (
+                format!("/repos/systm-d/{repo}/actions/caches"),
+                empty(serde_json::json!({ "actions_caches": [] })),
+            ),
+            (
+                format!("/repos/systm-d/{repo}/actions/artifacts"),
+                empty(serde_json::json!({ "artifacts": [] })),
+            ),
+            (
+                format!("/repos/systm-d/{repo}/actions/runs"),
+                empty(serde_json::json!({ "workflow_runs": [] })),
+            ),
+            (
+                format!("/orgs/systm-d/packages/container/{repo}/versions"),
+                ResponseTemplate::new(404),
+            ),
+            (
+                format!("/repos/systm-d/{repo}/pulls"),
+                empty(serde_json::json!([])),
+            ),
+            (
+                format!("/repos/systm-d/{repo}/branches"),
+                empty(serde_json::json!([])),
+            ),
+            (
+                format!("/repos/systm-d/{repo}/tags"),
+                empty(serde_json::json!([])),
+            ),
+            (
+                format!("/repos/systm-d/{repo}/releases"),
+                empty(serde_json::json!([])),
+            ),
+            (
+                format!("/repos/systm-d/{repo}"),
+                empty(serde_json::json!({ "default_branch": "main" })),
+            ),
+        ];
+        for (route, response) in routes {
+            Mock::given(method("GET"))
+                .and(path(route))
+                .respond_with(response)
+                .mount(server)
+                .await;
+        }
+    }
+
+    /// `TOTAL_CALLS` is the load bar's denominator, so it must be the number
+    /// of calls the drill-down really joins. A complete run ticks exactly
+    /// that many times — a tenth listing joined with its tick would
+    /// overshoot it — and sends exactly that many requests — a tenth joined
+    /// without one would leave the bar full while it still runs, and a
+    /// constant left at nine after a tenth family would stop the bar at
+    /// 90 %. The channel closes with the run: the event loop's forwarder
+    /// waits for that before the listing lands.
+    #[tokio::test]
+    async fn repo_detail_ticking_ticks_exactly_total_calls_times() {
+        let server = MockServer::start().await;
+        mount_an_empty_repository(&server, "tics").await;
+        let client = Client::with_base("t0ken", &server.uri()).unwrap();
+        let (tick, mut ticks) = tokio::sync::mpsc::unbounded_channel();
+
+        let (_, failed) = repo_detail_ticking(&client, "systm-d", "tics", tick)
+            .await
+            .unwrap();
+        assert!(
+            failed.is_empty(),
+            "the fixture must be a complete run: {failed:?}"
+        );
+
+        let counted = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            let mut n = 0;
+            while ticks.recv().await.is_some() {
+                n += 1;
+            }
+            n
+        })
+        .await
+        .expect("the tick channel outlived the run");
+        assert_eq!(counted, TOTAL_CALLS, "ticks of a complete run");
+        let requests = server
+            .received_requests()
+            .await
+            .expect("wiremock records requests");
+        assert_eq!(
+            requests.len(),
+            TOTAL_CALLS,
+            "requests of a complete run: {:?}",
+            requests.iter().map(|r| r.url.path()).collect::<Vec<_>>()
+        );
+    }
+
+    /// Each call ticks as it lands, not all nine once the join is over: a
+    /// bar fed that way has two states, and says less than the
+    /// `(chargement…)` it sits under. The releases listing answers a second
+    /// after the eight others, whose eight ticks must all arrive while it is
+    /// still running.
+    #[tokio::test]
+    async fn repo_detail_ticking_ticks_each_call_as_it_lands() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/tics/releases"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!([]))
+                    .set_delay(std::time::Duration::from_secs(1)),
+            )
+            .with_priority(1)
+            .mount(&server)
+            .await;
+        mount_an_empty_repository(&server, "tics").await;
+        let client = Client::with_base("t0ken", &server.uri()).unwrap();
+        let (tick, mut ticks) = tokio::sync::mpsc::unbounded_channel();
+
+        let run = repo_detail_ticking(&client, "systm-d", "tics", tick);
+        tokio::pin!(run);
+        let eight = async {
+            for _ in 1..TOTAL_CALLS {
+                ticks
+                    .recv()
+                    .await
+                    .expect("the run closed its ticks before its fast calls ticked");
+            }
+        };
+        tokio::select! {
+            biased;
+            _ = &mut run => panic!("the slow call landed before the eight fast ones had ticked"),
+            () = eight => {}
+        }
+        run.await.unwrap();
+        assert!(ticks.recv().await.is_some(), "the slow call never ticked");
     }
 }

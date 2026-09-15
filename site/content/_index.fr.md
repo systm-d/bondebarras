@@ -117,7 +117,7 @@ cta2 = "Installer"
 
 <section class="preview">
 <h2>Un seul écran, entièrement au clavier</h2>
-<p class="section-lede">L'arbre des orgs à gauche, les ressources du dépôt sélectionné à droite — les caches marqués sautent aux yeux.</p>
+<p class="section-lede">Trois colonnes, toujours à l'écran — les organisations, les dépôts de l'org courante et les ressources du dépôt sélectionné — les caches marqués sautent aux yeux.</p>
 <figure class="shot">
 <div class="term-window">
 <div class="term-bar"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span><span class="term-title">bondebarras — systm-d</span></div>
@@ -125,14 +125,15 @@ cta2 = "Installer"
 <div class="tui">
 <div class="tui-head"><span class="tui-brand">bondebarras</span><span class="tui-home">15 orgs</span></div>
 <div class="tui-panels">
-<div class="tui-col"><div class="col-title">Orgs</div><div class="row sel">▾ systm-d      37.2 Go</div><div class="row">   ci-heavy    11.1 Go</div><div class="row">   another-repo 9.8 Go</div><div class="row dim">▸ SecondBrain 13.9 Go</div></div>
-<div class="tui-col grow"><div class="col-title">69 éléments · 11.1 Go</div><div class="row sel">[x] cache  coverage-linux-x64            261.0 Mo  <span class="stale">PR#32 ⚑</span></div><div class="row">[x] cache  coverage-linux-x64            261.0 Mo  <span class="stale">PR#25 ⚑</span></div><div class="row">[ ] cache  ubuntu-22.04-test              257.0 Mo  12j</div><div class="row">[x] artif  build-output                    1.1 Mo  <span class="stale">PR#32 ⚑</span></div></div>
+<div class="tui-col"><div class="col-title">Orgs</div><div class="row sel">systm-d      37.2 Go</div><div class="row dim">SecondBrain  13.9 Go</div></div>
+<div class="tui-col"><div class="col-title">Dépôts</div><div class="row">another-repo  9.8 Go</div><div class="row sel">ci-heavy     11.1 Go</div></div>
+<div class="tui-col grow"><div class="col-title">69 éléments · cochés 522.0 Mo</div><div class="row sel">[x]⛑ cache  coverage-linux-x64               261Mo  <span class="stale">PR#32 ⚑</span></div><div class="row">[x]⛑ cache  coverage-linux-x64               261Mo  <span class="stale">PR#25 ⚑</span></div><div class="row">[ ]  cache  ubuntu-22.04-test                257Mo  12j</div><div class="row">[ ]• artif  build-output                     1.1Mo  45j</div></div>
 </div>
-<div class="tui-foot"><span class="key">espace</span> cocher<span class="key">s</span> trier<span class="key">f</span> filtrer<span class="key">A</span> tout ⚑<span class="key">d</span> supprimer</div>
+<div class="tui-foot"><span class="key">←/→</span> col.<span class="key">↑/↓</span> ligne<span class="key">espace</span> cocher<span class="key">A</span> sûrs<span class="key">V</span> +à vérifier<span class="key">d</span> supprimer<span class="key">f</span> filtrer<span class="key">s</span> trier<span class="key">b</span> billing<span class="key">q</span> quitter</div>
 </div>
 </div>
 </div>
-<figcaption>À gauche : les organisations et leurs dépôts, la plus grosse empreinte cache d'abord. À droite : les ressources de ce dépôt, les caches marqués en bleu.</figcaption>
+<figcaption>De gauche à droite : les organisations, les dépôts de l'org courante, et les ressources du dépôt sélectionné — ⛑ marque une ligne sûre à supprimer, • une ligne à vérifier, ⚑ un cache épinglé à une pull request fermée. Croquis d'un terminal large : plus étroit, le pied garde d'abord [d], puis les touches de sélection.</figcaption>
 </figure>
 <figure class="shot">
 <div class="term-window">

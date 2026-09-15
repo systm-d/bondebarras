@@ -6,16 +6,45 @@
 
 use crate::clean::Plan;
 use crate::model::{OrgSummary, RepoSummary, Resource, ResourceKind};
+use crate::safety::Safety;
+use crate::tui::views::progress::{self, Work};
 use ratatui::widgets::ListState;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::time::{Duration, Instant};
 
-/// Which pane the keyboard drives. The tree has three levels, and each one
-/// needs its own cursor: an org, one of its repos, then that repo's resources.
+/// Which column the keyboard drives, each with its own cursor: the orgs,
+/// the current org's repositories, then the loaded repository's resources.
+///
+/// The three values used to name the levels of a folded tree; since spec
+/// §2 they name the three columns of `tui::views::column_areas`, whichever
+/// of them the terminal's width leaves on screen.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Focus {
     Orgs,
     Repos,
     Resources,
+}
+
+impl Focus {
+    /// The column to the right, wrapping from the resources back to the
+    /// orgs — where `→` and `Tab` move.
+    pub fn next(self) -> Focus {
+        match self {
+            Focus::Orgs => Focus::Repos,
+            Focus::Repos => Focus::Resources,
+            Focus::Resources => Focus::Orgs,
+        }
+    }
+
+    /// The column to the left, wrapping from the orgs round to the
+    /// resources — where `←` moves.
+    pub fn previous(self) -> Focus {
+        match self {
+            Focus::Orgs => Focus::Resources,
+            Focus::Repos => Focus::Orgs,
+            Focus::Resources => Focus::Repos,
+        }
+    }
 }
 
 /// Which top-level view is on screen.
@@ -34,6 +63,74 @@ pub enum SortKey {
     Age,
     /// Alphabetical, for hunting a known key.
     Name,
+}
+
+/// How long the column-2 cursor rests on a repository before its resources
+/// load — spec §3. Loading one costs nine requests
+/// (`scan::repo_detail_with_warnings`): walking the cursor down an org's 33
+/// repositories would otherwise spend 297 of them on rows the user only
+/// passed over.
+pub const LOAD_PAUSE: Duration = Duration::from_millis(300);
+
+/// Which load a listing belongs to.
+///
+/// Minted by `App::begin_load` alone — its field is private — carried by the
+/// task that fetches the listing, inside its `Load`, and compared by
+/// `App::accepts_load` when the listing lands. A listing whose generation is
+/// no longer current is dropped: since it started, the cursor has left its
+/// repository or a purge has made it suspect. A type, not a convention — the
+/// shape `clean::Progress` gave a purge's identity in v0.5, after an archive
+/// resolved against whatever the tree had ticked when it finished rather
+/// than against its own target.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LoadGeneration(u64);
+
+/// One repository load: the repository, and the generation it was started
+/// under. The event loop hands it to the task fetching the listing and gets
+/// it back with the listing (`App::land_load`), so a listing always lands
+/// with its own identity, never the cursor's.
+#[derive(Debug)]
+pub struct Load {
+    generation: LoadGeneration,
+    pub org: String,
+    pub repo: String,
+}
+
+impl Load {
+    /// The generation this load was started under, for the ticks its task
+    /// sends (`App::load_ticked`): they travel apart from its listing, and
+    /// must carry the same identity.
+    pub fn generation(&self) -> LoadGeneration {
+        self.generation
+    }
+}
+
+/// What the resources column shows, measured against the repository under
+/// the column-2 cursor — see `App::shown`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Shown {
+    /// No repository under the cursor, and none loaded: no org, or an org
+    /// without repositories.
+    Nothing,
+    /// `App::resources` is this repository's listing.
+    Listing { org: String, repo: String },
+    /// This repository's listing is on its way: its pause is running, or
+    /// its load is in flight.
+    Loading { org: String, repo: String },
+    /// This repository's last load failed. The pause does not retry it;
+    /// `Entrée` does.
+    Failed { org: String, repo: String },
+}
+
+impl Shown {
+    /// Whether the column draws `App::resources`: for a listing, or for the
+    /// nothing an org without repositories has. Never while a listing is on
+    /// its way or has failed — `resources` then holds nothing of the
+    /// repository the column names, and an empty list would read as "this
+    /// repository holds nothing" (spec §3).
+    pub fn draws_resources(&self) -> bool {
+        matches!(self, Shown::Nothing | Shown::Listing { .. })
+    }
 }
 
 pub struct App {
@@ -55,16 +152,28 @@ pub struct App {
     pub filter_mode: bool,
     pub status: String,
     pub should_quit: bool,
-    /// The repository `resources` were loaded from. A plan must target this,
-    /// not wherever the cursor has wandered since — they are not the same
-    /// thing the moment the user moves after loading.
+    /// The repository `resources` were loaded from, and the one a plan
+    /// targets (`take_plan`). It follows the column-2 cursor
+    /// (`follow_cursor`): `None` from the moment the cursor leaves it until
+    /// the next repository's listing is shown. A purge's own messages still
+    /// name their repository rather than reading this — the cursor, and so
+    /// this, can move while the purge runs.
     pub loaded: Option<(String, String)>,
-    /// Persistent cursor state for the left (orgs/repos tree) pane. Without
-    /// it ratatui only ever draws the rows that fit and the cursor walks off
-    /// screen past that point.
+    /// Persistent cursor state for the orgs column. Without it ratatui only
+    /// ever draws the rows that fit and the cursor walks off screen past
+    /// that point.
     pub org_state: ListState,
-    /// Persistent cursor state for the right (resources) pane. Same reason.
+    /// Persistent cursor state for the repos column. Same reason.
+    pub repo_state: ListState,
+    /// Persistent cursor state for the resources column. Same reason.
     pub res_state: ListState,
+    /// Whether the last frame had too few lines to draw one row of the
+    /// resources list — written by `tui::views::repo::render`, the one place
+    /// that knows. While it is, the list keys and `d` do nothing from the
+    /// resources column (`tui::column_action`, `tui::plan_for_d`): they would
+    /// act on rows no frame showed. Final review I2 — ruling A's hidden list,
+    /// by height rather than width.
+    pub(crate) resources_too_short: bool,
     /// The org a running purge belongs to, for the post-purge cache refresh.
     /// The user can navigate away while it runs — purges execute on a
     /// spawned task while the event loop keeps handling keys — so `loaded`
@@ -92,17 +201,78 @@ pub struct App {
     /// whatever deletions are still queued with no summary shown. Disarmed by
     /// `purge_finished` only once every in-flight purge has settled.
     pub quit_armed: bool,
-    /// The repository ticked for archiving, from the left tree — `(org,
+    /// The purge or archive in flight, if any.
+    ///
+    /// One slot for every purge running at once, apart from `loading`: the
+    /// cursor stays free during a purge, so a load can start while deletions
+    /// land, and one slot for both would let either announce the end of the
+    /// other. Set by `purge_launched`, advanced by `purge_advanced`, cleared
+    /// by `purge_finished` once the last purge in flight has finished.
+    pub purge: Option<Work>,
+    /// The repository drill-down in flight, if any.
+    ///
+    /// The load of `in_flight`, under `load_generation`: set when that load
+    /// starts, advanced by the ticks its task sends (`load_ticked`), and
+    /// cleared wherever `in_flight` is.
+    pub loading: Option<Work>,
+    /// The repository ticked for archiving, from the repos column — `(org,
     /// repo)`. A repository lives one level above `resources`, not inside
     /// it, so it cannot share `selected`'s `(ResourceKind, u64)` set the way
     /// every other kind does; this is its own, deliberately single-slot
     /// state instead of a `HashSet`, because `clean::Plan` can only ever
     /// target one repository at a time — there is no "select several repos,
-    /// archive them together" shape to build towards. Only ever written by
+    /// archive them together" shape to build towards. Only ever set by
     /// `toggle_repo_selected`, which refuses anything but
     /// `repos::RepoClass::Archivable` — never by any bulk operation; see
-    /// `select_all_stale`'s own guard for why that matters.
+    /// `select_levels`'s own guard for why that matters.
+    ///
+    /// It survives the repos cursor, and the listings that land as it moves
+    /// (ruling R7-1, 2026-09-11): only an untick, the end of its own archive
+    /// (`archive_done`, `archive_failed`) or an org move
+    /// (`reset_scoped_cursors`) clears it.
     pub selected_repo: Option<(String, String)>,
+    /// Every repository listing fetched this session, by `(org, repo)` —
+    /// spec §3: a repository already loaded shows at once, with no request.
+    /// Written by `land_load` (a refresh by `Entrée` replaces it), kept
+    /// current row by row while a purge deletes from it (`resource_deleted`),
+    /// and dropped when that purge ends (`purge_ended`).
+    pub repo_cache: HashMap<(String, String), Vec<Resource>>,
+    /// The families whose listing was refused when a kept listing was
+    /// fetched, under the same key — ruling F2 (2026-09-11): kept with the
+    /// listing and said again on every visit, so kept rows never read as if
+    /// a refused family were empty. No entry when nothing was refused.
+    repo_refused: HashMap<(String, String), Vec<&'static str>>,
+    /// How many purges in flight concern each repository — recorded from
+    /// each plan when it is launched (`purge_launched`), released when that
+    /// purge ends (`purge_ended`). No load starts on its own for a
+    /// repository recorded here (`follow_cursor`).
+    purging_repos: HashMap<(String, String), usize>,
+    /// The generation a listing must carry to be accepted when it lands
+    /// (`accepts_load`). Moves on whenever an outstanding load stops being
+    /// wanted: another load begins (`begin_load`), the cursor leaves its
+    /// repository (`follow_cursor`), or a purge makes its listing suspect
+    /// (`forget`).
+    pub load_generation: u64,
+    /// When the repository under the column-2 cursor started waiting for its
+    /// load: `follow_cursor` starts the load `LOAD_PAUSE` later. `None` once
+    /// the load has started, and whenever nothing waits.
+    pub pending_since: Option<Instant>,
+    /// The repository under the column-2 cursor when `follow_cursor` last
+    /// looked — what a change is measured against. `None` before the first
+    /// look, so the repository under the cursor at start-up counts as a
+    /// change and loads after the same pause.
+    cursor_repo: Option<(String, String)>,
+    /// The repository whose load is in flight under `load_generation`.
+    in_flight: Option<(String, String)>,
+    /// The repository whose last load failed, until the cursor leaves it or
+    /// `Entrée` retries it.
+    load_failed: Option<(String, String)>,
+    /// The message the last load wrote to `status` — a refused family's
+    /// warning, or a failed load's error — so the repository's next listing,
+    /// or the cursor leaving it, clears that message and never one written
+    /// since: a purge's recap, the quit guard's warning. A listing lands on
+    /// its own time, not on a key.
+    load_warning: Option<String>,
 }
 
 impl App {
@@ -122,17 +292,30 @@ impl App {
             should_quit: false,
             loaded: None,
             org_state: ListState::default(),
+            repo_state: ListState::default(),
             res_state: ListState::default(),
+            resources_too_short: false,
             purging_org: None,
             view: View::Orgs,
             month_cursor: 0,
             purges_in_flight: 0,
             quit_armed: false,
+            purge: None,
+            loading: None,
             selected_repo: None,
+            repo_cache: HashMap::new(),
+            repo_refused: HashMap::new(),
+            purging_repos: HashMap::new(),
+            load_generation: 0,
+            pending_since: None,
+            cursor_repo: None,
+            in_flight: None,
+            load_failed: None,
+            load_warning: None,
         }
     }
 
-    /// Resources after filtering and sorting — what the right pane draws.
+    /// Resources after filtering and sorting — what the resources column draws.
     pub fn visible_resources(&self) -> Vec<&Resource> {
         let needle = self.filter.to_lowercase();
         let mut out: Vec<&Resource> = self
@@ -184,7 +367,7 @@ impl App {
         }
     }
 
-    /// Tick or untick the repository row under the cursor, in the left tree —
+    /// Tick or untick the repository row under the cursor, in the repos column —
     /// the repository's own equivalent of `toggle_selected`, since it lives
     /// one level above `resources` and cannot share that method's cursor or
     /// storage.
@@ -259,6 +442,7 @@ impl App {
                 stale_pr: false,
                 protected: false,
                 branch_class: None,
+                safety: crate::safety::Safety::Keep,
             }],
             owner,
             repo,
@@ -310,53 +494,431 @@ impl App {
         }
     }
 
-    /// The plan `[d]` builds — keyed on which pane currently has focus,
-    /// never on whichever of `take_repo_plan`/`take_plan` happens to return
-    /// `Some`.
+    /// The plan `[d]` builds: the plan of the column focus is on, never
+    /// whichever of `take_repo_plan`/`take_plan` happens to return `Some`.
+    ///
+    /// - The repos column archives the ticked repository
+    ///   (`take_repo_plan`), wherever the repos cursor has moved since: the
+    ///   tick survives the cursor (ruling R7-1), and the archive modal names
+    ///   the repository it targets.
+    /// - The resources column deletes the ticked resources (`take_plan`).
+    /// - The orgs column owns no plan (Task 7): `None`. With one column on
+    ///   screen and focus there, the resource list is off screen, and a plan
+    ///   built from resources ticked earlier would reach a Tier 1
+    ///   confirmation that does not list them.
     ///
     /// Finding 1 of the final review: the old dispatch was
     /// `take_repo_plan().or_else(|| take_plan())`, so a repository ticked
-    /// earlier outranked a resource selection made afterward, as long as
-    /// `selected_repo` had not happened to get cleared in between.
-    /// `Focus::Repos` is the only focus `toggle_repo_selected` can even be
-    /// reached from (see `[espace]`'s own dispatch in `tui::event_loop`), so
-    /// it is also the only focus this may archive from; everywhere else it
-    /// falls back to the ordinary resource-scoped plan, exactly as if no
-    /// repository had ever been ticked. This closes the gap `finish_loading`
-    /// and `reset_scoped_cursors`'s own clearing cannot: a repository ticked
-    /// and then left alone while the user merely `Tab`s over to
-    /// `Focus::Resources` — no `Enter`, no org move — reaches neither of
-    /// those two clears, so the dispatch itself has to be the thing that
-    /// stops preferring it.
+    /// earlier outranked a resource selection made afterward. `Focus::Repos`
+    /// is the only focus `toggle_repo_selected` can be reached from (see
+    /// `tui::column_action`, which `[espace]` goes through), so it is also
+    /// the only focus this archives from: a repository ticked, then left
+    /// ticked while the user `Tab`s over to the resources column, never
+    /// outranks the resources ticked there.
     pub fn take_focused_plan(&self) -> Option<Plan> {
         match self.focus {
             Focus::Repos => self.take_repo_plan(),
-            _ => self.take_plan(),
+            Focus::Resources => self.take_plan(),
+            Focus::Orgs => None,
         }
     }
 
-    /// Apply a successful `Enter` load to `app`: swap in the freshly fetched
-    /// resources, reset every cursor and filter scoped to the previous
-    /// repository, and report which families' listings — if any — failed.
+    /// Starts a new load generation and returns it: a listing started under
+    /// any earlier one is dropped when it lands (`accepts_load`).
+    pub fn begin_load(&mut self) -> LoadGeneration {
+        self.load_generation += 1;
+        LoadGeneration(self.load_generation)
+    }
+
+    /// Whether a listing started under `generation` may still be shown:
+    /// only if nothing has superseded it since — see `load_generation`.
+    pub fn accepts_load(&self, generation: LoadGeneration) -> bool {
+        generation.0 == self.load_generation
+    }
+
+    /// Moves the load bar one call on, for a tick of the load started under
+    /// `generation` — only if `accepts_load` still accepts it.
     ///
-    /// Extracted from `event_loop`'s `Enter` arm so the state transition —
-    /// the actual bug surface of Findings 1 and 5 of the final review — can
-    /// be asserted on directly, without spinning up a terminal and a mock
-    /// server to drive the async key-handling loop end to end.
+    /// A load the cursor left, or one a purge made suspect, keeps ticking on
+    /// its task. Its ticks are dropped here as its listing is in `land_load`:
+    /// otherwise the bar of the repository now looked at would move at the
+    /// pace of the one left behind.
+    pub fn load_ticked(&mut self, generation: LoadGeneration) {
+        if !self.accepts_load(generation) {
+            return;
+        }
+        if let Some(bar) = self.loading.as_mut() {
+            bar.done += 1;
+        }
+    }
+
+    /// Keeps `items` as `key`'s listing for the rest of the session, with no
+    /// refused family.
+    pub fn remember(&mut self, key: (String, String), items: Vec<Resource>) {
+        self.keep(key, items, Vec::new());
+    }
+
+    /// Keeps `items` as `key`'s listing, together with the families whose
+    /// listing was refused — ruling F2: both come back on every visit.
+    fn keep(&mut self, key: (String, String), items: Vec<Resource>, refused: Vec<&'static str>) {
+        if refused.is_empty() {
+            self.repo_refused.remove(&key);
+        } else {
+            self.repo_refused.insert(key.clone(), refused);
+        }
+        self.repo_cache.insert(key, items);
+    }
+
+    /// `(org, repo)`'s listing, if one was kept this session.
+    pub fn cached(&self, (org, repo): (&str, &str)) -> Option<&[Resource]> {
+        self.repo_cache
+            .get(&(org.to_string(), repo.to_string()))
+            .map(Vec::as_slice)
+    }
+
+    /// Drops `(org, repo)`'s kept listing, and its refused families: a purge
+    /// concerning that repository has just ended (`purge_ended`), and the
+    /// next visit must read a fresh listing.
     ///
-    /// Clears `selected_repo`: Finding 1's other half, alongside
-    /// `reset_scoped_cursors`'s own clearing on every org move. `Enter` is
-    /// the moment `resources` — and so `take_plan`'s target — actually
-    /// changes; a repository ticked before this must not silently keep
-    /// outranking whatever the user goes on to select in the freshly loaded
-    /// pane.
+    /// A load of that repository already in flight is superseded too — its
+    /// listing may have been read before the purge's deletions — and
+    /// `follow_cursor` gives the repository a fresh pause. The caller passes
+    /// the purge's own identity, never the cursor's.
+    pub fn forget(&mut self, (org, repo): (&str, &str)) {
+        let key = (org.to_string(), repo.to_string());
+        self.repo_cache.remove(&key);
+        self.repo_refused.remove(&key);
+        if self.in_flight.as_ref() == Some(&key) {
+            self.in_flight = None;
+            self.loading = None;
+            self.load_generation += 1;
+        }
+    }
+
+    /// Records a purge — or an archive — confirmed and about to run: the
+    /// quit guard's count, the org to refresh when it finishes, and the
+    /// repository its plan concerns.
+    ///
+    /// The repository is recorded from the plan itself, at launch: nothing
+    /// that arrives later names it reliably — `Progress::Finished` names no
+    /// repository, and the cursor can be anywhere by then. While it is
+    /// recorded, no load starts on its own for that repository
+    /// (`follow_cursor`); `purge_ended` releases it.
+    ///
+    /// Its items join the purge bar (`purge`, `Work::joined`), counted from
+    /// the plan itself. A plan with no item sets no bar and changes none: it
+    /// ends before it could be drawn.
+    pub fn purge_launched(&mut self, plan: &Plan) {
+        self.purging_org = Some(plan.owner.clone());
+        self.purges_in_flight += 1;
+        *self
+            .purging_repos
+            .entry((plan.owner.clone(), plan.repo.clone()))
+            .or_insert(0) += 1;
+
+        if !plan.items.is_empty() {
+            let label = if plan.is_archive() {
+                progress::ARCHIVE
+            } else {
+                progress::DELETION
+            };
+            let count = plan.items.len();
+            self.purge = Some(match self.purge.take() {
+                Some(running) => running.joined(label, count),
+                None => Work::new(label, count),
+            });
+        }
+    }
+
+    /// Advances the purge bar by one item: a purge's `Done` or `Failed`. A
+    /// refused item is processed, not still waiting.
+    pub fn purge_advanced(&mut self) {
+        if let Some(bar) = self.purge.as_mut() {
+            bar.done += 1;
+        }
+    }
+
+    /// Applies the end of one purge of `(owner, repo)`: its `Finished`, which
+    /// the event loop tags with the repository recorded from its plan at
+    /// launch (`tui::spawn_purge`) — never the cursor's.
+    ///
+    /// Releases that purge's claim on the repository, and forgets the
+    /// repository's kept listing (ruling F3, 2026-09-11). A deletion changes
+    /// more than its own row — a workflow run takes its artifacts with it, a
+    /// deleted branch changes how its caches are marked — so the next visit
+    /// reads a fresh listing. Until the end, the listing was kept current
+    /// row by row instead (`resource_deleted`), and the purge caused no load.
+    pub fn purge_ended(&mut self, owner: &str, repo: &str) {
+        let key = (owner.to_string(), repo.to_string());
+        if let Some(count) = self.purging_repos.get_mut(&key) {
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                self.purging_repos.remove(&key);
+            }
+        }
+        self.forget((owner, repo));
+    }
+
+    /// What the resources column shows, for the repository under the
+    /// column-2 cursor.
+    ///
+    /// `resources` count as that repository's listing only when `loaded`
+    /// names it; otherwise the column shows that repository loading, or
+    /// failed — never the rows of one the cursor has left.
+    pub fn shown(&self) -> Shown {
+        match (self.loaded.clone(), self.current_target()) {
+            (Some(loaded), Some(target)) if loaded == target => Shown::Listing {
+                org: target.0,
+                repo: target.1,
+            },
+            (_, Some((org, repo))) => {
+                if self
+                    .load_failed
+                    .as_ref()
+                    .is_some_and(|(o, r)| *o == org && *r == repo)
+                {
+                    Shown::Failed { org, repo }
+                } else {
+                    Shown::Loading { org, repo }
+                }
+            }
+            (Some((org, repo)), None) => Shown::Listing { org, repo },
+            (None, None) => Shown::Nothing,
+        }
+    }
+
+    /// Makes the resources column follow the repository under the column-2
+    /// cursor, and returns the load to start, if one is due at `now`.
+    ///
+    /// The event loop calls this at the top of every pass — after each key,
+    /// and on each `poll` tick (120 ms) when no key comes — with the current
+    /// instant; tests inject theirs.
+    ///
+    /// **What arms the pause: a change of the repository under the column-2
+    /// cursor, and nothing else.** The change is measured on `(org, repo)`
+    /// against the last look, not on the key that caused it: `↑`/`↓` in the
+    /// repos column, an org change in column 1 resetting that cursor — row 0
+    /// before and after, another repository all the same — and the first
+    /// look at start-up all count. A key that leaves the same repository
+    /// under the cursor — a column change, a tick, a sort, `↓` on the last
+    /// row — does not re-arm: the pause keeps its start. On a change:
+    ///
+    /// - whatever is in flight is superseded (`load_generation` moves on),
+    ///   so the listing of the repository left is dropped when it lands —
+    ///   even during the next pause, before any newer load has begun;
+    /// - the column drops its listing, with the selection, row cursor,
+    ///   filter and load warning that belonged to it: it never lists one
+    ///   repository under another's cursor;
+    /// - a repository kept in `repo_cache` shows at once, with no request
+    ///   and no pause, and with the warning for any family its listing had
+    ///   refused (ruling F2); any other waits `LOAD_PAUSE` from `now`.
+    ///
+    /// One case arms without a change: a repository still loading with no
+    /// pause running and no load in flight — its load was superseded when a
+    /// purge concerning it ended (`forget`). It gets a fresh pause rather
+    /// than an immediate request.
+    ///
+    /// No load starts here for a repository a purge in flight concerns
+    /// (`purge_launched`), whether its pause was armed by a cursor move or a
+    /// cache miss — ruling F3: a purge must not start a reload storm. The
+    /// load waits for the purge's end. A failed load is not retried here
+    /// either; `Entrée` does that (`force_load`).
+    pub fn follow_cursor(&mut self, now: Instant) -> Option<Load> {
+        let target = self.current_target();
+        if target != self.cursor_repo {
+            self.cursor_repo = target.clone();
+            self.leave_listing();
+            if let Some(key) = target {
+                match self.repo_cache.get(&key).cloned() {
+                    Some(items) => {
+                        let refused = self.repo_refused.get(&key).cloned().unwrap_or_default();
+                        self.finish_loading(key.0, key.1, items, refused);
+                    }
+                    None => self.pending_since = Some(now),
+                }
+            }
+            return None;
+        }
+
+        let Shown::Loading { org, repo } = self.shown() else {
+            return None;
+        };
+        let key = (org, repo);
+        if self.in_flight.as_ref() == Some(&key) {
+            return None;
+        }
+        match self.pending_since {
+            None => {
+                self.pending_since = Some(now);
+                None
+            }
+            Some(since) if now.saturating_duration_since(since) < LOAD_PAUSE => None,
+            // A purge concerning this repository still runs: a listing read
+            // now would be read mid-deletion. The load waits for the purge's
+            // end (`purge_ended`); the pause, long elapsed by then, lets it
+            // start on the next look.
+            Some(_) if self.purging_repos.contains_key(&key) => None,
+            Some(_) => self.start_load(),
+        }
+    }
+
+    /// `Entrée`: a fresh load of the repository under the column-2 cursor,
+    /// now — spec §3, and ruling F1 (2026-09-11).
+    ///
+    /// It skips the pause, and the cache too: `Entrée` is the one way to
+    /// refresh a repository within a session. A listing already shown leaves
+    /// the column, which says `(chargement…)` until the fresh one lands and
+    /// replaces it, on screen and in `repo_cache` (`land_load`). The kept
+    /// listing stays until then: a cursor that leaves meanwhile supersedes
+    /// the refresh, and finds the kept listing on its way back. A failed load
+    /// is retried the same way.
+    ///
+    /// `None` when there is nothing to request: its load is already in
+    /// flight, or no repository is under the cursor. A refresh is a key, not
+    /// a load starting on its own, so a purge concerning the repository does
+    /// not hold it back.
+    pub fn force_load(&mut self) -> Option<Load> {
+        let target = self.current_target()?;
+        if self.in_flight.as_ref() == Some(&target) {
+            return None;
+        }
+        if self.loaded.as_ref() == Some(&target) {
+            self.loaded = None;
+            self.resources.clear();
+            self.selected.clear();
+            self.res_cursor = 0;
+            self.clear_load_warning();
+        }
+        self.start_load()
+    }
+
+    /// Applies a listing that has landed, with the `Load` it was started
+    /// under.
+    ///
+    /// Dropped — neither shown nor kept — unless `accepts_load` still
+    /// accepts its generation. Otherwise it is shown (`finish_loading`) and
+    /// kept in `repo_cache`, replacing whatever was kept before, together
+    /// with its refused families if any (ruling F2): a later visit says them
+    /// again rather than show the kept rows as if a refused family were
+    /// empty. A failed load is said on the status line, and the column says
+    /// it failed rather than loading for ever. That error is the load's own
+    /// message (`load_warning`), like a refused family's warning: the next
+    /// listing of the repository, or the cursor leaving it, clears it — a
+    /// retry that lands in full must not leave the status line saying the
+    /// load failed (fix round 1).
+    pub fn land_load(
+        &mut self,
+        load: Load,
+        outcome: anyhow::Result<(Vec<Resource>, Vec<&'static str>)>,
+    ) {
+        if !self.accepts_load(load.generation) {
+            return;
+        }
+        self.in_flight = None;
+        self.loading = None;
+        match outcome {
+            Ok((items, failed)) => {
+                self.keep(
+                    (load.org.clone(), load.repo.clone()),
+                    items.clone(),
+                    failed.clone(),
+                );
+                self.finish_loading(load.org, load.repo, items, failed);
+            }
+            Err(e) => {
+                self.status = format!("Erreur : chargement de {}/{} — {e}", load.org, load.repo);
+                self.load_warning = Some(self.status.clone());
+                self.load_failed = Some((load.org, load.repo));
+            }
+        }
+    }
+
+    /// Starts the load of the repository under the cursor, under a new
+    /// generation, and records it as in flight.
+    fn start_load(&mut self) -> Option<Load> {
+        let (org, repo) = self.current_target()?;
+        self.pending_since = None;
+        self.load_failed = None;
+        let generation = self.begin_load();
+        self.in_flight = Some((org.clone(), repo.clone()));
+        self.loading = Some(Work::new(progress::LOAD, crate::scan::TOTAL_CALLS));
+        Some(Load {
+            generation,
+            org,
+            repo,
+        })
+    }
+
+    /// Clears what belonged to the repository the column showed, once the
+    /// cursor has left it: its listing, selection, row cursor and filter,
+    /// the warning its load left, and any load of it pending or in flight.
+    fn leave_listing(&mut self) {
+        self.load_generation += 1;
+        self.in_flight = None;
+        self.loading = None;
+        self.load_failed = None;
+        self.pending_since = None;
+        self.loaded = None;
+        self.resources.clear();
+        self.selected.clear();
+        self.res_cursor = 0;
+        self.filter.clear();
+        self.filter_mode = false;
+        self.clear_load_warning();
+    }
+
+    /// Shows `items` as `(org, repo)`'s listing — from `repo_cache` at once,
+    /// or from a load that has landed.
+    ///
+    /// Leaves focus and the filter alone: they belong to the user's keys,
+    /// and a listing lands at any moment. Leaves the repository tick alone
+    /// too, whichever repository it is on (ruling R7-1, 2026-09-11): the
+    /// listing follows the repos cursor, so dropping a tick left on another
+    /// repository here dropped it on every cursor rest, and `d` from the
+    /// repos column had nothing left to archive. `d` archives from the repos
+    /// column only (`take_focused_plan`), so a tick left there never
+    /// outranks the resources ticked in this listing; an org move still
+    /// drops it (`reset_scoped_cursors`).
+    fn show_listing(&mut self, org: String, repo: String, items: Vec<Resource>) {
+        self.resources = items;
+        self.res_cursor = 0;
+        self.selected.clear();
+        self.loaded = Some((org, repo));
+    }
+
+    /// Clears `status` if it still holds the warning a load wrote there.
+    fn clear_load_warning(&mut self) {
+        if self
+            .load_warning
+            .take()
+            .is_some_and(|warning| warning == self.status)
+        {
+            self.status.clear();
+        }
+    }
+
+    /// Shows a listing that has landed (`land_load`), and reports which
+    /// families' listings — if any — failed.
+    ///
+    /// Extracted from `event_loop` so the state transition — the actual bug
+    /// surface of Findings 1 and 5 of the final review — can be asserted on
+    /// directly, without spinning up a terminal and a mock server.
+    ///
+    /// Since spec §3 a listing lands on its own time rather than on a key,
+    /// so this no longer moves focus to the resources column nor clears the
+    /// filter: a listing landing while the user types a filter would turn
+    /// their next letters into commands. What belonged to the previous
+    /// repository was cleared when the cursor left it (`follow_cursor`).
+    ///
+    /// Leaves the repository tick alone, whichever repository it is on
+    /// (`show_listing`, ruling R7-1).
     ///
     /// `failed` — the family names `scan::repo_detail_with_warnings` could
     /// not list — become `app.status` instead of being discarded: Finding 5
-    /// of the final review. `scan::repo_detail`'s stderr wrapper, which the
-    /// caller used to route this through, writes to a stream the alternate
-    /// screen hides, so a refused listing read exactly like an empty one —
-    /// "nothing here" instead of "the listing was refused".
+    /// of the final review. `scan::repo_detail`'s stderr wrapper writes to a
+    /// stream the alternate screen hides, so a refused listing read exactly
+    /// like an empty one. A clean listing clears the warning a previous load
+    /// left, and nothing else (`load_warning`).
     pub fn finish_loading(
         &mut self,
         org: String,
@@ -364,46 +926,141 @@ impl App {
         items: Vec<Resource>,
         failed: Vec<&'static str>,
     ) {
-        self.resources = items;
-        self.res_cursor = 0;
-        self.selected.clear();
-        self.filter.clear();
-        self.filter_mode = false;
-        self.loaded = Some((org, repo));
-        self.selected_repo = None;
-        self.focus = Focus::Resources;
-        self.status = if failed.is_empty() {
-            String::new()
-        } else {
-            format!(
+        self.show_listing(org, repo, items);
+        self.clear_load_warning();
+        if !failed.is_empty() {
+            let warning = format!(
                 "Avertissement : le listing de {} a échoué et est ignoré.",
                 failed.join(", ")
-            )
-        };
+            );
+            self.status = warning.clone();
+            self.load_warning = Some(warning);
+        }
     }
 
-    /// Select every ⚑ row: the whole point of the flag is this one keystroke.
+    /// Applies a `Progress::Done` for a deleted resource: drops its row from
+    /// the repository's kept listing, and its row and tick from the list on
+    /// screen — the listing of the repository it was deleted from, and no
+    /// other.
     ///
-    /// Iterates `visible_resources()`, not `self.resources` — the pane shows
-    /// the filtered list, and a bulk select feeding an irreversible delete
-    /// must act on what is actually on screen.
+    /// Ruling F3 (2026-09-11): the kept listing is updated rather than
+    /// forgotten, so a purge starts no reload — the cursor coming back to
+    /// the repository mid-purge finds its listing, less what was deleted.
+    /// The purge's end forgets it (`purge_ended`).
+    ///
+    /// The list on screen follows the cursor, so it can belong to another
+    /// repository by the time a deletion lands; and a branch's or a tag's id
+    /// is a hash of its name (`api::refs::resource_id`), the same in every
+    /// repository. `owner`/`repo` come off the message, as `archive_done`'s
+    /// do.
+    pub fn resource_deleted(&mut self, kind: ResourceKind, id: u64, owner: &str, repo: &str) {
+        let deleted = |r: &Resource| r.kind == kind && r.id == id;
+        if let Some(items) = self
+            .repo_cache
+            .get_mut(&(owner.to_string(), repo.to_string()))
+        {
+            items.retain(|r| !deleted(r));
+        }
+        if self.lists(owner, repo) {
+            self.resources.retain(|r| !deleted(r));
+            self.selected.remove(&(kind, id));
+        }
+    }
+
+    /// Applies a `Progress::Failed` for a resource: unticks it — in the
+    /// listing of the repository it belongs to only, for `resource_deleted`'s
+    /// reason.
+    pub fn resource_failed(&mut self, kind: ResourceKind, id: u64, owner: &str, repo: &str) {
+        if self.lists(owner, repo) {
+            self.selected.remove(&(kind, id));
+        }
+    }
+
+    /// Whether `resources` is `(owner, repo)`'s listing.
+    fn lists(&self, owner: &str, repo: &str) -> bool {
+        self.loaded
+            .as_ref()
+            .is_some_and(|(o, r)| o == owner && r == repo)
+    }
+
+    /// `[A]`: tick every ⛑ row — `Safety::Safe` (spec §4.2). The ⚑ rows `[A]`
+    /// took before are among them: `safety::classify` levels a cache whose
+    /// pull request closed as safe.
+    pub fn select_safe(&mut self) {
+        self.select_levels(&[Safety::Safe]);
+    }
+
+    /// `[V]`: tick every ⛑ row and every • row — `Safety::Safe` and
+    /// `Safety::Check`. Spec §4.2's middle level is shown on every row but
+    /// never ticked by `[A]`; it takes this second key.
+    pub fn select_safe_and_check(&mut self) {
+        self.select_levels(&[Safety::Safe, Safety::Check]);
+    }
+
+    /// Ticks every visible row whose level is one of `levels` — the one path
+    /// both selection keys share, so their guards cannot drift apart.
+    ///
+    /// Iterates `visible_resources()`, not `self.resources` — the column
+    /// shows the filtered list, and a bulk select feeding an irreversible
+    /// delete must act on what is actually on screen.
+    ///
+    /// Never takes a `protected` resource, whatever its level: `protected`
+    /// stays the bulk-selection gate (spec §4.3), as `commands::clean::
+    /// select` applies it headless. `safety::classify` never levels a
+    /// protected resource ⛑ today; this guard keeps a classifier bug from
+    /// ever reaching a bulk delete.
     ///
     /// Excludes `ResourceKind::Repository` explicitly, defensively — not
     /// because one can reach `self.resources` today (it can't: a repository
-    /// lives in the tree, see `App::selected_repo`), but because nothing
-    /// else here would stop it if one ever did. `[A]` must never take a
-    /// repository, at any age: `pushed_at` alone is not proof of
-    /// abandonment, and archiving is the only family in this product with no
-    /// preselection path whatsoever — see `bulk_selection_never_takes_a_repository`.
-    pub fn select_all_stale(&mut self) {
-        let keys: Vec<(ResourceKind, u64)> = self
+    /// lives in the repos column, see `App::selected_repo`), but because
+    /// nothing else here would stop it if one ever did. Neither key may ever
+    /// take a repository, at any age or level: `pushed_at` alone is not proof
+    /// of abandonment, and archiving is the only family in this product with
+    /// no preselection path whatsoever — see
+    /// `bulk_selection_never_takes_a_repository`.
+    ///
+    /// Individual selection (`toggle_selected`) is not bounded by `Safety`:
+    /// a visible row stays tickable one at a time, whatever its level.
+    ///
+    /// When it leaves visible rows at `levels` unticked because they are
+    /// `protected`, the status line says how many (`protected_notice`) —
+    /// fix round 1: a live branch shows • and `[V]` never takes it, which
+    /// read as a key skipping rows for no reason. The notice replaces what
+    /// the line held, as `toggle_selected`'s own refusal does: the line
+    /// answers the key just pressed. With nothing skipped, the line is left
+    /// alone. Rows the filter hides are not counted, nor are repositories:
+    /// neither key takes those, protected or not.
+    fn select_levels(&mut self, levels: &[Safety]) {
+        let (skipped, taken): (Vec<&Resource>, Vec<&Resource>) = self
             .visible_resources()
             .into_iter()
-            .filter(|r| r.stale_pr)
+            .filter(|r| levels.contains(&r.safety))
             .filter(|r| r.kind != ResourceKind::Repository)
-            .map(|r| (r.kind, r.id))
-            .collect();
+            .partition(|r| r.protected);
+        let keys: Vec<(ResourceKind, u64)> = taken.iter().map(|r| (r.kind, r.id)).collect();
+        let notice = Self::protected_notice(&skipped);
         self.selected.extend(keys);
+        if let Some(notice) = notice {
+            self.status = notice;
+        }
+    }
+
+    /// What the status line says when a selection key left `skipped` rows
+    /// unticked because they are `protected` — `None` when it left none.
+    /// Live branches are named as such when they are all it left: they are
+    /// the protected • rows production has, and the ones a user wonders
+    /// about. Anything else reads as rows.
+    fn protected_notice(skipped: &[&Resource]) -> Option<String> {
+        let live_branches = skipped.iter().all(|r| {
+            r.kind == ResourceKind::Branch && r.branch_class == Some(crate::refs::BranchClass::Live)
+        });
+        match (skipped.len(), live_branches) {
+            (0, _) => None,
+            (1, true) => Some("1 branche vivante protégée non cochée.".to_string()),
+            (n, true) => Some(format!("{n} branches vivantes protégées non cochées.")),
+            (1, false) => Some("1 ligne protégée non cochée.".to_string()),
+            (n, false) => Some(format!("{n} lignes protégées non cochées.")),
+        }
     }
 
     pub fn cycle_sort(&mut self) {
@@ -455,10 +1112,10 @@ impl App {
     }
 
     /// Freeze the current selection into a plan, targeting the repository
-    /// `resources` was loaded from — not wherever the cursor sits now.
-    /// `resources` only changes on `Enter`, so a plan built from the live
-    /// cursor position can target a repository the user only glanced at
-    /// afterwards. `None` when nothing has been loaded yet.
+    /// `resources` was loaded from — `loaded`, never the live cursor
+    /// position. `follow_cursor` keeps the two together and clears the
+    /// selection whenever they part, but the plan names the listing it was
+    /// built from rather than rely on that. `None` when nothing is loaded.
     pub fn take_plan(&self) -> Option<Plan> {
         let (owner, repo) = self.loaded.clone()?;
         Some(Plan {
@@ -505,10 +1162,15 @@ impl App {
     /// not let that first `Finished` clear the guard while the second purge
     /// is still running — `q` would then quit silently, exactly the case the
     /// guard exists to prevent.
+    ///
+    /// The purge bar goes on the same condition, and for the same reason: a
+    /// bar cleared by the first `Finished` would announce the end of work
+    /// still running.
     pub fn purge_finished(&mut self) {
         self.purges_in_flight = self.purges_in_flight.saturating_sub(1);
         if self.purges_in_flight == 0 {
             self.quit_armed = false;
+            self.purge = None;
         }
     }
 }
@@ -529,6 +1191,7 @@ mod tests {
             stale_pr: stale,
             protected: false,
             branch_class: None,
+            safety: crate::safety::Safety::Keep,
         }
     }
 
@@ -542,79 +1205,239 @@ mod tests {
         a
     }
 
+    /// One cache per entry of `levels`, in that order, ids from 1 — `app()`'s
+    /// shape, with a safety level of the test's choosing on each row.
+    fn app_with_levels(levels: &[Safety]) -> App {
+        let mut a = App::new(vec![]);
+        a.resources = levels
+            .iter()
+            .zip(1u64..)
+            .map(|(&safety, id)| Resource {
+                safety,
+                ..res(id, &format!("cache-{id}"), 100 * id, 10, false)
+            })
+            .collect();
+        a
+    }
+
+    /// The levels of the rows ticked, in the order the rows are listed.
+    fn selected_levels(a: &App) -> Vec<Safety> {
+        a.resources
+            .iter()
+            .filter(|r| a.selected.contains(&(r.kind, r.id)))
+            .map(|r| r.safety)
+            .collect()
+    }
+
+    /// Marks every row `protected`, whatever its level.
+    fn protect_all_resources(a: &mut App) {
+        for r in &mut a.resources {
+            r.protected = true;
+        }
+    }
+
     #[test]
-    fn select_all_stale_takes_only_flagged_items() {
-        let mut a = app();
-        a.select_all_stale();
-        assert_eq!(a.selection_bytes(), 400);
-        assert!(a.selected.contains(&(ResourceKind::Cache, 1)));
-        assert!(a.selected.contains(&(ResourceKind::Cache, 3)));
-        assert!(!a.selected.contains(&(ResourceKind::Cache, 2)));
+    fn select_safe_takes_only_the_safe_rows() {
+        // One row of each level: a key that also took Check would pass a
+        // fixture holding only Safe rows.
+        let mut a = app_with_levels(&[Safety::Safe, Safety::Check, Safety::Keep]);
+        a.select_safe();
+        assert_eq!(selected_levels(&a), vec![Safety::Safe]);
+    }
+
+    #[test]
+    fn select_safe_and_check_adds_check_and_nothing_else() {
+        let mut a = app_with_levels(&[Safety::Safe, Safety::Check, Safety::Keep]);
+        a.select_safe_and_check();
+        assert_eq!(selected_levels(&a), vec![Safety::Safe, Safety::Check]);
+    }
+
+    #[test]
+    fn a_protected_row_is_never_taken_in_bulk_even_if_marked_safe() {
+        // classify never returns Safe for a protected row today; this pins the
+        // selection's own guard, so a future classifier bug cannot reach a
+        // bulk delete.
+        let mut a = app_with_levels(&[Safety::Safe]);
+        protect_all_resources(&mut a);
+        a.select_safe();
+        assert!(selected_levels(&a).is_empty(), "[A] took a protected row");
+        a.select_safe_and_check();
+        assert!(selected_levels(&a).is_empty());
+    }
+
+    /// A live, unmerged branch as production builds it: `protected`, since no
+    /// merged pull request proves it dead (`scan::branch_resources`), and •
+    /// (`safety::classify`) — the one protected row at a level a bulk key
+    /// takes.
+    fn protected_live_branch(id: u64) -> Resource {
+        Resource {
+            safety: Safety::Check,
+            ..branch(id, "feature/wip", crate::refs::BranchClass::Live)
+        }
+    }
+
+    /// Fix round 1, review finding: the protected guard was only tested on a
+    /// protected ⛑ row, which `safety::classify` never produces, and every
+    /// other fixture `[V]` ran on was unprotected — a guard letting protected
+    /// • rows through passed the whole suite. `[V]` is the first key to reach
+    /// •, and the protected • row production does produce is every live,
+    /// unmerged branch: taking it in bulk deletes work nobody merged, for
+    /// good. Beside it, an unprotected • cache `[V]` must take, so a guard
+    /// that simply refused every • row fails too.
+    #[test]
+    fn select_safe_and_check_never_takes_a_protected_live_branch() {
+        let mut a = App::new(vec![]);
+        a.resources = vec![
+            Resource {
+                safety: Safety::Check,
+                ..res(1, "cache-on-a-feature-branch", 100, 10, false)
+            },
+            protected_live_branch(2),
+        ];
+
+        a.select_safe_and_check();
+
+        assert!(
+            a.selected.contains(&(ResourceKind::Cache, 1)),
+            "[V] must take the unprotected • cache"
+        );
+        assert!(
+            !a.selected.contains(&(ResourceKind::Branch, 2)),
+            "[V] took a live branch nobody merged: {:?}",
+            a.selected
+        );
+    }
+
+    /// Fix round 1, controller ruling: a live branch shows • yet `[V]` never
+    /// takes it, and nothing on screen said why. When a selection key leaves
+    /// visible rows at its own levels unticked because they are `protected`,
+    /// the status line says how many — naming live branches when that is all
+    /// they are. One such branch; then two, for the plural; then `[A]` on a
+    /// protected ⛑ row, the shape only a classifier bug could give, in the
+    /// general wording.
+    #[test]
+    fn a_bulk_select_says_how_many_protected_rows_it_left_unticked() {
+        let mut a = App::new(vec![]);
+        a.resources = vec![
+            Resource {
+                safety: Safety::Check,
+                ..res(1, "cache-on-a-feature-branch", 100, 10, false)
+            },
+            protected_live_branch(2),
+        ];
+        a.select_safe_and_check();
+        assert_eq!(a.status, "1 branche vivante protégée non cochée.");
+
+        let mut a = App::new(vec![]);
+        a.resources = vec![
+            protected_live_branch(2),
+            Resource {
+                label: "feature/other".into(),
+                ..protected_live_branch(3)
+            },
+        ];
+        a.select_safe_and_check();
+        assert_eq!(a.status, "2 branches vivantes protégées non cochées.");
+
+        let mut a = app_with_levels(&[Safety::Safe]);
+        protect_all_resources(&mut a);
+        a.select_safe();
+        assert_eq!(a.status, "1 ligne protégée non cochée.");
+    }
+
+    /// The other half of the ruling: with no visible protected row skipped at
+    /// the key's own levels, the status line is left as it was — here an
+    /// earlier error the user has not read yet. None of these counts: a
+    /// protected default branch (no marker, a level neither key takes), a
+    /// protected • repository (repositories are never taken, and never
+    /// counted), a protected live branch the filter hides. The two
+    /// unprotected caches are ticked: the keys did run.
+    #[test]
+    fn a_bulk_select_that_skips_no_visible_protected_row_leaves_the_status_alone() {
+        use crate::refs::BranchClass;
+        let error = "Erreur : suppression de 9 — 404";
+        let mut a = App::new(vec![]);
+        a.resources = vec![
+            Resource {
+                safety: Safety::Safe,
+                ..res(1, "cov-safe", 100, 10, true)
+            },
+            Resource {
+                safety: Safety::Check,
+                ..res(2, "cov-check", 100, 10, false)
+            },
+            branch(3, "cov-main", BranchClass::Default),
+            Resource {
+                kind: ResourceKind::Repository,
+                protected: true,
+                safety: Safety::Check,
+                ..res(4, "cov-repo", 0, 10, false)
+            },
+            protected_live_branch(5),
+        ];
+        a.filter = "cov".into();
+        a.status = error.to_string();
+
+        a.select_safe();
+        assert_eq!(a.status, error, "[A] rewrote the status line");
+        a.select_safe_and_check();
+        assert_eq!(a.status, error, "[V] rewrote the status line");
+        assert_eq!(
+            a.selected.len(),
+            2,
+            "the keys must tick the two unprotected caches: {:?}",
+            a.selected
+        );
     }
 
     /// THE test of this whole version, per the task-4 brief's own
     /// self-review: without this, a future extension of `[A]` would flip a
-    /// whole organisation to read-only on one keystroke. `[A]` must never
-    /// take a repository, at any age — `pushed_at` alone is not proof of
-    /// abandonment, and this is the only family in the entire product with
-    /// no preselection path whatsoever.
+    /// whole organisation to read-only on one keystroke. Neither `[A]` nor
+    /// `[V]` may ever take a repository, at any age — `pushed_at` alone is
+    /// not proof of abandonment, and this is the only family in the entire
+    /// product with no preselection path whatsoever.
     ///
     /// A `Repository` resource can never actually reach `self.resources` in
-    /// production today — a repository lives in the tree, not the right-hand
-    /// list (see `App::selected_repo`) — which is exactly why this guard has
-    /// to be asserted defensively rather than trusted as an emergent
-    /// property of "nothing puts one there": `select_all_stale` filters
-    /// purely on `r.stale_pr`, with no kind exclusion of its own, so a
-    /// future refactor that ever did merge a repository row into
-    /// `resources` would silently start bulk-selecting it the moment that
-    /// row also happened to carry `stale_pr: true`. The fixture below
-    /// carries a `Repository` item of every age precisely to prove the
-    /// exclusion holds regardless of how old — not just that today's
-    /// plumbing happens not to produce one.
+    /// production today — a repository lives in the repos column, not the
+    /// resource list (see `App::selected_repo`) — which is exactly why this
+    /// guard has to be asserted defensively rather than trusted as an
+    /// emergent property of "nothing puts one there". Spec §4 never marks a
+    /// repository, but both keys select on `Resource.safety`: a future
+    /// refactor that merged a repository row into `resources`, carrying a
+    /// level some classifier bug gave it, would start bulk-selecting it. So
+    /// the fixture's repositories are marked ⛑ and •, unprotected, of every
+    /// age: a guard keyed on the level alone takes them all.
     #[test]
     fn bulk_selection_never_takes_a_repository() {
         let mut a = App::new(vec![]);
+        let repository = |id: u64, label: &str, age_days: i64, safety: Safety| Resource {
+            kind: ResourceKind::Repository,
+            id,
+            label: label.into(),
+            size_bytes: 0,
+            age_days,
+            git_ref: None,
+            stale_pr: true,
+            protected: false,
+            branch_class: None,
+            safety,
+        };
         a.resources = vec![
-            Resource {
-                kind: ResourceKind::Repository,
-                id: 1,
-                label: "young-repo".into(),
-                size_bytes: 0,
-                age_days: 10,
-                git_ref: None,
-                stale_pr: true,
-                protected: false,
-                branch_class: None,
-            },
-            Resource {
-                kind: ResourceKind::Repository,
-                id: 2,
-                label: "lokiprint".into(),
-                size_bytes: 0,
-                age_days: 685,
-                git_ref: None,
-                stale_pr: true,
-                protected: false,
-                branch_class: None,
-            },
-            Resource {
-                kind: ResourceKind::Repository,
-                id: 3,
-                label: ".github".into(),
-                size_bytes: 0,
-                age_days: 775,
-                git_ref: None,
-                stale_pr: true,
-                protected: false,
-                branch_class: None,
-            },
+            repository(1, "young-repo", 10, Safety::Safe),
+            repository(2, "lokiprint", 685, Safety::Check),
+            repository(3, ".github", 775, Safety::Safe),
         ];
 
-        a.select_all_stale();
-
+        a.select_safe();
         assert!(
             a.selected.is_empty(),
-            "a Repository must never be bulk-selected, at any age: got {:?}",
+            "[A] took a Repository: got {:?}",
+            a.selected
+        );
+        a.select_safe_and_check();
+        assert!(
+            a.selected.is_empty(),
+            "[V] took a Repository: got {:?}",
             a.selected
         );
     }
@@ -638,6 +1461,7 @@ mod tests {
                 stale_pr: false,
                 protected: false,
                 branch_class: None,
+                safety: crate::safety::Safety::Keep,
             },
             Resource {
                 kind: ResourceKind::Artifact,
@@ -649,6 +1473,7 @@ mod tests {
                 stale_pr: false,
                 protected: false,
                 branch_class: None,
+                safety: crate::safety::Safety::Keep,
             },
         ];
         // Default sort is by size descending, so the artifact (200) is row 0
@@ -662,18 +1487,36 @@ mod tests {
     }
 
     /// Locks finding 4's third leg: `[A]` must act on what is visible, not on
-    /// everything loaded. Before the fix, `select_all_stale` iterated
+    /// everything loaded. Before the fix, the bulk select iterated
     /// `self.resources` directly and selected rows the filter was hiding.
+    /// `[V]` keeps the same rule.
     #[test]
-    fn select_all_stale_does_not_select_rows_hidden_by_the_filter() {
+    fn select_safe_does_not_select_rows_hidden_by_the_filter() {
         let mut a = app();
-        // Hides "coverage-macos" (id 3, stale) but keeps "coverage-linux"
-        // (id 1, stale) visible.
+        // Levelled as `safety::classify` levels such caches: a closed pull
+        // request's is ⛑, the other one •.
+        for r in &mut a.resources {
+            r.safety = if r.stale_pr {
+                Safety::Safe
+            } else {
+                Safety::Check
+            };
+        }
+        // Hides "coverage-macos" (id 3, ⛑) and "ubuntu-22-test" (id 2, •),
+        // keeps "coverage-linux" (id 1, ⛑) visible.
         a.filter = "linux".into();
-        a.select_all_stale();
+        a.select_safe();
 
         assert!(a.selected.contains(&(ResourceKind::Cache, 1)));
         assert!(!a.selected.contains(&(ResourceKind::Cache, 3)));
+
+        a.select_safe_and_check();
+        assert_eq!(
+            a.selected.len(),
+            1,
+            "[V] took a row the filter hides: {:?}",
+            a.selected
+        );
     }
 
     #[test]
@@ -725,6 +1568,7 @@ mod tests {
             stale_pr: false,
             protected: class != crate::refs::BranchClass::Merged,
             branch_class: Some(class),
+            safety: crate::safety::Safety::Keep,
         }
     }
 
@@ -819,6 +1663,7 @@ mod tests {
             stale_pr: false,
             protected: true,
             branch_class: None,
+            safety: crate::safety::Safety::Keep,
         }];
         a.res_cursor = 0;
 
@@ -1262,7 +2107,7 @@ mod tests {
         assert_eq!(plan.items[0].kind, ResourceKind::Cache);
     }
 
-    /// The positive counterpart: with focus still on the repo tree, a ticked
+    /// The positive counterpart: with focus still on the repos column, a ticked
     /// repository must still be what `d` builds.
     #[test]
     fn take_focused_plan_returns_the_repo_plan_while_focus_is_on_the_repo_tree() {
@@ -1272,23 +2117,6 @@ mod tests {
         let plan = a.take_focused_plan().expect("a repo was ticked");
         assert_eq!(plan.repo, "lokiprint");
         assert_eq!(plan.items[0].kind, ResourceKind::Repository);
-    }
-
-    /// Finding 1's other half: `Enter` is the moment `resources` — and so
-    /// `take_plan`'s target — actually changes, so a repository ticked
-    /// before it must not silently keep outranking whatever the user goes on
-    /// to select in the freshly loaded pane.
-    #[test]
-    fn finish_loading_clears_a_stale_repo_tick() {
-        let mut a = App::new(vec![]);
-        a.selected_repo = Some(("org".to_string(), "old-repo".to_string()));
-
-        a.finish_loading("org".to_string(), "new-repo".to_string(), vec![], vec![]);
-
-        assert_eq!(
-            a.selected_repo, None,
-            "loading a repository must drop any repository still ticked in the tree"
-        );
     }
 
     /// Finding 5 of the final review: `repo_detail`'s stderr wrapper is
@@ -1316,29 +2144,728 @@ mod tests {
     }
 
     /// The other side of finding 5: nothing failed, so the status must not
-    /// carry a leftover warning from a previous load.
+    /// carry a leftover warning from a previous load. The leftover is a real
+    /// previous load's warning: nothing writes "Chargement de …" to the
+    /// status line any more — the resources column says `(chargement…)`.
     #[test]
     fn finish_loading_clears_status_when_nothing_failed() {
         let mut a = App::new(vec![]);
-        a.status = "Chargement de org/repo …".to_string();
+        a.finish_loading(
+            "org".to_string(),
+            "repo".to_string(),
+            vec![],
+            vec!["caches"],
+        );
+        assert!(!a.status.is_empty(), "the fixture needs a leftover warning");
 
         a.finish_loading("org".to_string(), "repo".to_string(), vec![], vec![]);
 
         assert!(a.status.is_empty(), "got: {}", a.status);
     }
 
-    #[test]
-    fn focus_cycles_through_all_three_levels() {
-        // The repo level was unreachable at one point because Focus only had
-        // two variants; this locks the tree's shape.
-        let mut f = Focus::Orgs;
-        for expected in [Focus::Repos, Focus::Resources, Focus::Orgs] {
-            f = match f {
-                Focus::Orgs => Focus::Repos,
-                Focus::Repos => Focus::Resources,
-                Focus::Resources => Focus::Orgs,
-            };
-            assert_eq!(f, expected);
+    /// One org whose repositories are `names`, all archivable — the load
+    /// tests below only care which repository the cursor is on.
+    fn org_named(login: &str, names: &[&str]) -> OrgSummary {
+        OrgSummary {
+            login: login.to_string(),
+            cache_bytes: 0,
+            cache_count: 0,
+            repos: names
+                .iter()
+                .map(|name| repo_summary(name, crate::repos::RepoClass::Archivable, 1))
+                .collect(),
+            billing: None,
         }
+    }
+
+    fn key(org: &str, repo: &str) -> (String, String) {
+        (org.to_string(), repo.to_string())
+    }
+
+    fn ms(n: u64) -> std::time::Duration {
+        std::time::Duration::from_millis(n)
+    }
+
+    const PAUSE: std::time::Duration = std::time::Duration::from_millis(300);
+
+    #[test]
+    fn a_result_that_arrives_after_the_cursor_moved_is_ignored() {
+        // Stop on three repositories in a row and the first result must not
+        // appear under the third one's name. This is the same shape as the
+        // v0.5 defect where a purge resolved against whatever `app` pointed
+        // at, rather than against its own identity.
+        let mut a = App::new(vec![]);
+        let stale = a.begin_load(); // generation 1
+        let _current = a.begin_load(); // generation 2
+        assert!(!a.accepts_load(stale), "a superseded load must be dropped");
+    }
+
+    #[test]
+    fn a_cached_repo_is_served_without_a_request() {
+        let mut a = App::new(vec![]);
+        a.remember(("org".into(), "repo".into()), vec![]);
+        assert!(a.cached(("org", "repo")).is_some());
+    }
+
+    #[test]
+    fn a_purge_invalidates_the_repos_cache() {
+        // Otherwise the screen keeps showing what was just deleted.
+        let mut a = App::new(vec![]);
+        a.remember(("org".into(), "repo".into()), vec![]);
+        a.forget(("org", "repo"));
+        assert!(a.cached(("org", "repo")).is_none());
+    }
+
+    /// Spec §3: the load starts once the column-2 cursor has rested 300 ms
+    /// on a repository — not a tick earlier, and only once. The clock is
+    /// injected: `t0` is when the loop first saw the repository under the
+    /// cursor, here at start-up.
+    #[test]
+    fn a_load_starts_once_the_cursor_has_rested_the_pause() {
+        let mut a = App::new(vec![org_named("systm-d", &["josephine", "claudine"])]);
+        let t0 = std::time::Instant::now();
+
+        assert!(
+            a.follow_cursor(t0).is_none(),
+            "nothing starts before the pause"
+        );
+        assert!(
+            a.follow_cursor(t0 + ms(299)).is_none(),
+            "299 ms is no pause"
+        );
+        let load = a
+            .follow_cursor(t0 + PAUSE)
+            .expect("300 ms of rest starts the load");
+        assert_eq!(
+            (load.org.as_str(), load.repo.as_str()),
+            ("systm-d", "josephine")
+        );
+        assert!(
+            a.follow_cursor(t0 + ms(900)).is_none(),
+            "one pause started two loads"
+        );
+    }
+
+    /// Moving the column-2 cursor to another repository re-arms the pause,
+    /// so traversing a list requests nothing. Without the re-arm,
+    /// josephine's pause — started at `t0` — would fire at 300 ms for
+    /// claudine, which the cursor reached only 100 ms before.
+    #[test]
+    fn moving_the_repos_cursor_rearms_the_pause() {
+        let mut a = App::new(vec![org_named("systm-d", &["josephine", "claudine"])]);
+        let t0 = std::time::Instant::now();
+        assert!(a.follow_cursor(t0).is_none());
+
+        a.repo_cursor = 1;
+        assert!(a.follow_cursor(t0 + ms(200)).is_none());
+        assert!(
+            a.follow_cursor(t0 + PAUSE).is_none(),
+            "the pause did not restart when the cursor moved"
+        );
+        let load = a
+            .follow_cursor(t0 + ms(200) + PAUSE)
+            .expect("claudine rested her own pause");
+        assert_eq!(load.repo, "claudine");
+    }
+
+    /// An org change in column 1 resets the repos cursor to the first row:
+    /// index 0 before, index 0 after, and still another repository. The
+    /// pause is armed by the repository under the cursor, not by its index.
+    #[test]
+    fn an_org_change_rearms_the_pause_through_the_reset_repos_cursor() {
+        let mut a = App::new(vec![
+            org_named("systm-d", &["josephine"]),
+            org_named("exec-d", &["lokiprint"]),
+        ]);
+        let t0 = std::time::Instant::now();
+        assert!(a.follow_cursor(t0).is_none());
+
+        a.org_cursor = 1;
+        a.reset_scoped_cursors();
+        assert!(a.follow_cursor(t0 + ms(200)).is_none());
+        assert!(
+            a.follow_cursor(t0 + PAUSE).is_none(),
+            "the org change did not restart the pause"
+        );
+        let load = a
+            .follow_cursor(t0 + ms(200) + PAUSE)
+            .expect("lokiprint rested its own pause");
+        assert_eq!(
+            (load.org.as_str(), load.repo.as_str()),
+            ("exec-d", "lokiprint")
+        );
+    }
+
+    /// A key that leaves the same repository under the column-2 cursor — a
+    /// column change, a tick, a sort — does not restart the pause: the load
+    /// still starts 300 ms after the cursor reached the repository.
+    #[test]
+    fn a_key_that_keeps_the_same_repository_does_not_rearm_the_pause() {
+        let mut a = App::new(vec![org_named("systm-d", &["josephine", "claudine"])]);
+        let t0 = std::time::Instant::now();
+        assert!(a.follow_cursor(t0).is_none());
+
+        a.focus = Focus::Repos;
+        a.toggle_repo_selected();
+        a.cycle_sort();
+        assert!(a.follow_cursor(t0 + ms(200)).is_none());
+
+        let load = a
+            .follow_cursor(t0 + PAUSE)
+            .expect("the pause kept its start");
+        assert_eq!(load.repo, "josephine");
+    }
+
+    /// `Entrée` starts the load at once, without the pause — and once: the
+    /// pause has nothing left to start, and a second `Entrée` while the
+    /// listing is on its way requests nothing more.
+    #[test]
+    fn enter_loads_at_once_and_only_once() {
+        let mut a = App::new(vec![org_named("systm-d", &["josephine"])]);
+        let t0 = std::time::Instant::now();
+        assert!(a.follow_cursor(t0).is_none());
+
+        let load = a.force_load().expect("Entrée does not wait for the pause");
+        assert_eq!(load.repo, "josephine");
+        assert!(
+            a.force_load().is_none(),
+            "a second Entrée re-requested a load in flight"
+        );
+        assert!(
+            a.follow_cursor(t0 + PAUSE).is_none(),
+            "the pause started a second load after Entrée"
+        );
+    }
+
+    /// Spec §3: a repository already loaded shows at once, with no request —
+    /// not when the cursor comes back to it, not after the pause. `Entrée`
+    /// does request it: see
+    /// `enter_refreshes_a_cached_repository_and_its_listing_replaces_the_kept_one`.
+    #[test]
+    fn a_cached_repository_shows_at_once_when_the_cursor_returns() {
+        let mut a = App::new(vec![org_named("systm-d", &["josephine", "claudine"])]);
+        let t0 = std::time::Instant::now();
+        a.remember(
+            key("systm-d", "claudine"),
+            vec![res(7, "claudine-cache", 100, 1, false)],
+        );
+        assert!(a.follow_cursor(t0).is_none());
+
+        a.repo_cursor = 1;
+        assert!(a.follow_cursor(t0 + ms(10)).is_none());
+        assert_eq!(
+            a.loaded,
+            Some(key("systm-d", "claudine")),
+            "the cached listing must show at once"
+        );
+        assert_eq!(
+            a.resources.iter().map(|r| r.id).collect::<Vec<_>>(),
+            vec![7]
+        );
+        assert!(
+            a.follow_cursor(t0 + ms(10) + PAUSE).is_none(),
+            "the pause re-requested a cached repository"
+        );
+    }
+
+    /// Ruling F1 (2026-09-11): `Entrée` is the one way to refresh a
+    /// repository within a session, so it loads even one already kept —
+    /// past the pause and past the cache — and the fresh listing replaces the
+    /// kept one. A forced load the cursor then leaves is dropped by
+    /// generation, like any other.
+    #[test]
+    fn enter_refreshes_a_cached_repository_and_its_listing_replaces_the_kept_one() {
+        let mut a = App::new(vec![org_named("systm-d", &["josephine", "claudine"])]);
+        let t0 = std::time::Instant::now();
+        a.remember(
+            key("systm-d", "josephine"),
+            vec![res(1, "before", 100, 1, false)],
+        );
+        assert!(a.follow_cursor(t0).is_none());
+        assert_eq!(
+            a.loaded,
+            Some(key("systm-d", "josephine")),
+            "the fixture needs josephine listed from the cache"
+        );
+        let ids = |rows: &[Resource]| rows.iter().map(|r| r.id).collect::<Vec<_>>();
+
+        let refresh = a
+            .force_load()
+            .expect("Entrée must refresh a cached repository");
+        assert_eq!(refresh.repo, "josephine");
+        a.land_load(refresh, Ok((vec![res(2, "after", 100, 1, false)], vec![])));
+        assert_eq!(
+            ids(a.cached(("systm-d", "josephine")).expect("kept")),
+            vec![2],
+            "the fresh listing must replace the kept one"
+        );
+        assert_eq!(ids(a.resources.as_slice()), vec![2]);
+
+        let superseded = a.force_load().expect("Entrée refreshes again");
+        a.repo_cursor = 1;
+        assert!(a.follow_cursor(t0 + ms(100)).is_none());
+        a.land_load(
+            superseded,
+            Ok((vec![res(3, "stale", 100, 1, false)], vec![])),
+        );
+        assert_eq!(
+            ids(a.cached(("systm-d", "josephine")).expect("kept")),
+            vec![2],
+            "a forced load the cursor left replaced the kept listing"
+        );
+        assert!(
+            !a.resources.iter().any(|r| r.id == 3),
+            "a forced load the cursor left is shown under claudine"
+        );
+    }
+
+    /// Spec §3's cancellation, in the case the generation exists for: the
+    /// cursor leaves josephine while her listing is in flight, and it lands
+    /// during claudine's pause — before claudine's own load has begun, so no
+    /// newer `begin_load` has superseded it. The cursor move itself must
+    /// have: the listing is neither shown nor cached.
+    #[test]
+    fn a_listing_that_lands_after_the_cursor_left_is_dropped() {
+        let mut a = App::new(vec![org_named("systm-d", &["josephine", "claudine"])]);
+        let t0 = std::time::Instant::now();
+        assert!(a.follow_cursor(t0).is_none());
+        let josephine = a
+            .follow_cursor(t0 + PAUSE)
+            .expect("josephine's load starts");
+
+        a.repo_cursor = 1;
+        assert!(a.follow_cursor(t0 + ms(400)).is_none());
+        a.land_load(
+            josephine,
+            Ok((vec![res(1, "josephine-cache", 100, 1, false)], vec![])),
+        );
+
+        assert!(
+            a.resources.is_empty(),
+            "josephine's listing is shown under claudine's cursor"
+        );
+        assert_eq!(a.loaded, None);
+        assert!(
+            a.cached(("systm-d", "josephine")).is_none(),
+            "a dropped listing was cached"
+        );
+        assert_eq!(
+            a.shown(),
+            Shown::Loading {
+                org: "systm-d".into(),
+                repo: "claudine".into()
+            }
+        );
+    }
+
+    /// The positive control: the listing of the repository still under the
+    /// cursor is shown, and kept for the session.
+    #[test]
+    fn a_listing_that_lands_for_the_cursors_repository_is_shown_and_cached() {
+        let mut a = App::new(vec![org_named("systm-d", &["josephine"])]);
+        let t0 = std::time::Instant::now();
+        assert!(a.follow_cursor(t0).is_none());
+        let load = a.follow_cursor(t0 + PAUSE).expect("the load starts");
+
+        a.land_load(
+            load,
+            Ok((vec![res(1, "josephine-cache", 100, 1, false)], vec![])),
+        );
+
+        assert_eq!(a.loaded, Some(key("systm-d", "josephine")));
+        assert_eq!(a.resources.len(), 1);
+        assert!(a.cached(("systm-d", "josephine")).is_some());
+        assert_eq!(
+            a.shown(),
+            Shown::Listing {
+                org: "systm-d".into(),
+                repo: "josephine".into()
+            }
+        );
+    }
+
+    /// Ruling F2 (2026-09-11), Finding 5 meeting the cache: a listing with a
+    /// refused family is kept together with that refusal, and its warning
+    /// comes back on every visit. The second visit requests nothing and
+    /// still says which listing failed — the kept rows never read as if the
+    /// refused family were empty. `Entrée` is the retry.
+    #[test]
+    fn a_second_visit_to_a_listing_with_a_refused_family_requests_nothing_and_warns_again() {
+        let mut a = App::new(vec![org_named("systm-d", &["josephine", "claudine"])]);
+        let t0 = std::time::Instant::now();
+        a.remember(key("systm-d", "claudine"), vec![]);
+        assert!(a.follow_cursor(t0).is_none());
+        let load = a
+            .follow_cursor(t0 + PAUSE)
+            .expect("josephine's load starts");
+        a.land_load(
+            load,
+            Ok((
+                vec![res(1, "josephine-cache", 100, 1, false)],
+                vec!["caches"],
+            )),
+        );
+        assert!(a.status.contains("caches"), "got: {}", a.status);
+
+        a.repo_cursor = 1;
+        assert!(a.follow_cursor(t0 + ms(1000)).is_none());
+        assert!(
+            !a.status.contains("caches"),
+            "the warning must leave with josephine: {}",
+            a.status
+        );
+
+        a.repo_cursor = 0;
+        let back = t0 + ms(2000);
+        assert!(a.follow_cursor(back).is_none());
+        assert!(
+            a.follow_cursor(back + PAUSE).is_none(),
+            "the second visit re-requested josephine"
+        );
+        assert_eq!(a.loaded, Some(key("systm-d", "josephine")));
+        assert_eq!(a.resources.len(), 1);
+        assert!(
+            a.status.contains("caches"),
+            "the second visit lost the warning: {}",
+            a.status
+        );
+    }
+
+    /// A load that fails outright is said so, and the pause does not retry
+    /// it on its own — a failing repository would otherwise be requested
+    /// again every 300 ms. `Entrée` retries.
+    #[test]
+    fn a_failed_load_is_reported_and_retried_only_on_enter() {
+        let mut a = App::new(vec![org_named("systm-d", &["josephine"])]);
+        let t0 = std::time::Instant::now();
+        assert!(a.follow_cursor(t0).is_none());
+        let load = a.follow_cursor(t0 + PAUSE).expect("the load starts");
+
+        a.land_load(load, Err(anyhow::anyhow!("503 Service Unavailable")));
+
+        assert_eq!(
+            a.shown(),
+            Shown::Failed {
+                org: "systm-d".into(),
+                repo: "josephine".into()
+            }
+        );
+        assert!(a.status.contains("503"), "got: {}", a.status);
+        assert!(
+            a.follow_cursor(t0 + ms(5000)).is_none(),
+            "a failed repository was requested again without Entrée"
+        );
+        assert!(a.force_load().is_some(), "Entrée must retry");
+    }
+
+    /// Fix round 1: a failed load's error is the load's own message, like a
+    /// refused family's warning, so it never outlives the failure it
+    /// reports. Retried with `Entrée` and landing in full, the retry clears
+    /// it; a failure the cursor leaves behind leaves with it. The status
+    /// line must not say a load failed while the column lists that
+    /// repository. Claudine is never loaded: the cursor leaving josephine
+    /// finds no listing whose landing could clear the error in its place.
+    #[test]
+    fn a_load_error_leaves_the_status_line_once_retried_or_left_behind() {
+        let mut a = App::new(vec![org_named("systm-d", &["josephine", "claudine"])]);
+        let t0 = std::time::Instant::now();
+        assert!(a.follow_cursor(t0).is_none());
+        let load = a.follow_cursor(t0 + PAUSE).expect("the load starts");
+        a.land_load(load, Err(anyhow::anyhow!("503 Service Unavailable")));
+        assert!(a.status.contains("503"), "got: {}", a.status);
+
+        let retry = a.force_load().expect("Entrée retries");
+        a.land_load(
+            retry,
+            Ok((vec![res(1, "josephine-cache", 100, 1, false)], vec![])),
+        );
+        assert_eq!(
+            a.shown(),
+            Shown::Listing {
+                org: "systm-d".into(),
+                repo: "josephine".into()
+            }
+        );
+        assert!(
+            !a.status.contains("503"),
+            "the error outlived a successful retry: {}",
+            a.status
+        );
+
+        let refresh = a.force_load().expect("Entrée refreshes");
+        a.land_load(refresh, Err(anyhow::anyhow!("502 Bad Gateway")));
+        assert!(a.status.contains("502"), "got: {}", a.status);
+        a.repo_cursor = 1;
+        assert!(a.follow_cursor(t0 + ms(2000)).is_none());
+        assert!(
+            !a.status.contains("502"),
+            "josephine's error stayed on claudine: {}",
+            a.status
+        );
+    }
+
+    /// A listing lands on its own time, not on a key: it must not move the
+    /// keyboard out of the column it is in.
+    #[test]
+    fn a_listing_that_lands_leaves_the_keyboard_in_its_column() {
+        let mut a = App::new(vec![org_named("systm-d", &["josephine"])]);
+        let t0 = std::time::Instant::now();
+        assert!(a.follow_cursor(t0).is_none());
+        let load = a.follow_cursor(t0 + PAUSE).expect("the load starts");
+        a.focus = Focus::Repos;
+
+        a.land_load(load, Ok((vec![res(1, "c", 100, 1, false)], vec![])));
+
+        assert_eq!(a.focus, Focus::Repos);
+    }
+
+    /// Nor may it close a filter being typed while the listing was on its
+    /// way: once closed, the next letter typed runs as a command — `A`
+    /// ticks, `d` deletes.
+    #[test]
+    fn a_listing_that_lands_does_not_close_a_filter_being_typed() {
+        let mut a = App::new(vec![org_named("systm-d", &["josephine"])]);
+        let t0 = std::time::Instant::now();
+        assert!(a.follow_cursor(t0).is_none());
+        let load = a.follow_cursor(t0 + PAUSE).expect("the load starts");
+        a.focus = Focus::Resources;
+        a.filter_mode = true;
+        a.filter.push_str("cov");
+
+        a.land_load(load, Ok((vec![res(1, "coverage", 100, 1, false)], vec![])));
+
+        assert!(a.filter_mode, "the filter closed under the user's typing");
+        assert_eq!(a.filter, "cov");
+    }
+
+    /// A repository ticked for archiving during its own pause keeps its tick
+    /// when its listing lands: dropping it would lose the user's selection to
+    /// a timer. A tick left on another repository keeps it as well (ruling
+    /// R7-1, `a_repository_tick_survives_another_repositorys_listing_landing`).
+    #[test]
+    fn a_tick_on_the_repository_whose_listing_lands_survives() {
+        let mut a = App::new(vec![org_named("systm-d", &["lokiprint"])]);
+        let t0 = std::time::Instant::now();
+        assert!(a.follow_cursor(t0).is_none());
+        a.focus = Focus::Repos;
+        a.toggle_repo_selected();
+        let load = a.follow_cursor(t0 + PAUSE).expect("the load starts");
+
+        a.land_load(load, Ok((vec![], vec![])));
+
+        assert_eq!(a.selected_repo, Some(key("systm-d", "lokiprint")));
+    }
+
+    /// Two orgs: `maxds-lyon`, holding two archivable repositories —
+    /// lokiprint, then claudine — and `exec-d`, for an org move.
+    fn app_with_two_archivable_repos() -> App {
+        App::new(vec![
+            org_named("maxds-lyon", &["lokiprint", "claudine"]),
+            org_named("exec-d", &["alertu"]),
+        ])
+    }
+
+    /// Ticks lokiprint from the repos column, the cursor on it, then moves
+    /// that cursor down to claudine — the steps the tests below share.
+    fn tick_lokiprint_then_move_to_claudine(a: &mut App, t0: std::time::Instant) {
+        assert!(a.follow_cursor(t0).is_none());
+        a.focus = Focus::Repos;
+        a.toggle_repo_selected();
+        assert_eq!(
+            a.selected_repo,
+            Some(key("maxds-lyon", "lokiprint")),
+            "the fixture ticks lokiprint"
+        );
+        a.repo_cursor = 1;
+    }
+
+    /// `repo`, in `maxds-lyon`, is still the repository ticked, and `d` from
+    /// the repos column builds its archive plan — wherever the cursor is.
+    fn assert_d_archives(a: &App, repo: &str) {
+        assert_eq!(
+            a.selected_repo,
+            Some(key("maxds-lyon", repo)),
+            "the tick on {repo} was lost"
+        );
+        assert_eq!(a.focus, Focus::Repos);
+        let plan = a
+            .take_focused_plan()
+            .expect("d from the repos column must build the ticked repository's archive plan");
+        assert_eq!(
+            (plan.owner.as_str(), plan.repo.as_str()),
+            ("maxds-lyon", repo)
+        );
+        assert_eq!(plan.items.len(), 1);
+        assert_eq!(plan.items[0].kind, ResourceKind::Repository);
+        assert_eq!(plan.items[0].label, repo);
+    }
+
+    /// Ruling R7-1 (2026-09-11): the repository tick stays single, as in
+    /// v0.5, and it survives the cursor. The resources column follows the
+    /// repos cursor, so resting on another repository shows that
+    /// repository's listing — and a listing showing used to drop a tick left
+    /// on any other repository: a tick never outlived a cursor rest, and `d`
+    /// from the repos column had nothing left to archive. Here claudine's
+    /// listing is kept, and shows at once.
+    #[test]
+    fn a_repository_tick_survives_resting_on_a_cached_repository() {
+        let mut a = app_with_two_archivable_repos();
+        let t0 = std::time::Instant::now();
+        a.remember(
+            key("maxds-lyon", "claudine"),
+            vec![res(7, "claudine-cache", 100, 1, false)],
+        );
+
+        tick_lokiprint_then_move_to_claudine(&mut a, t0);
+        assert!(a.follow_cursor(t0 + ms(10)).is_none());
+        assert_eq!(
+            a.loaded,
+            Some(key("maxds-lyon", "claudine")),
+            "the fixture needs claudine's kept listing on screen"
+        );
+
+        assert_d_archives(&a, "lokiprint");
+    }
+
+    /// Ruling R7-1, claudine not kept: her pause runs out, her load starts
+    /// and her listing lands — and lokiprint is still the repository `d`
+    /// archives from the repos column.
+    #[test]
+    fn a_repository_tick_survives_another_repositorys_listing_landing() {
+        let mut a = app_with_two_archivable_repos();
+        let t0 = std::time::Instant::now();
+
+        tick_lokiprint_then_move_to_claudine(&mut a, t0);
+        let rest = t0 + ms(10);
+        assert!(a.follow_cursor(rest).is_none(), "claudine waits a pause");
+        let load = a
+            .follow_cursor(rest + PAUSE)
+            .expect("claudine's load starts after the pause");
+        assert_eq!(load.repo, "claudine");
+        a.land_load(
+            load,
+            Ok((vec![res(7, "claudine-cache", 100, 1, false)], vec![])),
+        );
+        assert_eq!(
+            a.loaded,
+            Some(key("maxds-lyon", "claudine")),
+            "the fixture needs claudine's listing landed"
+        );
+
+        assert_d_archives(&a, "lokiprint");
+    }
+
+    /// Ruling R7-1's other half — Finding 1 of the v0.5 final review: an org
+    /// move still drops the tick, so `d` never archives a repository of an
+    /// org the screen has left. The tick first survives a rest on claudine,
+    /// the positive control; then the org cursor moves to exec-d the way
+    /// `tui::event_loop` moves it.
+    #[test]
+    fn an_org_move_drops_a_repository_tick_that_survived_the_cursor() {
+        let mut a = app_with_two_archivable_repos();
+        let t0 = std::time::Instant::now();
+        a.remember(key("maxds-lyon", "claudine"), vec![]);
+        tick_lokiprint_then_move_to_claudine(&mut a, t0);
+        assert!(a.follow_cursor(t0 + ms(10)).is_none());
+        assert_d_archives(&a, "lokiprint");
+
+        a.org_cursor = 1;
+        a.reset_scoped_cursors();
+        assert!(a.follow_cursor(t0 + ms(20)).is_none());
+
+        assert_eq!(a.selected_repo, None, "an org move kept the tick");
+        assert!(
+            a.take_focused_plan().is_none(),
+            "d would archive a repository of the org the screen left"
+        );
+    }
+
+    /// A clean listing lands on its own time, so it may clear the warning a
+    /// previous load left and nothing else. The quit guard's warning is the
+    /// one that matters: cleared by a listing landing, the next `q` quits
+    /// mid-purge with nothing on screen saying so.
+    #[test]
+    fn a_clean_listing_leaves_a_message_it_did_not_write_alone() {
+        let mut a = App::new(vec![org_named("systm-d", &["josephine"])]);
+        let t0 = std::time::Instant::now();
+        assert!(a.follow_cursor(t0).is_none());
+        let load = a.follow_cursor(t0 + PAUSE).expect("the load starts");
+        a.status = "Purge en cours — [q] à nouveau pour quitter sans l'achever.".into();
+
+        a.land_load(load, Ok((vec![], vec![])));
+
+        assert_eq!(
+            a.status,
+            "Purge en cours — [q] à nouveau pour quitter sans l'achever."
+        );
+    }
+
+    /// A load's warning is about the repository it listed: once the cursor
+    /// shows another one, the warning leaves with it.
+    #[test]
+    fn a_load_warning_leaves_with_its_repository() {
+        let mut a = App::new(vec![org_named("systm-d", &["josephine", "claudine"])]);
+        let t0 = std::time::Instant::now();
+        assert!(a.follow_cursor(t0).is_none());
+        let load = a.follow_cursor(t0 + PAUSE).expect("the load starts");
+        a.land_load(load, Ok((vec![], vec!["tags"])));
+        assert!(a.status.contains("tags"), "got: {}", a.status);
+
+        a.repo_cursor = 1;
+        assert!(a.follow_cursor(t0 + ms(1000)).is_none());
+
+        assert!(
+            a.status.is_empty(),
+            "josephine's warning stayed on claudine: {}",
+            a.status
+        );
+    }
+
+    /// A purge changing a repository while its listing is in flight makes
+    /// that listing suspect: it may have been read before the deletion.
+    /// `forget` drops it on arrival like a superseded one, and the pause
+    /// starts over so a fresh listing follows.
+    #[test]
+    fn forgetting_a_repository_supersedes_its_listing_in_flight() {
+        let mut a = App::new(vec![org_named("systm-d", &["josephine"])]);
+        let t0 = std::time::Instant::now();
+        assert!(a.follow_cursor(t0).is_none());
+        let suspect = a.follow_cursor(t0 + PAUSE).expect("the load starts");
+
+        a.forget(("systm-d", "josephine"));
+        a.land_load(
+            suspect,
+            Ok((vec![res(1, "deleted-cache", 100, 1, false)], vec![])),
+        );
+        assert!(
+            a.resources.is_empty(),
+            "a listing read before the purge was shown"
+        );
+        assert!(a.cached(("systm-d", "josephine")).is_none());
+
+        let t1 = t0 + ms(1000);
+        assert!(
+            a.follow_cursor(t1).is_none(),
+            "the fresh listing waits a pause"
+        );
+        let fresh = a
+            .follow_cursor(t1 + PAUSE)
+            .expect("a fresh listing follows the purge");
+        assert_eq!(fresh.repo, "josephine");
+    }
+
+    /// `→`/`Tab` and `←` walk the three columns (spec §2), both ways, and
+    /// wrap. The repo level was unreachable at one point because `Focus`
+    /// only had two variants. The test this replaces re-implemented the
+    /// cycle inline and asserted on its own copy, so nothing the event loop
+    /// did could make it fail.
+    #[test]
+    fn focus_walks_the_three_columns_both_ways_and_wraps() {
+        assert_eq!(Focus::Orgs.next(), Focus::Repos);
+        assert_eq!(Focus::Repos.next(), Focus::Resources);
+        assert_eq!(Focus::Resources.next(), Focus::Orgs);
+        assert_eq!(Focus::Orgs.previous(), Focus::Resources);
+        assert_eq!(Focus::Repos.previous(), Focus::Orgs);
+        assert_eq!(Focus::Resources.previous(), Focus::Repos);
     }
 }
