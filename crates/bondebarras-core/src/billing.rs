@@ -43,6 +43,22 @@ pub struct MinuteLine {
 /// Free Actions allowance for an organization, in Linux-equivalent minutes.
 pub const FREE_MINUTES_PER_MONTH: u64 = 2_000;
 
+/// Included Actions minutes per month for an organization's GitHub plan, in
+/// Linux-equivalent minutes — GitHub's own table.
+///
+/// `None` for a plan this crate has no figure for, and for no plan at all:
+/// `GET /orgs/{org}` only returns `plan` to an owner. Never a default. A
+/// guessed allowance made exec-d, on Team, read 50 % for 1 004 minutes when
+/// 33 % was true, and SecondBrain-io, on Enterprise, read 901 % for 36 %.
+pub fn included_minutes_for(plan: Option<&str>) -> Option<u64> {
+    match plan? {
+        "free" => Some(2_000),
+        "team" => Some(3_000),
+        "enterprise" => Some(50_000),
+        _ => None,
+    }
+}
+
 /// How many Linux-equivalent minutes one minute of this runner costs.
 ///
 /// `None` means the SKU is unknown — a new runner family GitHub added. The
@@ -161,6 +177,22 @@ mod tests {
 
     fn private_repos(names: &[&str]) -> HashSet<String> {
         names.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn included_minutes_follow_the_plan() {
+        assert_eq!(included_minutes_for(Some("free")), Some(2_000));
+        assert_eq!(included_minutes_for(Some("team")), Some(3_000));
+        assert_eq!(included_minutes_for(Some("enterprise")), Some(50_000));
+    }
+
+    #[test]
+    fn an_unknown_or_unread_plan_has_no_minutes_allowance() {
+        // `pro` is a real GitHub plan — for a personal account, never an org.
+        // No figure here, so no percentage anywhere.
+        assert_eq!(included_minutes_for(Some("pro")), None);
+        assert_eq!(included_minutes_for(Some("")), None);
+        assert_eq!(included_minutes_for(None), None);
     }
 
     #[test]
