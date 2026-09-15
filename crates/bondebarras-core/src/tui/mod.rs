@@ -200,31 +200,7 @@ where
             }
             KeyCode::Char('q') | KeyCode::Esc => request_quit(&mut app),
             KeyCode::Char('b') => app.view = View::Billing,
-            KeyCode::Down => match app.focus {
-                Focus::Orgs => {
-                    app.org_cursor = (app.org_cursor + 1).min(app.orgs.len().saturating_sub(1));
-                    app.reset_scoped_cursors();
-                }
-                Focus::Repos => {
-                    let max = app
-                        .orgs
-                        .get(app.org_cursor)
-                        .map_or(0, |o| o.repos.len().saturating_sub(1));
-                    app.repo_cursor = (app.repo_cursor + 1).min(max);
-                }
-                Focus::Resources => {
-                    let max = app.visible_resources().len().saturating_sub(1);
-                    app.res_cursor = (app.res_cursor + 1).min(max);
-                }
-            },
-            KeyCode::Up => match app.focus {
-                Focus::Orgs => {
-                    app.org_cursor = app.org_cursor.saturating_sub(1);
-                    app.reset_scoped_cursors();
-                }
-                Focus::Repos => app.repo_cursor = app.repo_cursor.saturating_sub(1),
-                Focus::Resources => app.res_cursor = app.res_cursor.saturating_sub(1),
-            },
+            KeyCode::Up | KeyCode::Down => move_cursor(&mut app, key.code),
             KeyCode::Enter => {
                 // Spec §3: load the repository under the column-2 cursor
                 // now, without waiting for the pause. `App::force_load`
@@ -496,6 +472,44 @@ fn request_quit(app: &mut App) {
         app.status = "Purge en cours — [q] à nouveau pour quitter sans l'achever.".into();
     } else {
         app.should_quit = true;
+    }
+}
+
+/// Applies `↑` or `↓` to the cursor of the column focus is on. Split out of
+/// `event_loop` so what each move changes can be asserted on without a
+/// terminal.
+fn move_cursor(app: &mut App, code: KeyCode) {
+    match (code, app.focus) {
+        (KeyCode::Down, Focus::Orgs) => {
+            let next = (app.org_cursor + 1).min(app.orgs.len().saturating_sub(1));
+            move_org_cursor(app, next);
+        }
+        (KeyCode::Down, Focus::Repos) => {
+            let max = app
+                .orgs
+                .get(app.org_cursor)
+                .map_or(0, |o| o.repos.len().saturating_sub(1));
+            app.repo_cursor = (app.repo_cursor + 1).min(max);
+        }
+        (KeyCode::Down, Focus::Resources) => {
+            let max = app.visible_resources().len().saturating_sub(1);
+            app.res_cursor = (app.res_cursor + 1).min(max);
+        }
+        (KeyCode::Up, Focus::Orgs) => move_org_cursor(app, app.org_cursor.saturating_sub(1)),
+        (KeyCode::Up, Focus::Repos) => app.repo_cursor = app.repo_cursor.saturating_sub(1),
+        (KeyCode::Up, Focus::Resources) => app.res_cursor = app.res_cursor.saturating_sub(1),
+        _ => {}
+    }
+}
+
+/// Puts the org cursor on `next`, and resets what is scoped beneath it — the
+/// repos cursor, the month, the repository tick (`App::reset_scoped_cursors`)
+/// — only when that is another org. `↓` on the last org and `↑` on the first
+/// move no org, and ruling R7-1 lets only an org move clear the tick (F-M2).
+fn move_org_cursor(app: &mut App, next: usize) {
+    if next != app.org_cursor {
+        app.org_cursor = next;
+        app.reset_scoped_cursors();
     }
 }
 
@@ -1620,5 +1634,62 @@ mod tests {
             Some(Focus::Resources)
         );
         assert_eq!(column_after(Focus::Repos, KeyCode::Down), None);
+    }
+
+    /// Final review minor, promoted (F-M2): `↓` on the last org and `↑` on
+    /// the first moved no org, yet reset the cursors scoped beneath it and
+    /// dropped the repository tick — ruling R7-1 lets only an org move clear
+    /// it. A second org, exec-d, makes both a still key and a real move
+    /// possible: `↑` on systm-d keeps its tick and month, `↓` to exec-d
+    /// clears them (the positive control), and `↓` on exec-d, the last org,
+    /// keeps exec-d's own tick and month.
+    #[test]
+    fn an_org_key_that_moves_no_org_keeps_the_repository_tick() {
+        let mut app = app_with_loaded_resources();
+        app.orgs.push(OrgSummary {
+            login: "exec-d".into(),
+            cache_bytes: 0,
+            cache_count: 0,
+            repos: vec![crate::model::RepoSummary {
+                name: "lokiprint".into(),
+                cache_bytes: 0,
+                cache_count: 0,
+                private: false,
+                age_days: 5,
+                class: crate::repos::RepoClass::Archivable,
+            }],
+            billing: None,
+        });
+        let tick = |app: &mut App, month: usize| {
+            app.focus = Focus::Repos;
+            column_action(app, KeyCode::Char(' '));
+            app.focus = Focus::Orgs;
+            app.month_cursor = month;
+        };
+        let state = |app: &App| (app.org_cursor, app.selected_repo.clone(), app.month_cursor);
+        let repo = |org: &str, repo: &str| Some((org.to_string(), repo.to_string()));
+
+        tick(&mut app, 2);
+        move_cursor(&mut app, KeyCode::Up);
+        assert_eq!(
+            state(&app),
+            (0, repo("systm-d", "josephine"), 2),
+            "↑ on the first org dropped what belongs to the org it stayed on"
+        );
+
+        move_cursor(&mut app, KeyCode::Down);
+        assert_eq!(
+            state(&app),
+            (1, None, 0),
+            "a real org move must clear the tick and the month"
+        );
+
+        tick(&mut app, 1);
+        move_cursor(&mut app, KeyCode::Down);
+        assert_eq!(
+            state(&app),
+            (1, repo("exec-d", "lokiprint"), 1),
+            "↓ on the last org dropped what belongs to the org it stayed on"
+        );
     }
 }
