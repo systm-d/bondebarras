@@ -145,7 +145,7 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Télécharger les artefacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: artifacts
 
