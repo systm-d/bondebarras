@@ -85,7 +85,23 @@ grep -n "## \[Unreleased\]" CHANGELOG.md
 
 ---
 
+## Arbitrages du pré-vol (2026-09-15, contrôleur)
+
+Le rapport de pré-vol contre le code réel (`.superpowers/sdd/2026-09-11-bondebarras-billing-quotas/preflight-scan.md`) est la référence de chaque ligne citée (1.x, 2.x, 3.Tn-x, 4.x, 5.x). Ces arbitrages l'emportent sur le texte des tâches qui les précède.
+
+- **1.1** — `feat/billing-quotas` existe déjà (worktree `.worktrees/billing-quotas`) : pas de `git switch`. Base : `925bd92` (docs), parent `d9371fc` (correctif `h2`/`rustls`/`deny.toml` de la PR #16). Baseline : 426 tests (419 core + 7 cli).
+- **1.2 / 4.11** — toute preuve (RED, GREEN, mutants, gate) va dans `.superpowers/sdd/2026-09-11-bondebarras-billing-quotas/evidence/`, jamais dans `/tmp` (le redémarrage du 2026-09-15 a effacé les preuves précédentes) : remplacer partout `/tmp/bq-` par ce dossier.
+- **1.30 / 4.3** — les tests de rendu passent par `crate::tui::views::testing` (`draw`, `layout`, `text_in`, `focused_column`, `unwrapped`) et lisent le `Rect` réel du panneau, jamais la frame entière.
+- **4.8** — sujets de commit en français accentué (`échec`, `affichée`, `dépôt`, `sélection`, `à l'étage`, `au-delà`, `rétention`, `à côté`…).
+- **4.9** — les constructeurs de données de test restent locaux à leur module (pas de module `test_support` partagé).
+- **5.1 / 5.2** — **un seul mois par défaut** : l'onglet Billing, la jauge de minutes de la colonne 3 et la ligne de stockage de la colonne 2 lisent tous le **mois le plus récent du rapport** ; seul le JSON par dépôt garde le mois UTC (décision 19). Aucune lecture d'horloge au rendu.
+- **5.14** — le découpage `views/row.rs` / `RepoLoads` (revue finale M6 de tui-3-colonnes) vient après ce plan.
+- Les arbitrages de `feat/tui-3-colonnes` restent en vigueur (colonnes 100/78, touches bornées à la colonne active, liste jamais vide sous l'en-tête — I2, jauges repliées jamais coupées — I4, pied compact, coche de dépôt unique).
+
 ### Task 1: #12 — les coûts en dollars
+
+**Amendements du pré-vol (2026-09-15).** 3.T1-a : `screen()` lit le corps réel — `let buf = crate::tui::views::testing::draw(app, width, height); let (rows, _) = crate::tui::views::testing::layout(app, width, height); crate::tui::views::testing::text_in(&buf, rows.body)` ; dans `assert_shown_at_every_size`, `floor = u16::try_from(row).unwrap() + 1 + 1 + 1 + 2` (en-tête, la ligne, bordure, état + pied). 3.T1-d : créer `### Fixed` **après** `### Changed`, avant `## [0.5.0]`. Preuves dans `.superpowers/sdd/2026-09-11-bondebarras-billing-quotas/evidence/`.
+
 
 **Files:**
 - Modify: `crates/bondebarras-core/src/tui/views/billing.rs` (la ligne de coûts dans `render` ; module `tests`)
@@ -394,6 +410,9 @@ git commit -m "feat(billing): quota de minutes par formule"
 
 ### Task 3: #11 — lire la formule de l'organisation
 
+**Amendements du pré-vol (2026-09-15).** 3.T3-a : filtre `api::orgs::tests::plan_` (25 tests existants contiennent `plan_`). 4.8 : sujet `… illisible sans échec`.
+
+
 **Files:**
 - Create: `crates/bondebarras-core/src/api/orgs.rs`
 - Modify: `crates/bondebarras-core/src/api/mod.rs` (liste des modules)
@@ -515,6 +534,9 @@ git commit -m "feat(api): formule de l'organisation, illisible sans echec"
 ---
 
 ### Task 4: #11 — la formule dans `OrgSummary`, `scan::overview` et `scan --json`
+
+**Amendement du pré-vol (2026-09-15).** 1.14 : à `d9371fc`, 20 sites de test construisent `OrgSummary {` (shown.rs 1, views/mod.rs 2, progress.rs 1, orgs.rs 1, repos.rs 2, repo.rs 1, tui/mod.rs 4, app.rs 8), plus `exec_d_september` (Task 1) ; seul `scan.rs:65` est en production.
+
 
 **Files:**
 - Modify: `crates/bondebarras-core/src/model.rs` (`OrgSummary`)
@@ -819,6 +841,17 @@ git commit -m "feat(scan): la formule de chaque organisation, jusque dans scan -
 ---
 
 ### Task 5: #11 — l'onglet et la colonne 3 au quota de la formule
+
+**Amendements du pré-vol (2026-09-15) — bloquants levés.**
+- **3.T5-a/b/c, 4.1, 4.2** — le code du Step 3 pour `minutes_gauge_line` (P:941-982) est **remplacé** : la fonction garde les aides de la vague finale (`explained`, `figures_row`, `PUBLIC_REASON` dans `tui/views/gauges.rs`) et gagne un paramètre `allowance: Option<u64>` : dépôt public → `explained("Minutes    0 %".to_string(), theme::muted(), PUBLIC_REASON, width)` ; quota inconnu → `explained(format!("Minutes  {used} min"), theme::muted(), UNKNOWN_PLAN, width)` avec `const UNKNOWN_PLAN: &str = "· formule inconnue, pas de quota";` ; sinon la ligne de chiffres via `figures_row` comme aujourd'hui avec `allowance` pour dénominateur. Ne pas réécrire `bar`. Ajouter au test `every_gauge_figure_and_explanation_stays_whole_across_swept_widths` un troisième app sans formule : phrase `formule inconnue, pas de quota` entière et aucun `%` sur la ligne Minutes, à toute largeur.
+- **3.T5-d** — l'appel vit dans `repo_gauges` (`views/repo.rs`, qui rend un tuple) : remplacer `gauges::minutes_gauge_line(minutes_used, !repo.private, width)` par `gauges::minutes_gauge_line(minutes_used, !repo.private, crate::billing::included_minutes_for(org.plan.as_deref()), width)`.
+- **3.T5-e** — le Step 5 lance aussi `every_gauge_figure_and_explanation_stays_whole` et `the_column_head_keeps_each_part_whole` ; le mutant doit faire échouer `the_two_gauges…` **et** `every_gauge_figure…`.
+- **3.T5-g** — reformuler aussi le doc de module de `gauges.rs` (l.1-3) et, dans le doc de `percent`, citer les deux tests de plafond nul (`gauges::tests::a_zero_ceiling_does_not_divide_by_zero`, `billing::tests::a_zero_allowance_does_not_divide_by_zero`).
+- **5.1 (bloquant)** — l'onglet Billing s'ouvre sur le **mois le plus récent** : `displayed_month` = `months.iter().rev().nth(month_cursor.min(months.len().saturating_sub(1))).cloned().unwrap_or_default()` ; Files += `crates/bondebarras-core/src/tui/mod.rs` : à l'onglet Billing, `←` va vers le plus ancien (`(cursor + 1).min(max)`), `→` vers le plus récent (`saturating_sub(1)`). Test `the_billing_tab_opens_on_the_newest_month` : rapport 2026-08 + 2026-09 → `2026-09 ·` présent, `2026-08 ·` absent, à toute taille.
+- **4.16** — la ligne de mois dit `{month} · quota documenté de la formule actuelle` (≤ 56 cellules) ; adapter les aiguilles des tests en conséquence.
+- **3.T5-h / h'** — README : reformater le paragraphe à 80 colonnes après remplacement ; `site/content/_index.md:109` → « …against the allowance of the organization's plan, month by month » ; `site/content/_index.fr.md:109` → « …face au quota de la formule de l'organisation, mois par mois ».
+- **3.T5-i / 4.7** — CHANGELOG : aucun titre neuf ; modifier **en place** la puce Added `CHANGELOG.md:25-29` (« Actions minutes against the allowance of the organization's plan — `formule inconnue`, with no percentage, when the plan cannot be read — both uncapped past 100 % ») et retirer de la puce Changed la phrase « The per-repository minutes gauge follows the same allowance. ».
+
 
 **Files:**
 - Modify: `crates/bondebarras-core/src/tui/views/billing.rs` (`gauge_line`, `render` découpé en blocs ; module `tests`)
@@ -1325,6 +1358,9 @@ git commit -m "feat(billing): quota de la formule de l'organisation, jamais devi
 
 ### Task 6: #13 — stockage Actions en GB-heures (calcul pur)
 
+**Amendement du pré-vol (2026-09-15).** 3.T6-a / 4.4 : dans `storage_gbh_sums_only_actions_storage_gigabyte_hours`, ajouter un élément `Actions storage` dans une autre unité (`{ let mut odd = storage("2026-09", 999.0, "disconnected"); odd.unit_type = "Minutes".into(); odd }`) — le total attendu reste 371.09, pour que la moitié « GigabyteHours » du filtre puisse échouer.
+
+
 **Files:**
 - Modify: `crates/bondebarras-core/src/billing.rs` (doc du module ; constantes et fonctions libres après `included_minutes_for` ; bloc `impl BillingReport` après `unknown_skus` ; module `tests`)
 
@@ -1818,6 +1854,9 @@ git commit -m "feat(scan): stockage Actions du mois dans scan --json"
 
 ### Task 8: #13 — le bloc « Stockage Actions » de l'onglet
 
+**Amendements du pré-vol (2026-09-15).** 3.T8-a : le Step 4 attend **cinq** tests neufs, pas six. 3.T8-c : `storage_line_row` passe le nom par `views::fit(&line.repo, 20)`. 4.10 : ajouter `fn breakdown<T>(rows: &[T], row: impl Fn(&T) -> Line<'static>, rest: &str) -> Vec<Line<'static>>` (premières `MAX_BREAKDOWN_LINES` lignes puis `… et N autre(s) {rest}`), utilisée par `minutes_block` **et** `storage_block` (la Task 12 garde l'appel). 4.8 : sujet `… base horaire affichée`.
+
+
 **Files:**
 - Modify: `crates/bondebarras-core/src/tui/views/billing.rs` (`MAX_MINUTE_LINES` renommée ; `use` ; nouvelles fonctions ; `tab_lines` ; module `tests`)
 
@@ -2062,6 +2101,15 @@ git commit -m "feat(billing): bloc stockage Actions de l'onglet, base horaire af
 ---
 
 ### Task 9: #13 — la colonne des dépôts : GB-heures du mois et ⚠ du plafond de cache
+
+**Amendements du pré-vol (2026-09-15) — bloquant levé.**
+- **3.T9-b / 4.14 (bloquant)** — dans `repos::render`, la ligne de détail `↳` n'est ajoutée que si la colonne a au moins deux lignes intérieures (`area.height >= 4`). **Arbitrage contrôleur en plus** : même garde qu'I2 dans la colonne des dépôts — si elle ne peut dessiner aucune ligne de dépôt, `espace` et `d` depuis cette colonne sont inertes (drapeau posé au rendu, comme `resources_too_short`). Tests : balayage des hauteurs 5..=30 à 60/80/100 — le dépôt sous le curseur est visible dès que la colonne a ≥ 1 ligne intérieure ; à une hauteur sans ligne dessinable, `espace`/`d` ne cochent ni ne planifient rien.
+- **5.2 (arbitrage A)** — la colonne 2 lit le mois le plus récent du rapport, comme la colonne 3 : `repo_storage_this_month(org, &repo.name)` sans paramètre de mois ni horloge ; libellé `↳ 359.9 GB-h, <YYYY-MM>`. Le JSON garde le mois UTC (décision 19). Remplace 3.T9-c.
+- **3.T9-a** — dans `the_repos_column_shows_storage_and_the_ceiling_mark_at_every_width`, remplacer `whole_screen(...)` par `crate::tui::views::testing::focused_column(&mut app, Focus::Repos, width, height).1` ; supprimer `whole_screen`.
+- **1.15** — la largeur est `repos::COLUMN_WIDTH` (`tui/views/repos.rs:13-29`), pas `orgs::PANE_WIDTH` ; reformuler aussi le commentaire de `repo_row_spans` (`repos.rs:86-88`) : la cellule libre porte désormais le ⚠.
+- **3.T9-e** — remplacer `ListItem::new(Line::from(repo_row_spans(repo, checked)))` par `repo_item(repo_row_spans(repo, checked), repo_storage_this_month(org, &repo.name))`.
+- **5.6** — README / CHANGELOG : « past the included 10 GiB (10.7 Go as displayed) ». 4.8 : sujet `… par dépôt … des dépôts (#13)`.
+
 
 **Files:**
 - Modify: `crates/bondebarras-core/src/tui/views/gauges.rs` (`cache_over_ceiling` ; module `tests`)
@@ -2369,6 +2417,9 @@ git commit -m "feat(tui): stockage Actions par depot et plafond de cache dans la
 
 ### Task 10: #14 — le budget Actions (sélection pure)
 
+**Amendement du pré-vol (2026-09-15).** 4.8 : sujet `… sélection …`.
+
+
 **Files:**
 - Modify: `crates/bondebarras-core/src/billing.rs` (type et fonctions après `is_actions_storage` ; module `tests`)
 
@@ -2538,6 +2589,9 @@ git commit -m "feat(billing): budget Actions de l'organisation, selection pure"
 ---
 
 ### Task 11: #14 — lire les budgets à l'étage 1, jusque dans `scan --json`
+
+**Amendement du pré-vol (2026-09-15).** 4.8 : sujet `… à l'étage 1, illisibles …`.
+
 
 **Files:**
 - Create: `crates/bondebarras-core/src/api/budgets.rs`
@@ -2969,6 +3023,9 @@ git commit -m "feat(api): budgets de l'organisation a l'etage 1, illisibles sans
 
 ### Task 12: #14 — le budget dans l'onglet, et l'avertissement sous les jauges
 
+**Amendements du pré-vol (2026-09-15).** 3.T12-a / 4.5 : au Step 4, muter `nears_blocking_budget` en `percent >= BUDGET_WARNING_PERCENT && budget.is_some()`, lancer `no_budget_warning_without_a_blocking_budget` avec sortie dans `.superpowers/sdd/2026-09-11-bondebarras-billing-quotas/evidence/`, le voir échouer sur le budget non bloquant, restaurer. 3.T12-b : dans `a_blocking_budget_at_95_percent_warns_under_the_gauge`, à 100x50, la ligne de `⚠ 95 %` est celle de `2 850 / 3 000` + 1. 3.T12-d : `let Some(b) = budget.filter(|_| billing::nears_blocking_budget(percent, budget)) else { return Vec::new(); };`. **5.1** : l'avertissement n'est émis que si le mois affiché est `report.months().last()` — test sur un rapport de deux mois (95 % en 2026-08, curseur dessus → aucun avertissement). 4.8 : sujet `… au-delà du quota (#14)`.
+
+
 **Files:**
 - Modify: `crates/bondebarras-core/src/tui/views/billing.rs` (`use` ; `budget_lines`, `budget_warning_lines` neuves ; `minutes_block`, `storage_block`, `tab_lines` ; module `tests`)
 - Modify: `README.md`, `CHANGELOG.md`, `CLAUDE.md`
@@ -3397,6 +3454,9 @@ git commit -m "feat(billing): budget Actions et ce qu'il fait au-dela du quota (
 
 ### Task 13: #15 — lire la rétention des artefacts et journaux
 
+**Amendement du pré-vol (2026-09-15).** 4.8 : sujet `… rétention …`.
+
+
 **Files:**
 - Create: `crates/bondebarras-core/src/api/retention.rs`
 - Modify: `crates/bondebarras-core/src/api/mod.rs`, `crates/bondebarras-core/src/model.rs` (`ArtifactRetention`, `OrgSummary`), `crates/bondebarras-core/src/billing.rs` (seuil ; `tests`), `crates/bondebarras-core/src/scan.rs` (`overview` ; `tests`), `crates/bondebarras-core/src/commands/scan.rs` (`org_json` ; `tests`)
@@ -3700,6 +3760,9 @@ git commit -m "feat(api): retention des artefacts de chaque organisation, en lec
 ---
 
 ### Task 14: #15 — la rétention dans l'onglet, à côté du stockage
+
+**Amendements du pré-vol (2026-09-15).** 4.6 : pas de `### Note on scopes` ; une puce sous le `### Changed` existant : « - Token scopes: `admin:org` is optional — only the Billing tab's retention line needs it and reads `illisible` without it; reading budgets needs a role (organization admin or billing manager), not a scope. No scope joins the required list. (#14, #15) ». 3.T14-c : dans `tab_lines`, construire `budget_lines` avant et les notes de rétention après le `let … else`, sans répéter les appels. 3.T14-d : `site/content/_index.md` et `_index.fr.md` gagnent une puce chacun pour le stockage Actions en GB-heures, le budget Actions et la rétention (lecture seule). 4.8 : sujet `… rétention … à côté`.
+
 
 **Files:**
 - Modify: `crates/bondebarras-core/src/tui/views/billing.rs` (`use` ; `retention_lines`, `RETENTION_NOTES`, `retention_notes` neuves ; `tab_lines` ; module `tests`)
