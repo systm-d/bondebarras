@@ -17,7 +17,8 @@ anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
-octocrab = "0.41"
+# octocrab requires a JWT backend, never used here; its default (jwt-rust-crypto) pulls rsa (RUSTSEC-2023-0071, unfixed).
+octocrab = { version = "0.54", default-features = false, features = ["default-client", "follow-redirect", "retry", "rustls", "rustls-ring", "timeout", "tracing", "jwt-aws-lc-rs"] }
 http = "1"
 ratatui = "0.30"
 crossterm = "0.29"
