@@ -166,8 +166,14 @@ mod tests {
             v[0]
         );
         assert!((number(&v[0]["repos"][0]["storage_gbh"]) - 359.88).abs() < 1e-9);
-        // A readable report that lists nothing for this repository: a real zero.
-        assert!(number(&v[0]["repos"][1]["storage_gbh"]).abs() < 1e-9);
+        // A readable report that lists nothing for this repository: a real
+        // zero, and a positive one — never the -0.0 an empty `f64` sum gives.
+        let quiet = number(&v[0]["repos"][1]["storage_gbh"]);
+        assert!(
+            quiet.abs() < 1e-9 && quiet.is_sign_positive(),
+            "got: {}",
+            v[0]
+        );
         // Unreadable billing, unknown plan: nulls, never zeros.
         assert!(v[1]["storage_gbh"].is_null(), "got: {}", v[1]);
         assert!(v[1]["storage_allowance_gbh"].is_null(), "got: {}", v[1]);

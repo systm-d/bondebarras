@@ -1,22 +1,35 @@
 //! The Billing tab: strictly diagnostic, no destructive action.
 //!
-//! Minutes cannot be reclaimed retroactively, so the only useful thing this
-//! view can do is name the repository burning them.
+//! Minutes cannot be reclaimed retroactively, nor GB-hours already counted,
+//! so the only useful thing this view can do is name the repository behind
+//! them.
 
-use crate::billing::{BillingReport, MinuteLine, included_minutes_for, sku_multiplier};
+use crate::billing::{
+    self, BillingReport, MinuteLine, StorageLine, StorageQuota, included_minutes_for,
+    sku_multiplier,
+};
 use crate::model::OrgSummary;
 use crate::tui::app::App;
 use crate::tui::theme;
-use crate::tui::views::gauges;
+use crate::tui::views::{self, gauges};
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 use std::collections::HashSet;
 
-/// The breakdown is the tab's reason to exist, but the area is bounded: past
-/// this many rows the tail is noise the user came here to avoid, not signal.
-const MAX_MINUTE_LINES: usize = 8;
+/// The breakdowns — minutes and storage — are the tab's reason to exist, but
+/// the area is bounded: past this many rows the tail is noise the user came
+/// here to avoid, not signal. Both blocks share it, as #13 asks.
+const MAX_BREAKDOWN_LINES: usize = 8;
+
+/// What GitHub's documentation insists on, split in two so both halves
+/// survive a narrow frame: deleting artifacts stops the accumulation but
+/// refunds nothing already counted.
+const DELETION_DOES_NOT_REFUND: [&str; 2] = [
+    "Supprimer des artefacts arrête l'accumulation,",
+    "  mais ne rend pas les GB-heures déjà comptées.",
+];
 
 /// One line summarising allowance consumption.
 ///
@@ -44,6 +57,37 @@ pub fn gauge_line(used: u64, allowance: Option<u64>) -> String {
 /// The gauge's bar: one cell per 10 %, at most 20 so overshoot stays legible.
 fn bar(percent: u64) -> String {
     "█".repeat((percent as usize / 10).min(20))
+}
+
+/// A storage figure in hundredths of a GB-hour — the usage report's own
+/// precision — so it can go through `gauges::percent`, the crate's single
+/// percentage, which counts in whole units.
+fn centi_gbh(gbh: f64) -> u64 {
+    (gbh * 100.0).round() as u64
+}
+
+/// The storage ratio as a whole percentage: `gauges::percent` on hundredths
+/// of a GB-hour, never a second formula. Every reader of that ratio goes
+/// through here, so none can round it differently.
+fn storage_percent(used: f64, quota: StorageQuota) -> u64 {
+    gauges::percent(centi_gbh(used), centi_gbh(quota.gbh))
+}
+
+/// Actions storage consumed against the plan's included GB-hours, with the
+/// hour base written out — the base is an open measurement, so the line
+/// never lets a percentage stand without it. Not clamped, like the minutes.
+pub fn storage_gauge_line(used: f64, quota: Option<StorageQuota>) -> String {
+    let Some(quota) = quota else {
+        return format!("{used:.2} GB-h   formule inconnue, pas de quota");
+    };
+    let percent = storage_percent(used, quota);
+    format!(
+        "{used:.2} / {} GB-h   {}  {} %   base {} h",
+        thousands(quota.gbh.round() as u64),
+        bar(percent),
+        percent,
+        quota.hours
+    )
 }
 
 /// Groups digits with a narrow space, as French convention wants.
@@ -86,6 +130,16 @@ fn minute_line_row(line: &MinuteLine) -> Line<'static> {
             sku_label(&line.sku),
             thousands(line.equivalent),
         ),
+        theme::muted(),
+    ))
+}
+
+/// One row of the storage breakdown: the repository, cut to its 20 cells so
+/// the GB-hours keep their column, then its GB-hours.
+fn storage_line_row(line: &StorageLine) -> Line<'static> {
+    let amount = format!("{:.2} GB-h", line.gbh);
+    Line::from(Span::styled(
+        format!("   {}{amount:>12}", views::fit(&line.repo, 20)),
         theme::muted(),
     ))
 }
@@ -184,6 +238,23 @@ fn private_repos(org: &OrgSummary) -> HashSet<String> {
         .collect()
 }
 
+/// The first `MAX_BREAKDOWN_LINES` rows, then `… et N autre(s) {rest}` when
+/// some were left out: a truncation that leaves no trace would bury the
+/// count of hidden rows. Every breakdown of the tab truncates through here.
+fn breakdown<T>(rows: &[T], row: impl Fn(&T) -> Line<'static>, rest: &str) -> Vec<Line<'static>> {
+    let mut lines: Vec<Line<'static>> = rows.iter().take(MAX_BREAKDOWN_LINES).map(row).collect();
+    if rows.len() > MAX_BREAKDOWN_LINES {
+        lines.push(Line::from(Span::styled(
+            format!(
+                "   … et {} autre(s) {rest}",
+                rows.len() - MAX_BREAKDOWN_LINES
+            ),
+            theme::muted(),
+        )));
+    }
+    lines
+}
+
 /// The minutes gauge and the per-repository breakdown behind it.
 ///
 /// The breakdown is the tab's reason to exist: minutes cannot be reclaimed
@@ -207,21 +278,40 @@ fn minutes_block(
             theme::text_style(),
         )),
     ];
-    let minute_lines = report.minute_lines(month, private);
-    for minute_line in minute_lines.iter().take(MAX_MINUTE_LINES) {
-        lines.push(minute_line_row(minute_line));
-    }
-    // A truncation that leaves no trace would bury the count of hidden rows.
     // Counted in rows, not repositories: one repo can contribute several rows
     // (one per SKU).
-    if minute_lines.len() > MAX_MINUTE_LINES {
-        lines.push(Line::from(Span::styled(
-            format!(
-                "   … et {} autre(s) ligne(s)",
-                minute_lines.len() - MAX_MINUTE_LINES
+    lines.extend(breakdown(
+        &report.minute_lines(month, private),
+        minute_line_row,
+        "ligne(s)",
+    ));
+    lines
+}
+
+/// The storage gauge, the repositories holding the storage, and what
+/// deleting can and cannot do about it. No request of its own: the usage
+/// report stage 1 loaded already carries every line.
+fn storage_block(report: &BillingReport, month: &str, plan: Option<&str>) -> Vec<Line<'static>> {
+    let mut lines = vec![
+        Line::from(Span::styled(
+            "Stockage Actions · GB-heures, dépôts publics compris",
+            theme::text_style(),
+        )),
+        Line::from(Span::styled(
+            storage_gauge_line(
+                report.storage_gbh(month),
+                billing::storage_quota(plan, month),
             ),
-            theme::muted(),
-        )));
+            theme::text_style(),
+        )),
+    ];
+    lines.extend(breakdown(
+        &report.storage_lines(month),
+        storage_line_row,
+        "dépôt(s)",
+    ));
+    for text in DELETION_DOES_NOT_REFUND {
+        lines.push(Line::from(Span::styled(text, theme::muted())));
     }
     lines
 }
@@ -262,10 +352,16 @@ fn tab_lines(org: &OrgSummary, month_cursor: usize) -> Vec<Line<'static>> {
 
     let month = displayed_month(report, month_cursor);
     let private = private_repos(org);
-    lines.push(month_line(&month));
+    // A readable report with no usage at all has no month: its line would be
+    // a bare ` · quota documenté…`.
+    if !month.is_empty() {
+        lines.push(month_line(&month));
+    }
     lines.extend(enterprise_lines(plan));
     lines.push(Line::from(""));
     lines.extend(minutes_block(report, &month, &private, plan));
+    lines.push(Line::from(""));
+    lines.extend(storage_block(report, &month, plan));
     lines.push(Line::from(""));
     lines.extend(cost_block(report, &month));
     lines
@@ -553,5 +649,267 @@ mod tests {
         let mut app = billing_app(org);
         assert_shown_at_every_size(&mut app, "2026-09 ·");
         assert_absent_at_every_width(&mut app, "2026-08 ·");
+    }
+
+    /// Task 5 review m4: a readable report with no usage at all has no month
+    /// to name, and the month line read ` · quota documenté de la formule
+    /// actuelle` — a separator hanging off nothing.
+    #[test]
+    fn an_empty_report_names_no_month() {
+        let mut org = exec_d_september();
+        org.plan = Some("team".into());
+        org.billing = Some(BillingReport { items: Vec::new() });
+        let mut app = billing_app(org);
+        // The readable tab is drawn, so the absences below are not vacuous.
+        assert_shown_at_every_size(&mut app, "exec-d · formule team");
+        assert_shown_at_every_size(&mut app, "Minutes équivalent-inclus");
+        assert_absent_at_every_width(&mut app, "quota documenté");
+        for width in 60..=200u16 {
+            let s = screen(&mut app, width, 50);
+            for line in s.lines() {
+                let inner = line.trim_matches(|c: char| c == '│' || c.is_whitespace());
+                assert!(
+                    !inner.starts_with('·'),
+                    "dangling separator at {width}x50:\n{s}"
+                );
+            }
+        }
+    }
+
+    /// An org whose ten private repositories each carry one usage line of
+    /// `sku` in `unit`: `depot-01` the heaviest, `depot-10` the lightest,
+    /// `step` apart. Two more than `MAX_BREAKDOWN_LINES`.
+    fn ten_repos_of(sku: &str, unit: &str, step: f64) -> OrgSummary {
+        let names: Vec<String> = (1..=10).map(|n| format!("depot-{n:02}")).collect();
+        OrgSummary {
+            login: "exec-d".into(),
+            repos: names.iter().map(|name| private_repo(name)).collect(),
+            billing: Some(BillingReport {
+                items: names
+                    .iter()
+                    .zip((1..=10).rev())
+                    .map(|(name, weight)| {
+                        usage("2026-09", sku, unit, f64::from(weight) * step, 0.0, name)
+                    })
+                    .collect(),
+            }),
+            ..Default::default()
+        }
+    }
+
+    /// Past `MAX_BREAKDOWN_LINES` rows the minutes breakdown stops and says
+    /// how many rows it left out: the two lightest are hidden, never dropped
+    /// without a trace.
+    #[test]
+    fn the_minutes_block_stops_at_eight_rows_and_counts_the_rest() {
+        let mut app = billing_app(ten_repos_of("Actions Linux", "Minutes", 100.0));
+        assert_shown_at_every_size(&mut app, "depot-08");
+        assert_shown_at_every_size(&mut app, "… et 2 autre(s) ligne(s)");
+        assert_absent_at_every_width(&mut app, "depot-09");
+        assert_absent_at_every_width(&mut app, "depot-10");
+    }
+
+    /// exec-d's September lines per repository, on Team. Listed lightest
+    /// first so the ranking has work to do; storage amounts are not under
+    /// test here and are left at zero.
+    fn exec_d_september_by_repo() -> OrgSummary {
+        let mut org = exec_d_september();
+        org.plan = Some("team".into());
+        org.billing = Some(BillingReport {
+            items: vec![
+                usage(
+                    "2026-09",
+                    "Actions Linux",
+                    "Minutes",
+                    1_004.0,
+                    6.024,
+                    "disconnected",
+                ),
+                usage(
+                    "2026-09",
+                    "Actions storage",
+                    "GigabyteHours",
+                    11.21,
+                    0.0,
+                    "ptitjardinier-app",
+                ),
+                usage(
+                    "2026-09",
+                    "Actions storage",
+                    "GigabyteHours",
+                    359.88,
+                    0.0,
+                    "disconnected",
+                ),
+            ],
+        });
+        org
+    }
+
+    /// exec-d in September on Free: 371.85 GB-h against 0.5 GB × 720 h. GitHub
+    /// discounted all of it; the 103 % shown is the spec's open measurement
+    /// (720 or 744 hours) — stated on the line, not hidden.
+    #[test]
+    fn storage_gauge_states_its_hour_base() {
+        let september = storage_gauge_line(371.85, billing::storage_quota(Some("free"), "2026-09"));
+        assert_eq!(
+            september,
+            "371.85 / 360 GB-h   ██████████  103 %   base 720 h"
+        );
+
+        let july = storage_gauge_line(371.85, billing::storage_quota(Some("free"), "2026-07"));
+        assert!(july.starts_with("371.85 / 372 GB-h"), "got: {july}");
+        assert!(july.ends_with("100 %   base 744 h"), "got: {july}");
+    }
+
+    #[test]
+    fn storage_gauge_without_a_plan_has_no_percentage() {
+        assert_eq!(
+            storage_gauge_line(371.85, None),
+            "371.85 GB-h   formule inconnue, pas de quota"
+        );
+    }
+
+    #[test]
+    fn the_storage_block_says_public_repos_count() {
+        let mut org = exec_d_september();
+        org.plan = Some("team".into());
+        let mut app = billing_app(org);
+        assert_shown_at_every_size(
+            &mut app,
+            "Stockage Actions · GB-heures, dépôts publics compris",
+        );
+        // Team: 371.85 of 2 GB × 720 h.
+        assert_shown_at_every_size(&mut app, "371.85 / 1 440 GB-h");
+        assert_shown_at_every_size(&mut app, "base 720 h");
+    }
+
+    /// Ranked by row position of the *storage figures*: "disconnected" also
+    /// names a minutes row above the block, so searching for the repository
+    /// name would find that row and pass whatever the storage order.
+    #[test]
+    fn the_storage_block_names_the_heaviest_repo_first() {
+        let mut app = billing_app(exec_d_september_by_repo());
+        assert_shown_at_every_size(&mut app, "359.88 GB-h");
+        assert_shown_at_every_size(&mut app, "11.21 GB-h");
+
+        let s = screen(&mut app, 100, 50);
+        let row_of = |needle: &str| {
+            s.lines()
+                .position(|l| l.contains(needle))
+                .unwrap_or_else(|| panic!("{needle:?} missing:\n{s}"))
+        };
+        assert!(
+            row_of("359.88 GB-h") < row_of("11.21 GB-h"),
+            "heaviest first:\n{s}"
+        );
+        let heaviest = s.lines().nth(row_of("359.88 GB-h")).unwrap();
+        assert!(heaviest.contains("disconnected"), "got: {heaviest}");
+    }
+
+    /// GitHub's documentation: deleting artifacts "does not remove charges
+    /// already recorded". Mandatory, and both halves must survive a narrow
+    /// frame, or the line says only the reassuring half.
+    #[test]
+    fn the_storage_block_says_deleting_does_not_refund() {
+        let mut app = billing_app(exec_d_september());
+        assert_shown_at_every_size(&mut app, "Supprimer des artefacts arrête l'accumulation,");
+        assert_shown_at_every_size(&mut app, "mais ne rend pas les GB-heures déjà comptées.");
+    }
+
+    /// The storage ratio is `gauges::percent` on hundredths of a GB-hour, not
+    /// a formula of its own. 142.2 GB-h is exactly 39.5 % of Free's 360 in
+    /// September: the shared percentage, on 14 220 / 36 000, reads 40, while
+    /// a second `f64` formula (142.2 / 360 × 100 lands just under 39.5) and
+    /// whole GB-hours (142 / 360) both read 39. A zero quota reads the shared
+    /// guard's 0 %, not a saturated `u64::MAX`.
+    #[test]
+    fn storage_percent_is_the_shared_percentage_in_hundredths() {
+        let free_september =
+            billing::storage_quota(Some("free"), "2026-09").expect("free has a storage quota");
+        assert_eq!(storage_percent(142.2, free_september), 40);
+        let zero = StorageQuota {
+            gbh: 0.0,
+            hours: 720,
+        };
+        assert_eq!(storage_percent(5.0, zero), 0);
+    }
+
+    /// Past `MAX_BREAKDOWN_LINES` repositories the storage breakdown stops
+    /// and says how many it left out, as the minutes breakdown does.
+    #[test]
+    fn the_storage_block_stops_at_eight_repos_and_counts_the_rest() {
+        let mut app = billing_app(ten_repos_of("Actions storage", "GigabyteHours", 10.0));
+        assert_shown_at_every_size(&mut app, "depot-08");
+        assert_shown_at_every_size(&mut app, "… et 2 autre(s) dépôt(s)");
+        assert_absent_at_every_width(&mut app, "depot-09");
+        assert_absent_at_every_width(&mut app, "depot-10");
+    }
+
+    /// The figure, the quota and the hour base all follow the month on
+    /// screen: July, paged back to, is its own GB-hours against 2 GB × 744 h —
+    /// not September's figure, nor September's 720 hours.
+    #[test]
+    fn the_storage_block_follows_the_displayed_month() {
+        let mut org = exec_d_september();
+        org.plan = Some("team".into());
+        org.billing
+            .as_mut()
+            .expect("exec-d's fixture carries a report")
+            .items
+            .push(usage(
+                "2026-07",
+                "Actions storage",
+                "GigabyteHours",
+                120.5,
+                0.0,
+                "disconnected",
+            ));
+        let mut app = billing_app(org);
+        assert_shown_at_every_size(&mut app, "371.85 / 1 440 GB-h");
+        app.month_cursor = 1;
+        assert_shown_at_every_size(&mut app, "120.50 / 1 488 GB-h");
+        assert_shown_at_every_size(&mut app, "base 744 h");
+    }
+
+    /// Task 7 review m1: a readable month with no storage reads a plain zero,
+    /// never the `-0.00` an empty `f64` sum prints. November, because
+    /// `2026-09` itself contains `-0`: this way no `-0` may appear anywhere.
+    #[test]
+    fn the_storage_block_reads_a_positive_zero_without_storage() {
+        let mut org = exec_d_september();
+        org.plan = Some("team".into());
+        org.billing = Some(BillingReport {
+            items: vec![usage(
+                "2026-11",
+                "Actions Linux",
+                "Minutes",
+                1_004.0,
+                6.024,
+                "disconnected",
+            )],
+        });
+        let mut app = billing_app(org);
+        assert_shown_at_every_size(&mut app, "0.00 / 1 440 GB-h");
+        assert_absent_at_every_width(&mut app, "-0");
+    }
+
+    /// A repository name longer than its 20 cells is cut with `…`, so the
+    /// GB-hours stay in their column instead of being pushed right.
+    #[test]
+    fn a_long_repo_name_keeps_the_storage_figure_in_its_column() {
+        let text = |repo: &str| -> String {
+            storage_line_row(&StorageLine {
+                repo: repo.into(),
+                gbh: 359.88,
+            })
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect()
+        };
+        let long = text("ptitjardinier-app-monorepo");
+        assert_eq!(long, "   ptitjardinier-app-m… 359.88 GB-h");
+        assert_eq!(long.chars().count(), text("disconnected").chars().count());
     }
 }

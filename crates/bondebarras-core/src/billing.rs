@@ -242,21 +242,21 @@ impl BillingReport {
     /// free, but says nothing of its storage, and the report discounts both
     /// kinds alike. Counting it is the cautious reading, and the tab says so.
     pub fn storage_gbh(&self, month: &str) -> f64 {
+        // Folded from +0.0, not `sum()`: an empty `f64` sum is -0.0.
         self.items
             .iter()
             .filter(|i| i.month == month && is_actions_storage(i))
-            .map(|i| i.quantity)
-            .sum()
+            .fold(0.0, |total, i| total + i.quantity)
     }
 
     /// One repository's Actions storage in the month, in GB-hours. A
     /// repository the report does not list for that month held none.
     pub fn storage_gbh_for_repo(&self, month: &str, repo: &str) -> f64 {
+        // Folded from +0.0, not `sum()`: an empty `f64` sum is -0.0.
         self.items
             .iter()
             .filter(|i| i.month == month && i.repo == repo && is_actions_storage(i))
-            .map(|i| i.quantity)
-            .sum()
+            .fold(0.0, |total, i| total + i.quantity)
     }
 
     /// Storage per repository for the month, heaviest first — the storage
@@ -656,6 +656,33 @@ mod tests {
         assert!((got - 359.88).abs() < 1e-9, "got {got}");
         let quiet = r.storage_gbh_for_repo("2026-09", "quiet");
         assert!(quiet.abs() < 1e-9, "got {quiet}");
+    }
+
+    /// An empty `f64` sum is -0.0, which the Billing tab prints as `-0.00`
+    /// and `scan --json` writes as `-0.0`. A readable month with no storage,
+    /// for the organization or for one repository, must be a plain zero.
+    /// `== 0.0` holds for both zeros, so the sign is asserted too.
+    #[test]
+    fn an_empty_storage_sum_is_positive_zero() {
+        let r = BillingReport {
+            items: vec![
+                // Minutes in September, storage only in August: September
+                // has usage, just no storage.
+                item(
+                    "2026-09",
+                    "Actions Linux",
+                    1_004.0,
+                    6.024,
+                    6.024,
+                    "disconnected",
+                ),
+                storage("2026-08", 100.0, "disconnected"),
+            ],
+        };
+        let org = r.storage_gbh("2026-09");
+        assert!(org == 0.0 && org.is_sign_positive(), "got {org:?}");
+        let quiet = r.storage_gbh_for_repo("2026-08", "quiet");
+        assert!(quiet == 0.0 && quiet.is_sign_positive(), "got {quiet:?}");
     }
 
     #[test]
