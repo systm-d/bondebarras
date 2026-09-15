@@ -35,15 +35,27 @@ const FOOTER_BILLING: &str = " [←/→] mois  [b] orgs  [q] quitter";
 /// only actions, so `Tab`, the arrows and `Entrée` all worked and none was
 /// announced — the user saw the orgs and could not find how to reach a
 /// repository.
-const FOOTER_MOVES: &str = " [←/→] colonne  [↑/↓] ligne";
+///
+/// `col.`, not `colonne`: the three cells it gives back are what lets an
+/// 80-column terminal announce `[A] sûrs` beside `[espace] cocher` and `[d]
+/// supprimer` in the resources column (final review I3).
+const FOOTER_MOVES: &str = " [←/→] col.  [↑/↓] ligne";
 
 /// How `View::Orgs`'s footer closes, in every column and at every width.
 const FOOTER_QUIT: &str = "  [q] quitter";
 
 /// The actions `View::Orgs`'s footer offers in each column, in the order it
-/// keeps them when the width runs short. Only keys `tui::event_loop`
-/// actually handles, in the column they act in: a footer promising a key
-/// that does nothing is the same defect as one hiding a key that works.
+/// draws them, each with its rank: the order in which the footer gives them
+/// room when the width runs short, `0` first (`footer_orgs`). Only keys
+/// `tui::event_loop` actually handles, in the column they act in: a footer
+/// promising a key that does nothing is the same defect as one hiding a key
+/// that works.
+///
+/// Ranked `[d]` first wherever it acts, then the selection keys (`[espace]`,
+/// `[A]`, `[V]`), then the rest (final review I3): with the actions kept in
+/// drawing order, `[d] supprimer` needed 99 columns and `[d] archiver` 89,
+/// so an 80-column terminal never announced the one key that deletes or
+/// archives. Ranked, `[d]` shows at every width the sweeps cover, from 60.
 ///
 /// `[Entrée] charger` leads the orgs and repos columns: it loads the
 /// repository under the repos cursor at once, where resting the cursor there
@@ -54,23 +66,23 @@ const FOOTER_QUIT: &str = "  [q] quitter";
 /// does nothing from the orgs column, whose footer does not announce it.
 /// `[A] sûrs` and `[V] +à vérifier` (spec §4.2) sit side by side in the
 /// resources column, the one column they act in.
-fn column_actions(focus: Focus) -> &'static [&'static str] {
+fn column_actions(focus: Focus) -> &'static [(&'static str, u8)] {
     match focus {
-        Focus::Orgs => &["[Entrée] charger", "[b] billing"],
+        Focus::Orgs => &[("[Entrée] charger", 0), ("[b] billing", 1)],
         Focus::Repos => &[
-            "[Entrée] charger",
-            "[espace] cocher",
-            "[d] archiver",
-            "[b] billing",
+            ("[Entrée] charger", 2),
+            ("[espace] cocher", 1),
+            ("[d] archiver", 0),
+            ("[b] billing", 3),
         ],
         Focus::Resources => &[
-            "[espace] cocher",
-            "[A] sûrs",
-            "[V] +à vérifier",
-            "[d] supprimer",
-            "[f] filtrer",
-            "[s] trier",
-            "[b] billing",
+            ("[espace] cocher", 1),
+            ("[A] sûrs", 2),
+            ("[V] +à vérifier", 3),
+            ("[d] supprimer", 0),
+            ("[f] filtrer", 4),
+            ("[s] trier", 5),
+            ("[b] billing", 6),
         ],
     }
 }
@@ -80,18 +92,28 @@ fn column_actions(focus: Focus) -> &'static [&'static str] {
 /// Always opens with the movement keys and closes with `[q] quitter`: they
 /// are the fix for spec §1's defect, and a footer that clipped them off the
 /// right edge would bring it back on exactly the narrow terminals that also
-/// hide columns. The column's actions fill the space between, in
-/// `column_actions`' order, and the first one that does not fit ends the
-/// list — a fixed prefix, so a key never vanishes while a later one stays.
-/// Below the movement keys and `[q] quitter` themselves (40 cells) the
-/// footer clips like any other line.
+/// hide columns. The column's actions fill the space between: they get room
+/// by rank (`column_actions`), and the first one that does not fit ends the
+/// list — a fixed prefix of the ranking, so a key never vanishes while a
+/// lower-ranked one stays — then are drawn in the column's own order. Below
+/// the movement keys and `[q] quitter` themselves (37 cells) the footer
+/// clips like any other line.
 fn footer_orgs(focus: Focus, width: u16) -> String {
     let budget = usize::from(width);
-    let mut footer = String::from(FOOTER_MOVES);
-    for action in column_actions(focus) {
-        if cells(&footer) + 2 + cells(action) + cells(FOOTER_QUIT) > budget {
+    let actions = column_actions(focus);
+    let mut ranked: Vec<&(&str, u8)> = actions.iter().collect();
+    ranked.sort_by_key(|&&(_, rank)| rank);
+    let mut used = cells(FOOTER_MOVES) + cells(FOOTER_QUIT);
+    let mut kept: Vec<&str> = Vec::new();
+    for &&(action, _) in &ranked {
+        if used + 2 + cells(action) > budget {
             break;
         }
+        used += 2 + cells(action);
+        kept.push(action);
+    }
+    let mut footer = String::from(FOOTER_MOVES);
+    for &(action, _) in actions.iter().filter(|(action, _)| kept.contains(action)) {
         footer.push_str("  ");
         footer.push_str(action);
     }
@@ -648,17 +670,21 @@ mod tests {
     /// Spec §1's defect was a footer that announced no movement key. For
     /// each column, at every width the render sweeps cover: both movement
     /// keys open the footer, `[q] quitter` closes it, it never runs past the
-    /// edge, it keeps at least the column's first action, and the actions
-    /// it keeps are an in-order prefix of the column's list — a key never
-    /// vanishes while a later one stays. At 200, every action fits.
+    /// edge, it keeps at least the column's first-ranked action, the actions
+    /// it keeps are a prefix of the ranking — a key never vanishes while a
+    /// lower-ranked one stays (final review I3) — and they are drawn in the
+    /// column's own order. At 200, every action fits.
     #[test]
     fn every_column_footer_keeps_its_movement_keys_and_quitter_at_every_width() {
         for focus in [Focus::Orgs, Focus::Repos, Focus::Resources] {
-            let actions = column_actions(focus);
+            let mut ranked: Vec<(&str, u8)> = column_actions(focus).to_vec();
+            ranked.sort_by_key(|&(_, rank)| rank);
+            let ranked: Vec<&str> = ranked.into_iter().map(|(action, _)| action).collect();
+            let actions: Vec<&str> = column_actions(focus).iter().map(|&(a, _)| a).collect();
             for width in 60..=200u16 {
                 let footer = footer_orgs(focus, width);
                 assert!(
-                    footer.starts_with(" [←/→] colonne  [↑/↓] ligne"),
+                    footer.starts_with(" [←/→] col.  [↑/↓] ligne"),
                     "{focus:?} at width {width}: {footer}"
                 );
                 assert!(
@@ -669,7 +695,7 @@ mod tests {
                     Span::raw(footer.as_str()).width() <= usize::from(width),
                     "{focus:?}'s footer runs past the edge at width {width}: {footer}"
                 );
-                let kept: Vec<&str> = actions
+                let kept: Vec<&str> = ranked
                     .iter()
                     .copied()
                     .filter(|a| footer.contains(a))
@@ -680,8 +706,15 @@ mod tests {
                 );
                 assert_eq!(
                     kept.as_slice(),
-                    &actions[..kept.len()],
-                    "{focus:?}'s actions out of order at width {width}: {footer}"
+                    &ranked[..kept.len()],
+                    "{focus:?} kept a lower-ranked action over a higher one at width {width}: \
+                     {footer}"
+                );
+                let drawn_at: Vec<usize> = actions.iter().filter_map(|a| footer.find(a)).collect();
+                assert!(
+                    drawn_at.windows(2).all(|pair| pair[0] < pair[1]),
+                    "{focus:?}'s actions drawn out of the column's order at width {width}: \
+                     {footer}"
                 );
             }
             let widest = footer_orgs(focus, 200);
@@ -799,7 +832,7 @@ mod tests {
             );
 
             let footer = testing::text_in(&buf, rows.footer);
-            for key in ["[←/→] colonne", "[↑/↓] ligne", "[q] quitter"] {
+            for key in ["[←/→] col.", "[↑/↓] ligne", "[q] quitter"] {
                 assert!(
                     footer.contains(key),
                     "the footer lost {key} at width {width}: {footer}"
@@ -953,6 +986,54 @@ mod tests {
                     "{column:?}'s border, focus on {focus:?}"
                 );
             }
+        }
+    }
+
+    /// Final review I3 and smoke S2: at an 80-column terminal neither footer
+    /// that owns `d` announced it — `[d] supprimer` needed 99 columns and
+    /// `[d] archiver` 89, behind the other actions of a fixed order.
+    ///
+    /// For each column `d` acts in, at every width from 60 to 200 — one
+    /// column below 78, two from there — `[d]` is announced with its label,
+    /// in the footer string and in the footer's real rect, before `[q]
+    /// quitter`. From 80, the resources column also announces `[espace]` and
+    /// `[A]` beside it, and the repos column `[espace]`.
+    #[test]
+    fn d_is_announced_at_every_width_in_each_column_where_it_acts() {
+        for (focus, d) in [
+            (Focus::Repos, "[d] archiver"),
+            (Focus::Resources, "[d] supprimer"),
+        ] {
+            let mut app = loaded_app();
+            app.focus = focus;
+            for width in 60..=200u16 {
+                let footer = footer_orgs(focus, width);
+                assert!(
+                    footer.contains(d) && footer.ends_with("  [q] quitter"),
+                    "{focus:?}'s footer does not announce {d} at width {width}: {footer}"
+                );
+                let buf = testing::draw(&mut app, width, 24);
+                let (rows, _) = testing::layout(&app, width, 24);
+                let drawn = testing::text_in(&buf, rows.footer);
+                assert!(
+                    drawn.contains(d) && drawn.contains("[q] quitter"),
+                    "{focus:?}'s drawn footer does not announce {d} at width {width}: {drawn}"
+                );
+            }
+        }
+        for width in 80..=200u16 {
+            let resources = footer_orgs(Focus::Resources, width);
+            for key in ["[espace] cocher", "[A] sûrs"] {
+                assert!(
+                    resources.contains(key),
+                    "the resources footer drops {key} at width {width}: {resources}"
+                );
+            }
+            let repos = footer_orgs(Focus::Repos, width);
+            assert!(
+                repos.contains("[espace] cocher"),
+                "the repos footer drops [espace] at width {width}: {repos}"
+            );
         }
     }
 }
