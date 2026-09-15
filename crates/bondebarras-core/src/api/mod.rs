@@ -8,6 +8,7 @@ pub mod archive;
 pub mod artifacts;
 pub mod billing;
 pub mod caches;
+pub mod orgs;
 pub mod packages;
 pub mod prs;
 pub mod refs;
