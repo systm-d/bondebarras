@@ -134,6 +134,7 @@ mod tests {
             cache_count: 0,
             repos: vec![repo(LONG), repo("josephine"), repo("lokiprint")],
             billing: None,
+            ..Default::default()
         }])
     }
 

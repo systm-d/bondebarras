@@ -604,6 +604,7 @@ mod tests {
                 class: crate::repos::RepoClass::Archivable,
             }],
             billing: None,
+            ..Default::default()
         }]);
         app.loaded = Some(("systm-d".into(), "josephine".into()));
         let cache =
@@ -849,6 +850,7 @@ mod tests {
                 class: crate::repos::RepoClass::Archivable,
             }],
             billing: Some(report),
+            ..Default::default()
         }]);
         app.loaded = Some((ORG.into(), REPO.into()));
         let cache = |id: u64, size_bytes: u64, safety: Safety| crate::model::Resource {
@@ -1078,6 +1080,7 @@ mod tests {
             cache_count: 0,
             repos: vec![repo("josephine"), repo("claudine")],
             billing: None,
+            ..Default::default()
         }])
     }
 
@@ -1659,6 +1662,7 @@ mod tests {
                 class: crate::repos::RepoClass::Archivable,
             }],
             billing: None,
+            ..Default::default()
         });
         let tick = |app: &mut App, month: usize| {
             app.focus = Focus::Repos;

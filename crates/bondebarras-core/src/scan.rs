@@ -1,7 +1,9 @@
 //! Two-stage scanning.
 //!
-//! Stage 1 runs at launch and only touches org-level aggregates — three
-//! requests per org, so fifteen orgs still land in a few seconds. Stage 2
+//! Stage 1 runs at launch and only touches org-level data: the two reads
+//! that define an org (cache usage, repository list), and degradable reads
+//! that only enrich it — each refused on its own, never dropping the org.
+//! Fifteen orgs still land in a few seconds. Stage 2
 //! fetches a repository's individual resources, and only when the user opens
 //! it. Paying only for what you look at is what keeps manual navigation
 //! viable across a hundred repositories.
@@ -58,9 +60,13 @@ pub async fn overview(client: &Client, orgs: &[String]) -> Vec<OrgSummary> {
         }
         repos_out.sort_by_key(|r| std::cmp::Reverse(r.cache_bytes));
 
-        // Third and last stage-1 request. Deliberately not `?`-propagated: an
-        // org whose billing is refused is still worth showing.
-        let billing = crate::api::billing::fetch(client, org).await;
+        // The degradable stage-1 reads, joined: none depends on another, and
+        // none is `?`-propagated — an org whose billing or plan is refused is
+        // still worth showing.
+        let (billing, plan) = futures::join!(
+            crate::api::billing::fetch(client, org),
+            crate::api::orgs::plan(client, org),
+        );
 
         Some(OrgSummary {
             login: org.clone(),
@@ -68,6 +74,7 @@ pub async fn overview(client: &Client, orgs: &[String]) -> Vec<OrgSummary> {
             cache_count,
             repos: repos_out,
             billing,
+            plan,
         })
     });
 
@@ -2001,6 +2008,75 @@ mod tests {
         assert_eq!(out.len(), 1, "a billing 403 must not drop the org");
         assert_eq!(out[0].cache_bytes, 1000);
         assert!(out[0].billing.is_none());
+    }
+
+    /// #11: the plan decides whether any percentage can be shown at all, so
+    /// `overview` must carry it from `api::orgs::plan` onto the summary.
+    #[tokio::test]
+    async fn overview_carries_the_orgs_plan() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/orgs/exec-d/actions/cache/usage-by-repository"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({ "repository_cache_usages": [] })),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/orgs/exec-d/repos"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/orgs/exec-d"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "login": "exec-d",
+                "plan": { "name": "team" }
+            })))
+            .mount(&server)
+            .await;
+
+        let client = Client::with_base("t0ken", &server.uri()).unwrap();
+        let out = overview(&client, &["exec-d".to_string()]).await;
+
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].plan.as_deref(), Some("team"));
+    }
+
+    /// A refused plan costs the plan, never the org — same rule as billing.
+    #[tokio::test]
+    async fn overview_keeps_an_org_whose_plan_is_refused() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(
+                "/orgs/SecondBrain-io/actions/cache/usage-by-repository",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "repository_cache_usages": [
+                    { "full_name": "SecondBrain-io/monolith-back",
+                      "active_caches_size_in_bytes": 1000, "active_caches_count": 2 }
+                ]
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/orgs/SecondBrain-io/repos"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/orgs/SecondBrain-io"))
+            .respond_with(ResponseTemplate::new(403))
+            .mount(&server)
+            .await;
+
+        let client = Client::with_base("t0ken", &server.uri()).unwrap();
+        let out = overview(&client, &["SecondBrain-io".to_string()]).await;
+
+        assert_eq!(out.len(), 1, "a refused plan must not drop the org");
+        assert_eq!(out[0].cache_bytes, 1000);
+        assert!(out[0].plan.is_none());
     }
 
     /// Debt 4 of the v0.4 final review: all seven family listings degrade

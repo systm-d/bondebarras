@@ -1696,6 +1696,7 @@ mod tests {
             cache_count: 0,
             repos: vec![repo("josephine"), repo("claudine")],
             billing: None,
+            ..Default::default()
         }]);
         a.repo_cursor = 1;
 
@@ -1726,6 +1727,7 @@ mod tests {
                 cache_count: 0,
                 repos: vec![repo("claudine")],
                 billing: None,
+                ..Default::default()
             },
             OrgSummary {
                 login: "josephine-org".into(),
@@ -1733,6 +1735,7 @@ mod tests {
                 cache_count: 0,
                 repos: vec![repo("josephine")],
                 billing: None,
+                ..Default::default()
             },
         ]);
         a.resources = vec![res(1, "cache-1", 100, 1, false)];
@@ -1779,6 +1782,7 @@ mod tests {
             cache_count: 0,
             repos: vec![repo_summary("lokiprint", class, 685)],
             billing: None,
+            ..Default::default()
         }]);
         a.focus = Focus::Repos;
         a
@@ -1878,6 +1882,7 @@ mod tests {
             cache_count: 0,
             repos: vec![repo("first"), repo("second")],
             billing: None,
+            ..Default::default()
         }]);
         a.selected_repo = Some(("org".to_string(), "second".to_string()));
 
@@ -1972,6 +1977,7 @@ mod tests {
                 repo("josephine", 0, 0),
             ],
             billing: None,
+            ..Default::default()
         }]);
 
         // The fresh report is exactly what usage-by-repository returns after
@@ -2081,6 +2087,7 @@ mod tests {
             cache_count: 0,
             repos: vec![repo("lokiprint"), repo("claudine")],
             billing: None,
+            ..Default::default()
         }]);
         a.focus = Focus::Repos;
         a.repo_cursor = 0;
@@ -2175,6 +2182,7 @@ mod tests {
                 .map(|name| repo_summary(name, crate::repos::RepoClass::Archivable, 1))
                 .collect(),
             billing: None,
+            ..Default::default()
         }
     }
 

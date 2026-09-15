@@ -278,6 +278,7 @@ mod tests {
                     ),
                 ],
             }),
+            ..Default::default()
         }
     }
 

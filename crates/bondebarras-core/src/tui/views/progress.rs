@@ -367,6 +367,7 @@ mod tests {
             cache_count: 0,
             repos: vec![repo("josephine"), repo("claudine")],
             billing: None,
+            ..Default::default()
         }])
     }
 

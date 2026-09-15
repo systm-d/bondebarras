@@ -1426,6 +1426,7 @@ mod tests {
                 class: crate::repos::RepoClass::Archivable,
             }],
             billing: Some(report),
+            ..Default::default()
         }
     }
 

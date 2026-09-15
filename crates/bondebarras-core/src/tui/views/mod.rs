@@ -762,6 +762,7 @@ mod tests {
             cache_count: 1,
             repos: vec![repo_summary("josephine")],
             billing: None,
+            ..Default::default()
         }]);
         app.loaded = Some(("systm-d".into(), "josephine".into()));
         app.resources = vec![Resource {
@@ -901,6 +902,7 @@ mod tests {
                 cache_count: 0,
                 repos: vec![repo_summary("lokiprint")],
                 billing: None,
+                ..Default::default()
             });
             let t0 = std::time::Instant::now();
             let listing = app.resources.clone();

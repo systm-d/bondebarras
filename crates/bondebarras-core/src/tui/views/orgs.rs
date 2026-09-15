@@ -93,6 +93,7 @@ mod tests {
                 class: RepoClass::Archivable,
             }],
             billing: None,
+            ..Default::default()
         }]);
 
         for width in 60..=200u16 {

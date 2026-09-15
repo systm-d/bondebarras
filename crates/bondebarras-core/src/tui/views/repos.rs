@@ -298,6 +298,7 @@ mod tests {
                 repo("private-thing", RepoClass::NoAdminRights, 42),
             ],
             billing: None,
+            ..Default::default()
         }]);
 
         // Floor: the column's own width, the narrowest terminal whose
@@ -340,6 +341,7 @@ mod tests {
             cache_count: 0,
             repos: vec![repo(name, RepoClass::Archivable, 1)],
             billing: None,
+            ..Default::default()
         };
         let mut app = App::new(vec![
             org("systm-d", "josephine"),

@@ -210,7 +210,11 @@ pub struct RepoSummary {
 }
 
 /// Stage-1 view of one organization.
-#[derive(Debug, Clone)]
+///
+/// `Default` exists for test fixtures (`..Default::default()`) only. The one
+/// production construction site, `scan::overview`, names every field, so a
+/// field added later can never be silently defaulted there.
+#[derive(Debug, Clone, Default)]
 pub struct OrgSummary {
     pub login: String,
     pub cache_bytes: u64,
@@ -220,6 +224,11 @@ pub struct OrgSummary {
     /// GitHub answers 403 to anyone who is not an owner. A 403 degrades this
     /// one column; it never drops the org.
     pub billing: Option<crate::billing::BillingReport>,
+    /// The org's plan name (`free`, `team`, `enterprise`), or `None` when
+    /// `GET /orgs/{org}` did not say — GitHub only tells an owner. Decides
+    /// whether any allowance percentage can be shown at all (see
+    /// `billing::included_minutes_for`).
+    pub plan: Option<String>,
 }
 
 #[cfg(test)]
