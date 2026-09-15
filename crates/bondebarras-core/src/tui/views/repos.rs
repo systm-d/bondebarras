@@ -159,6 +159,12 @@ fn repo_storage_this_month(org: &OrgSummary, repo: &str) -> Option<(f64, String)
     (gbh > 0.0).then(|| (gbh, month.to_string()))
 }
 
+/// The column's title while it has no line inside its borders for a
+/// repository row (`App::repos_too_short`): `espace` and `d` do nothing from
+/// the column then, and the title is the one place left to say why — the
+/// resources column's `TOO_SHORT_TITLE`, in the same words.
+const TOO_SHORT_TITLE: &str = " DÉPÔTS · fenêtre trop basse ";
+
 /// Renders the repositories of the org under the cursor
 /// (`app.orgs[app.org_cursor].repos`) as a stateful list, for the same
 /// scrolling reason as `tui::views::orgs::render`, each with its storage
@@ -171,7 +177,8 @@ fn repo_storage_this_month(org: &OrgSummary, repo: &str) -> Option<(f64, String)
 /// (`area.height >= 4`), so whatever line the column has, every item fits in
 /// it. With no inner line at all, no repository row can be drawn: the
 /// column records it in `App::repos_too_short`, which keeps `espace` and `d`
-/// from acting from this column on a repository no frame shows.
+/// from acting from this column on a repository no frame shows, and its
+/// title says why (`TOO_SHORT_TITLE`).
 pub fn render(app: &mut App, f: &mut Frame, area: Rect) {
     let focused = app.focus == Focus::Repos;
     // The column's inside: the title does not change it.
@@ -201,15 +208,21 @@ pub fn render(app: &mut App, f: &mut Frame, area: Rect) {
         })
         .unwrap_or_default();
 
-    app.repos_too_short = inner.height == 0;
+    let too_short = inner.height == 0;
+    app.repos_too_short = too_short;
     app.repo_state.select(if items.is_empty() {
         None
     } else {
         Some(app.repo_cursor.min(items.len() - 1))
     });
 
+    let title = if too_short {
+        TOO_SHORT_TITLE
+    } else {
+        " DÉPÔTS "
+    };
     let list = List::new(items)
-        .block(views::column_block(" DÉPÔTS ", focused))
+        .block(views::column_block(title, focused))
         .highlight_style(views::cursor_style(focused));
 
     f.render_stateful_widget(list, area, &mut app.repo_state);
@@ -436,6 +449,51 @@ mod tests {
                 "another org's repository is listed at width {width}:\n{column}"
             );
         }
+    }
+
+    /// Controller ruling on task 9's concern 1, the I2 precedent: while the
+    /// repos column cannot draw one repository row, `espace` and `d` do
+    /// nothing from it (`App::repos_too_short`), and its title says why, the
+    /// way the resources column's does.
+    ///
+    /// Swept over every height from 5 to 30 at 60, 80 and 100 columns, read
+    /// off the repos column's real rect: with no inner line, its top border
+    /// reads ` DÉPÔTS · fenêtre trop basse `, whole; from the first height
+    /// with a row, a repository row is on screen and the column says nothing
+    /// of the window. Both kinds of height must be met, or the sweep proves
+    /// nothing.
+    #[test]
+    fn the_repos_column_says_when_it_is_too_short_at_every_height() {
+        let (mut too_short_seen, mut drawable_seen) = (0, 0);
+        let mut failures = Vec::new();
+        for width in [60u16, 80, 100] {
+            for height in 5u16..=30 {
+                let mut app = exec_d_with_storage(1_000);
+                let (rect, column) = testing::focused_column(&mut app, Focus::Repos, width, height);
+                let inner = rect.height.saturating_sub(2);
+                let title = column.lines().next().unwrap_or_default();
+                let at = format!("{width}x{height} (inner {inner})");
+                if inner == 0 {
+                    too_short_seen += 1;
+                    if !title.contains(" DÉPÔTS · fenêtre trop basse ") {
+                        failures.push(format!("no whole too-short title at {at}: {title:?}"));
+                    }
+                } else {
+                    drawable_seen += 1;
+                    if !title.contains(" DÉPÔTS ") || !column.contains("disconnec…") {
+                        failures.push(format!("no title or no repository row at {at}:\n{column}"));
+                    }
+                    if column.contains("fenêtre trop basse") {
+                        failures.push(format!("says too short with a row on screen at {at}"));
+                    }
+                }
+            }
+        }
+        assert!(
+            too_short_seen > 0 && drawable_seen > 0,
+            "the sweep met {too_short_seen} too-short and {drawable_seen} drawable sizes"
+        );
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
     }
 
     /// Pre-flight 4.14: ratatui draws nothing of a list item taller than the

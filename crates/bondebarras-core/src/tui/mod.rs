@@ -552,7 +552,7 @@ fn move_org_cursor(app: &mut App, next: usize) {
 /// and `A` ticked rows nobody saw (final review I2). The column says the
 /// window is too short instead. Nor does `espace` act from the repos column
 /// while the last frame drew no repository row there
-/// (`App::repos_too_short`, pre-flight 4.14).
+/// (`App::repos_too_short`, pre-flight 4.14), whose title then says so too.
 fn column_action(app: &mut App, code: KeyCode) {
     match (app.focus, code) {
         (Focus::Resources, _) if app.resources_too_short => {}

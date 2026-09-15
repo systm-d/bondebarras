@@ -178,8 +178,9 @@ pub struct App {
     /// repository row on — written by `tui::views::repos::render`. While it
     /// is, `espace` and `d` do nothing from the repos column
     /// (`tui::column_action`, `tui::plan_for_d`): they would tick, or
-    /// archive, a repository no frame showed. Pre-flight 4.14 — final review
-    /// I2 in the repos column.
+    /// archive, a repository no frame showed — and the column's title says
+    /// the window is too short. Pre-flight 4.14 — final review I2 in the
+    /// repos column.
     pub(crate) repos_too_short: bool,
     /// The org a running purge belongs to, for the post-purge cache refresh.
     /// The user can navigate away while it runs — purges execute on a
