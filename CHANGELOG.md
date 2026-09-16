@@ -115,12 +115,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Billing tab: fits its content to the terminal's height instead of always
   reserving a fixed row budget for the two per-repository breakdowns —
   they shrink first, each keeping its `… et N autre(s)` line naming what
-  it left out. The densest case (a blocking-budget warning together with
-  a flagged retention) needs 28 rows to show everything; below that it
-  loses the second retention note and the cost line first.
+  it left out. Past that, the tab drops content from the bottom, one whole
+  block at a time. The densest case — an `enterprise` organization, a
+  blocking-budget warning under both gauges, a flagged retention and a
+  runner SKU with no known multiplier — needs 33 rows to show everything;
+  below that it loses the unknown-SKU line, then the cost line, then the
+  retention notes.
 
 ### Fixed
 
+- Billing tab: a note written across two lines is no longer cut after its
+  first line when the terminal is too short for it — it is shown whole or
+  not at all, like every other multi-line explanation the tab carries. At
+  80×24 the tab used to end on `Note : retention-days, dans un workflow,
+  fixe la durée`, with the rest of that sentence gone.
 - Billing tab: amounts are shown in US dollars (`6.15 $`), the currency of
   GitHub's usage report (`pricePerUnit` is 0.006 for Actions Linux). They were
   printed with a `€` sign — the right figure in the wrong currency. Nothing is

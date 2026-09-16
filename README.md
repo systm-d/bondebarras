@@ -160,12 +160,20 @@ again by anything.
   things worth knowing before changing it: a workflow's `retention-days` sets
   that one artifact's duration, within this setting; and a change only
   applies to new artifacts and logs. bondebarras only reads the setting.
-  The tab fits everything on screen from a 28-row terminal in its densest
-  case — a blocking-budget warning together with a flagged retention
-  setting. Below that height, the two per-repository breakdowns shrink
-  first, each keeping its `… et N autre(s)` line naming what it left out;
-  nothing else is cut until they run out of room to give. At 80×24, that
-  densest case loses the second retention note and the cost line.
+  The tab fits everything on screen from a 33-row terminal in its densest
+  case — an `enterprise` organization (whose shared-quota note takes two
+  lines), a blocking Actions budget warning under *both* gauges, a flagged
+  retention setting, and a runner SKU the usage report names but
+  bondebarras has no multiplier for. Below that height, the two
+  per-repository breakdowns shrink first, each keeping its `… et N
+  autre(s)` line naming what it left out; only then does the tab drop
+  content, always from the bottom and always one whole block at a time —
+  the unknown-SKU line, then the cost line, then the second retention note,
+  then the first. A note is shown whole or not at all, never cut after its
+  first line. At 80×24 that densest case gets as far as the deletion
+  notice; an organization with no budget warning gets as far as its
+  retention line and the reason under it. A budget on a single SKU adds two
+  more lines, and GitHub allows any number of those.
 - **Headless CLI** — `bondebarras scan --json` for a machine-readable
   overview, and `bondebarras clean` for non-interactive cleanup, e.g. from a
   cron job.

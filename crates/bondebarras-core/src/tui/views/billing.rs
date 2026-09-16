@@ -23,6 +23,49 @@ use std::collections::HashSet;
 /// here to avoid, not signal. Both blocks share it, as #13 asks.
 const MAX_BREAKDOWN_LINES: usize = 8;
 
+/// A run of rows the tab shows whole or not at all.
+///
+/// The tab is a `Paragraph` with no scroll, so a body shorter than its
+/// content simply drops the tail — and smoke S2 caught that tail falling
+/// inside a sentence: at 80x24 the last row on screen was `Note :
+/// retention-days, dans un workflow, fixe la durée`, with the rest of that
+/// sentence gone. A sentence written across two rows is one passage, and
+/// `passages_within` keeps it whole or leaves it out. Half a sentence is the
+/// prose equivalent of the clipped figures FR-tui-1 to FR-tui-3 removed.
+///
+/// A row that carries a whole statement on its own — the header, the month,
+/// a gauge, a breakdown row, a blank separator — is a passage of one row,
+/// cut like any other row.
+///
+/// Named a passage rather than a block: `ratatui::widgets::Block` is the
+/// panel's frame, which `render` draws right below.
+type Passage = Vec<Line<'static>>;
+
+/// How many rows `passages` take together.
+fn lines_in(passages: &[Passage]) -> usize {
+    passages.iter().map(Vec::len).sum()
+}
+
+/// The rows of `passages`, top to bottom, while each whole passage still
+/// fits in `height`.
+///
+/// Stops at the first passage too tall for what is left rather than skipping
+/// it and going on: the tab loses its content from the bottom, in order, so
+/// what a shorter terminal drops stays predictable, and nothing from further
+/// down is promoted over what was dropped. The rows a dropped passage would
+/// have taken stay blank — a row bought at the price of half a sentence is
+/// not a row worth having.
+fn passages_within(passages: Vec<Passage>, height: usize) -> Vec<Line<'static>> {
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    for passage in passages {
+        if lines.len() + passage.len() > height {
+            break;
+        }
+        lines.extend(passage);
+    }
+    lines
+}
+
 /// What GitHub's documentation insists on, split in two so both halves
 /// survive a narrow frame: deleting artifacts stops the accumulation but
 /// refunds nothing already counted.
@@ -33,11 +76,21 @@ const DELETION_DOES_NOT_REFUND: [&str; 2] = [
 
 /// The two exact points #15 asks the tab to state, split to stay legible in
 /// a narrow frame. True whatever the setting, so always shown.
-const RETENTION_NOTES: [&str; 4] = [
-    "Note : retention-days, dans un workflow, fixe la durée",
-    "  de cet artefact, dans la limite de ce réglage.",
-    "Note : un changement de rétention ne vaut que pour",
-    "  les nouveaux artefacts et journaux.",
+///
+/// A note, not a line, is the unit: each entry holds the two rows one
+/// sentence takes, because a sentence is shown whole or not at all (smoke
+/// S2 — at 80x24 the tab used to end on "… fixe la durée", the first row of
+/// the first note, with the rest of its sentence cut). `passages_within`
+/// enforces that; nesting the rows here is what lets it.
+const RETENTION_NOTES: [[&str; 2]; 2] = [
+    [
+        "Note : retention-days, dans un workflow, fixe la durée",
+        "  de cet artefact, dans la limite de ce réglage.",
+    ],
+    [
+        "Note : un changement de rétention ne vaut que pour",
+        "  les nouveaux artefacts et journaux.",
+    ],
 ];
 
 /// What the storage gauge says for a report with no month at all: without a
@@ -237,29 +290,29 @@ fn cost_line(gross: f64, covered: f64, billed: f64) -> String {
 /// The organization's Actions budget and what it does past the allowance —
 /// or why nothing can be said. "No budget" and "unreadable" never share a
 /// line: the first means overage is billed, the second that nobody knows.
-fn budget_lines(budgets: Option<&[Budget]>) -> Vec<Line<'static>> {
+fn budget_lines(budgets: Option<&[Budget]>) -> Vec<Passage> {
     let Some(budgets) = budgets else {
-        return vec![
+        return vec![vec![
             Line::from(Span::styled("Budget Actions : illisible", theme::muted())),
             Line::from(Span::styled(
                 "  (réservé aux admins et gestionnaires de facturation)",
                 theme::muted(),
             )),
-        ];
+        ]];
     };
     let mut lines = match billing::actions_budget(budgets) {
-        Some(b) if b.blocking => vec![Line::from(Span::styled(
+        Some(b) if b.blocking => vec![vec![Line::from(Span::styled(
             format!("Budget Actions : {} · bloquant", usd(b.amount as f64)),
             theme::text_style(),
-        ))],
-        Some(b) => vec![Line::from(Span::styled(
+        ))]],
+        Some(b) => vec![vec![Line::from(Span::styled(
             format!(
                 "Budget Actions : {} · alerte seule, sans blocage",
                 usd(b.amount as f64)
             ),
             theme::text_style(),
-        ))],
-        None => vec![
+        ))]],
+        None => vec![vec![
             Line::from(Span::styled(
                 "Budget Actions : aucun, dépassement facturé sans plafond",
                 theme::text_style(),
@@ -268,7 +321,7 @@ fn budget_lines(budgets: Option<&[Budget]>) -> Vec<Line<'static>> {
                 "  (si un moyen de paiement est enregistré)",
                 theme::muted(),
             )),
-        ],
+        ]],
     };
     // Never observed, so named rather than interpreted.
     for b in billing::actions_sku_budgets(budgets) {
@@ -284,14 +337,16 @@ fn budget_lines(budgets: Option<&[Budget]>) -> Vec<Line<'static>> {
         // line exists — off the frame. Ratatui clips a line's tail when it
         // outgrows its area, never its head, so anything placed early
         // always survives.
-        lines.push(Line::from(Span::styled(
-            format!("Budget SKU {mode} {} : {}", b.sku, usd(b.amount as f64)),
-            theme::muted(),
-        )));
-        lines.push(Line::from(Span::styled(
-            "  signalé, non pris en compte par les avertissements",
-            theme::muted(),
-        )));
+        lines.push(vec![
+            Line::from(Span::styled(
+                format!("Budget SKU {mode} {} : {}", b.sku, usd(b.amount as f64)),
+                theme::muted(),
+            )),
+            Line::from(Span::styled(
+                "  signalé, non pris en compte par les avertissements",
+                theme::muted(),
+            )),
+        ]);
     }
     lines
 }
@@ -299,7 +354,7 @@ fn budget_lines(budgets: Option<&[Budget]>) -> Vec<Line<'static>> {
 /// Under a gauge at `billing::BUDGET_WARNING_PERCENT` or more with a
 /// blocking Actions budget: what GitHub will do once the allowance runs out.
 /// Takes the percentage the gauge displays, so the two never disagree.
-fn budget_warning_lines(quota: &str, percent: u64, budget: Option<&Budget>) -> Vec<Line<'static>> {
+fn budget_warning_lines(quota: &str, percent: u64, budget: Option<&Budget>) -> Vec<Passage> {
     let Some(b) = budget.filter(|_| billing::nears_blocking_budget(percent, budget)) else {
         return Vec::new();
     };
@@ -311,7 +366,9 @@ fn budget_warning_lines(quota: &str, percent: u64, budget: Option<&Budget>) -> V
             usd(b.amount as f64)
         )
     };
-    vec![
+    // One passage: the header ends on the colon that introduces the
+    // consequence, so a frame that cannot hold both shows neither.
+    vec![vec![
         // Review T12-m3: `bloquant :` right after the amount, ahead of
         // `percent` and `quota`, so a five-digit budget with a four-digit
         // percentage (`9999 % du quota de stockage`, the widest realistic
@@ -327,7 +384,7 @@ fn budget_warning_lines(quota: &str, percent: u64, budget: Option<&Budget>) -> V
             theme::status_warn(),
         )),
         Line::from(Span::styled(consequence, theme::status_warn())),
-    ]
+    ]]
 }
 
 /// `exec-d · formule team`, or `formule inconnue` when the plan was not read.
@@ -355,11 +412,11 @@ fn month_line(month: &str) -> Line<'static> {
 /// On `enterprise`, the allowance belongs to the enterprise account and is
 /// shared by its organizations. bondebarras only sees this one org's usage,
 /// so every percentage below is a floor — and the tab says so.
-fn enterprise_lines(plan: Option<&str>) -> Vec<Line<'static>> {
+fn enterprise_lines(plan: Option<&str>) -> Vec<Passage> {
     if plan != Some("enterprise") {
         return Vec::new();
     }
-    vec![
+    vec![vec![
         Line::from(Span::styled(
             "Formule enterprise : quota partagé par tout le compte",
             theme::muted(),
@@ -368,7 +425,7 @@ fn enterprise_lines(plan: Option<&str>) -> Vec<Line<'static>> {
             "  entreprise, ces pourcentages sont des minimums.",
             theme::muted(),
         )),
-    ]
+    ]]
 }
 
 fn unreadable_line() -> Line<'static> {
@@ -438,13 +495,13 @@ fn breakdown<T>(
     row: impl Fn(&T) -> Line<'static>,
     rest: &str,
     cap: usize,
-) -> Vec<Line<'static>> {
-    let mut lines: Vec<Line<'static>> = rows.iter().take(cap).map(row).collect();
+) -> Vec<Passage> {
+    let mut lines: Vec<Passage> = rows.iter().take(cap).map(|item| vec![row(item)]).collect();
     if rows.len() > cap {
-        lines.push(Line::from(Span::styled(
+        lines.push(vec![Line::from(Span::styled(
             format!("   … et {} autre(s) {rest}", rows.len() - cap),
             theme::muted(),
-        )));
+        ))]);
     }
     lines
 }
@@ -459,10 +516,10 @@ fn minutes_fixed_lines(
     private: &HashSet<String>,
     plan: Option<&str>,
     budget: Option<&Budget>,
-) -> Vec<Line<'static>> {
+) -> Vec<Passage> {
     let used = report.included_minutes(month, private);
     let allowance = included_minutes_for(plan);
-    let mut lines = vec![
+    let mut lines = vec![vec![
         Line::from(Span::styled(
             "Minutes équivalent-inclus",
             theme::text_style(),
@@ -471,7 +528,7 @@ fn minutes_fixed_lines(
             gauge_line(used, allowance, plan),
             theme::text_style(),
         )),
-    ];
+    ]];
     // No allowance, no percentage — and so nothing to warn against either:
     // the budget would have no ratio to be near.
     if let Some(allowance) = allowance {
@@ -490,7 +547,7 @@ fn storage_fixed_lines(
     month: &str,
     plan: Option<&str>,
     budget: Option<&Budget>,
-) -> Vec<Line<'static>> {
+) -> Vec<Passage> {
     let used = report.storage_gbh(month);
     let quota = billing::storage_quota(plan, month);
     // An empty month is a report with no usage: the quota is missing for
@@ -501,13 +558,13 @@ fn storage_fixed_lines(
     } else {
         storage_gauge_line(used, quota, plan)
     };
-    let mut lines = vec![
+    let mut lines = vec![vec![
         Line::from(Span::styled(
             "Stockage Actions · GB-heures, dépôts publics compris",
             theme::text_style(),
         )),
         Line::from(Span::styled(gauge, theme::text_style())),
-    ];
+    ]];
     // Same rule as the minutes: no quota, no percentage, no warning.
     if let Some(quota) = quota {
         let percent = storage_percent(used, quota);
@@ -518,7 +575,7 @@ fn storage_fixed_lines(
 
 /// What GitHub's documentation insists on (`DELETION_DOES_NOT_REFUND`), as
 /// styled lines.
-fn deletion_notice() -> Vec<Line<'static>> {
+fn deletion_notice() -> Passage {
     DELETION_DOES_NOT_REFUND
         .iter()
         .map(|text| Line::from(Span::styled(*text, theme::muted())))
@@ -529,10 +586,7 @@ fn deletion_notice() -> Vec<Line<'static>> {
 /// warning colour, and the reason — when it is at least 90 days on an org
 /// whose storage counts (`billing::retention_worth_flagging`). Read-only:
 /// the tab shows the tap, it does not turn it.
-fn retention_lines(
-    retention: Option<ArtifactRetention>,
-    storage_gbh: Option<f64>,
-) -> Vec<Line<'static>> {
+fn retention_lines(retention: Option<ArtifactRetention>, storage_gbh: Option<f64>) -> Passage {
     let Some(r) = retention else {
         return vec![
             Line::from(Span::styled(
@@ -565,50 +619,58 @@ fn retention_lines(
 
 /// #15's two notes, shown whatever the tab could read: both are true of the
 /// setting itself, not of any figure beside it.
-fn retention_notes() -> Vec<Line<'static>> {
+fn retention_notes() -> Vec<Passage> {
     RETENTION_NOTES
         .iter()
-        .map(|text| Line::from(Span::styled(*text, theme::muted())))
+        .map(|note| {
+            note.iter()
+                .map(|text| Line::from(Span::styled(*text, theme::muted())))
+                .collect()
+        })
         .collect()
 }
 
-/// The retention setting and the two notes that qualify it, as one block.
+/// The retention setting and the two notes that qualify it: three passages
+/// — the setting with its reason, then one per note.
 ///
 /// Review I1: the notes used to close the tab, which is a `Paragraph` with no
 /// scroll — so on a 24-row terminal they were the first thing cut, and #15's
 /// second point vanished entirely. They describe the setting, not the tab, so
 /// they belong directly under it, where the tab's height cannot silence them.
-fn retention_block(
-    retention: Option<ArtifactRetention>,
-    storage_gbh: Option<f64>,
-) -> Vec<Line<'static>> {
-    let mut lines = retention_lines(retention, storage_gbh);
-    lines.extend(retention_notes());
-    lines
+fn retention_block(retention: Option<ArtifactRetention>, storage_gbh: Option<f64>) -> Vec<Passage> {
+    let mut passages = vec![retention_lines(retention, storage_gbh)];
+    passages.extend(retention_notes());
+    passages
 }
 
 /// The month's costs, then any runner SKU `sku_multiplier` does not know.
-fn cost_block(report: &BillingReport, month: &str) -> Vec<Line<'static>> {
+fn cost_block(report: &BillingReport, month: &str) -> Vec<Passage> {
     let (gross, covered, billed) = report.cost(month);
     let style = if billed > 0.0 {
         theme::status_warn()
     } else {
         theme::muted()
     };
-    let mut lines = vec![Line::from(Span::styled(
+    let mut lines = vec![vec![Line::from(Span::styled(
         cost_line(gross, covered, billed),
         style,
-    ))];
+    ))]];
     for sku in report.unknown_skus(month) {
-        lines.push(Line::from(Span::styled(
+        lines.push(vec![Line::from(Span::styled(
             format!("⚠ SKU inconnu, compté ×1 : {sku}"),
             theme::status_warn(),
-        )));
+        ))]);
     }
     lines
 }
 
-/// Every line of the tab for one org, top to bottom.
+/// Every passage of the tab for one org, top to bottom — before
+/// `passages_within` drops whatever the body cannot hold.
+///
+/// Split from `tab_lines` so this module's height census can ask what the
+/// tab *has* rather than what fits: `tab_lines` truncates to `body_height`
+/// by construction, so measuring its length would only ever hand the height
+/// back.
 ///
 /// Built from owned lines so the borrow of `app.orgs` ends before rendering,
 /// and so each block can be asserted on through the real render.
@@ -623,14 +685,18 @@ fn cost_block(report: &BillingReport, month: &str) -> Vec<Line<'static>> {
 /// breakdowns, split between minutes and storage — controller ruling,
 /// final-review-inputs.md "the no-scroll item": no scroll, no reordering,
 /// the breakdowns yield instead.
-fn tab_lines(org: &OrgSummary, month_cursor: usize, body_height: usize) -> Vec<Line<'static>> {
+///
+/// Once the breakdowns have given everything they have, whatever still does
+/// not fit is dropped from the bottom by whole passages (`passages_within`) —
+/// never inside a sentence, which is what smoke S2 caught it doing at 80x24.
+fn tab_passages(org: &OrgSummary, month_cursor: usize, body_height: usize) -> Vec<Passage> {
     let plan = org.plan.as_deref();
     let budgets = org.budgets.as_deref();
     // Built once: the budgets are their own endpoint, refused on their own,
     // so they are shown whether or not the usage report could be read. Each
     // branch below only places them.
     let budget_block = budget_lines(budgets);
-    let mut lines = vec![header_line(&org.login, plan)];
+    let mut passages: Vec<Passage> = vec![vec![header_line(&org.login, plan)]];
 
     if let Some(report) = &org.billing {
         let month = displayed_month(report, month_cursor);
@@ -660,16 +726,16 @@ fn tab_lines(org: &OrgSummary, month_cursor: usize, body_height: usize) -> Vec<L
         // `body_height` once this is subtracted is what the breakdowns get.
         let fixed_lines = 1 // header
             + usize::from(has_month_line)
-            + enterprise.len()
-            + budget_block.len()
+            + lines_in(&enterprise)
+            + lines_in(&budget_block)
             + 1 // blank before the minutes block
-            + minutes_fixed.len()
+            + lines_in(&minutes_fixed)
             + 1 // blank before the storage block
-            + storage_fixed.len()
+            + lines_in(&storage_fixed)
             + deletion.len()
-            + retention.len()
+            + lines_in(&retention)
             + 1 // blank before the cost block
-            + cost.len();
+            + lines_in(&cost);
         let remainder = body_height.saturating_sub(fixed_lines);
         // Minutes first: an odd remaining row goes to the block the tab
         // lists first, rather than splitting it arbitrarily.
@@ -679,39 +745,46 @@ fn tab_lines(org: &OrgSummary, month_cursor: usize, body_height: usize) -> Vec<L
         let storage_cap = breakdown_cap(storage_rows.len(), storage_share);
 
         if has_month_line {
-            lines.push(month_line(&month));
+            passages.push(vec![month_line(&month)]);
         }
-        lines.extend(enterprise);
-        lines.extend(budget_block);
-        lines.push(Line::from(""));
-        lines.extend(minutes_fixed);
-        lines.extend(breakdown(
+        passages.extend(enterprise);
+        passages.extend(budget_block);
+        passages.push(vec![Line::from("")]);
+        passages.extend(minutes_fixed);
+        passages.extend(breakdown(
             &minutes_rows,
             minute_line_row,
             "ligne(s)",
             minutes_cap,
         ));
-        lines.push(Line::from(""));
-        lines.extend(storage_fixed);
-        lines.extend(breakdown(
+        passages.push(vec![Line::from("")]);
+        passages.extend(storage_fixed);
+        passages.extend(breakdown(
             &storage_rows,
             storage_line_row,
             "dépôt(s)",
             storage_cap,
         ));
-        lines.extend(deletion);
-        lines.extend(retention);
-        lines.push(Line::from(""));
-        lines.extend(cost);
+        passages.push(deletion);
+        passages.extend(retention);
+        passages.push(vec![Line::from("")]);
+        passages.extend(cost);
     } else {
-        lines.push(unreadable_line());
-        lines.extend(budget_block);
+        passages.push(vec![unreadable_line()]);
+        passages.extend(budget_block);
         // Storage unknown: the retention is shown, never highlighted —
         // nobody can say whether it counts.
-        lines.extend(retention_block(org.retention, None));
+        passages.extend(retention_block(org.retention, None));
     }
 
-    lines
+    passages
+}
+
+/// The tab's rows for one org, fitted to `body_height` — the Billing
+/// panel's own content height, which `render` reads as `area.height` less
+/// the block's two border rows.
+fn tab_lines(org: &OrgSummary, month_cursor: usize, body_height: usize) -> Vec<Line<'static>> {
+    passages_within(tab_passages(org, month_cursor, body_height), body_height)
 }
 
 pub fn render(app: &mut App, f: &mut Frame, area: Rect) {
@@ -846,7 +919,16 @@ mod tests {
             .unwrap_or_else(|| panic!("{needle:?} missing at 100x50:\n{tall}"));
         // Below the needle's row: the panel's bottom border, the status row
         // and the footer — the progress row is zero-high while nothing runs.
-        let floor = u16::try_from(row).unwrap() + 1 + 1 + 1 + 2;
+        //
+        // Plus one more (smoke S2): a needle that *opens* a two-row passage
+        // needs the row under it as well, since `passages_within` shows a
+        // passage whole or not at all. One row is the exact allowance, not a
+        // margin — every multi-row passage this tab emits is two rows, so a
+        // needle can never need more than one row past its own. Rows above
+        // the needle never grow as the terminal shrinks (only the two
+        // breakdowns give room back, and they sit above every needle that
+        // has one under it), so this floor stays tight.
+        let floor = u16::try_from(row).unwrap() + 1 + 1 + 1 + 2 + 1;
         for height in floor..=50 {
             let s = screen(app, 100, height);
             assert!(
@@ -1706,6 +1788,32 @@ mod tests {
         );
     }
 
+    /// Review RW-3: the same widest case on the *storage* gauge, which the
+    /// fix wave's report claimed was covered while the test right above it
+    /// exercises `minutes`. `stockage` is one cell longer, so this line is
+    /// exactly 58 cells — the whole inner width a 60-column frame leaves the
+    /// panel, with nothing to spare. 35 996.4 GB-hours against Free's
+    /// 0.5 GB × 720 h is 9 999 %, and the budget is five digits.
+    #[test]
+    fn a_five_digit_budget_and_four_digit_percent_keep_their_colon_on_the_storage_gauge() {
+        let mut app = with_budgets(
+            storage_only("free", 35_996.4),
+            Some(vec![actions(99_999, true)]),
+        );
+        let s = screen(&mut app, 60, 50);
+        assert!(
+            s.contains("⚠ budget 99999.00 $ bloquant : 9999 % du quota de stockage"),
+            "got:\n{s}"
+        );
+        // The line the colon introduces is there too: a colon kept over a
+        // consequence that fell off would say nothing.
+        assert!(
+            s.contains("GitHub bloquera l'usage Actions au quota atteint.")
+                || s.contains("facturé jusqu'à 99999.00 $, puis usage Actions bloqué."),
+            "got:\n{s}"
+        );
+    }
+
     /// The same 95 % month must stay quiet when nothing will be blocked, or
     /// when nobody can say: no budget, an alert-only budget, unreadable.
     #[test]
@@ -1870,13 +1978,89 @@ mod tests {
             s.contains("Rétention artefacts et journaux : 7 j (max. 400 j)"),
             "the retention line is missing at 80x24:\n{s}"
         );
-        for note in RETENTION_NOTES {
+        for note in RETENTION_NOTES.iter().flatten() {
             assert!(
                 s.contains(note.trim_start()),
                 "{:?} missing at 80x24:\n{s}",
                 note.trim_start()
             );
         }
+    }
+
+    /// SecondBrain-io as the smoke run read it on a real terminal:
+    /// `enterprise` (so the shared-quota note, two rows), no Actions budget
+    /// at all (two rows where a blocking one takes one), and a retention
+    /// flagged by the storage it governs. One row denser than
+    /// `worst_case_org`, which is a `team` organization with a blocking
+    /// budget — the fixture the branch called "the worst case" while this
+    /// combination existed in the wild.
+    fn secondbrain_september() -> OrgSummary {
+        let mut org = exec_d_september();
+        org.login = "SecondBrain-io".into();
+        org.plan = Some("enterprise".into());
+        org.budgets = Some(Vec::new());
+        org.retention = Some(ArtifactRetention {
+            days: 90,
+            maximum_allowed_days: Some(400),
+        });
+        org
+    }
+
+    /// Smoke S2, and the rule it settled: a note is shown whole or not at
+    /// all. At 80x24 the tab used to end on `Note : retention-days, dans un
+    /// workflow, fixe la durée` with `de cet artefact, dans la limite de ce
+    /// réglage.` gone — a sentence cut between its two rows — and the height
+    /// sweep's own needle was that surviving half, so no test could see it.
+    ///
+    /// Three fixtures at the smoke run's size, so the property is exercised
+    /// in each of the three states it has: exec-d at 7 days has room for
+    /// both notes, `worst_case_org` for the first only, and
+    /// `secondbrain_september` for neither. The two flags make the loop
+    /// non-vacuous — a tab that dropped every note, or one that always had
+    /// room, satisfies the all-or-nothing assertion and fails here.
+    #[test]
+    fn a_retention_note_is_shown_whole_or_not_at_all_at_eighty_by_twenty_four() {
+        let mut exec_d = exec_d_september();
+        exec_d.retention = Some(ArtifactRetention {
+            days: 7,
+            maximum_allowed_days: Some(400),
+        });
+
+        let mut saw_a_whole_note = false;
+        let mut saw_a_dropped_note = false;
+        for (who, org) in [
+            ("exec-d at 7 days", exec_d),
+            ("the blocking-budget case", worst_case_org()),
+            ("SecondBrain-io", secondbrain_september()),
+        ] {
+            let mut app = billing_app(org);
+            let s = screen(&mut app, 80, 24);
+            assert!(s.contains(" · formule "), "no tab at 80x24 for {who}:\n{s}");
+            for note in RETENTION_NOTES {
+                let shown = note.map(|row| s.contains(row.trim_start()));
+                assert_eq!(
+                    shown[0], shown[1],
+                    "{who}: {note:?} is half shown at 80x24:\n{s}"
+                );
+                saw_a_whole_note |= shown[0];
+                saw_a_dropped_note |= !shown[0];
+            }
+            // Nor is any row of a note cut short across the frame: the same
+            // sentence, broken the other way.
+            for row in s.lines() {
+                let drawn = row.trim_matches(|c: char| c == '│' || c.is_whitespace());
+                for full in RETENTION_NOTES.iter().flatten().map(|r| r.trim_start()) {
+                    assert!(
+                        drawn.is_empty() || drawn.len() >= full.len() || !full.starts_with(drawn),
+                        "{who}: {drawn:?} is {full:?} cut short at 80x24:\n{s}"
+                    );
+                }
+            }
+        }
+        assert!(
+            saw_a_whole_note && saw_a_dropped_note,
+            "the sweep never saw both a note shown whole and a note dropped"
+        );
     }
 
     #[test]
@@ -1913,6 +2097,271 @@ mod tests {
             maximum_allowed_days: Some(400),
         });
         org
+    }
+
+    /// One organization for the height census below: a plan, a budget, a
+    /// retention setting, whether each gauge sits near enough its quota for
+    /// a blocking budget to warn under it, and whether the month holds a SKU
+    /// `sku_multiplier` does not know — one more row in the cost block.
+    ///
+    /// The figures are derived from the plan rather than written down, so
+    /// "near its quota" means 95 % of whatever that plan includes, for every
+    /// plan the census walks.
+    fn census_org(
+        plan: Option<&str>,
+        budgets: Option<Vec<Budget>>,
+        retention: Option<ArtifactRetention>,
+        minutes_near_quota: bool,
+        storage_near_quota: bool,
+        unknown_sku: bool,
+    ) -> OrgSummary {
+        let allowance = included_minutes_for(plan).unwrap_or(2_000) as f64;
+        let minutes = if minutes_near_quota {
+            allowance * 0.95
+        } else {
+            10.0
+        };
+        let quota = billing::storage_quota(plan, "2026-09").map_or(360.0, |q| q.gbh);
+        // Past `NOTABLE_STORAGE_GBH` either way, so a 90-day retention is
+        // flagged whether or not the gauge is near its quota.
+        let storage = if storage_near_quota {
+            quota * 0.95
+        } else {
+            40.0
+        };
+        let mut items = vec![
+            usage(
+                "2026-09",
+                "Actions Linux",
+                "Minutes",
+                minutes,
+                6.0,
+                "disconnected",
+            ),
+            usage(
+                "2026-09",
+                "Actions storage",
+                "GigabyteHours",
+                storage,
+                0.1,
+                "disconnected",
+            ),
+        ];
+        if unknown_sku {
+            items.push(usage(
+                "2026-09",
+                "Actions Neptune",
+                "Minutes",
+                5.0,
+                0.0,
+                "disconnected",
+            ));
+        }
+        OrgSummary {
+            login: "exec-d".into(),
+            repos: vec![private_repo("disconnected")],
+            plan: plan.map(str::to_string),
+            budgets,
+            retention,
+            billing: Some(BillingReport { items }),
+            ..Default::default()
+        }
+    }
+
+    /// 90 days on an organization whose storage counts: the flagged
+    /// retention line, two rows, plus its two notes.
+    fn flagged_retention() -> Option<ArtifactRetention> {
+        Some(ArtifactRetention {
+            days: 90,
+            maximum_allowed_days: Some(400),
+        })
+    }
+
+    /// The densest tab this code can build, named rather than found by
+    /// accident — `enterprise` (the shared-quota note, two rows), a blocking
+    /// Actions budget with *both* gauges near enough to carry its warning
+    /// (two rows each, where "no budget" would buy one row and no warning at
+    /// all), a flagged retention (two rows and its two notes), and a SKU the
+    /// month's report names but `sku_multiplier` does not know (one row in
+    /// the cost block).
+    ///
+    /// The census test asserts this fixture *is* the maximum, so a denser
+    /// combination appearing later fails there rather than going unnoticed.
+    fn densest_org() -> OrgSummary {
+        census_org(
+            Some("enterprise"),
+            Some(vec![actions(0, true)]),
+            flagged_retention(),
+            true,
+            true,
+            true,
+        )
+    }
+
+    /// The terminal height at which `org`'s tab shows everything it has: the
+    /// smallest body height that holds every passage `tab_passages` builds
+    /// for it, plus the five rows the layout spends around the panel — its
+    /// two border rows, the header, the status line and the footer.
+    ///
+    /// A fixed point, not a sum written out by hand: how much the two
+    /// breakdowns yield depends on the very height being measured, so the
+    /// only honest way to ask what a tab needs is to ask the code that
+    /// builds it. `tab_passages`, not `tab_lines`: the latter has already
+    /// dropped what did not fit, so its length can never exceed the height
+    /// and every height would look sufficient.
+    fn needed_rows(org: &OrgSummary) -> u16 {
+        let body = (1..=120usize)
+            .find(|height| lines_in(&tab_passages(org, 0, *height)) <= *height)
+            .expect("the tab's content is bounded");
+        u16::try_from(body).expect("a body height fits a u16") + 2 + 3
+    }
+
+    /// Smoke S1: the documented floor was measured on `worst_case_org`, a
+    /// `team` fixture — so the `enterprise` note and the two-row "no budget"
+    /// block were never in the count, and a real organization
+    /// (SecondBrain-io) needed more rows than the README promised.
+    ///
+    /// The figure is not patched by hand here either. This walks every
+    /// combination the tab can render — five plan variants (including the
+    /// two that yield no quota at all), four budget states, three retention
+    /// states, each gauge near its quota or not, with and without an unknown
+    /// SKU — measures each through `tab_lines`, and takes the maximum. The
+    /// README and the CHANGELOG are then read from disk and must carry that
+    /// very number: change what the tab draws and this test fails until the
+    /// documentation follows.
+    ///
+    /// Not covered by the floor, and deliberately: a per-SKU budget adds two
+    /// rows and GitHub allows any number of them, as it does of unknown
+    /// SKUs past the first. A floor over an unbounded list would be a
+    /// different promise.
+    #[test]
+    fn the_documented_height_floor_is_the_densest_tab_the_code_can_build() {
+        let quiet_retention = Some(ArtifactRetention {
+            days: 7,
+            maximum_allowed_days: Some(400),
+        });
+        let mut census: Vec<(String, u16)> = Vec::new();
+        for plan in [
+            None,
+            Some("free"),
+            Some("team"),
+            Some("enterprise"),
+            Some("legacy-plan"),
+        ] {
+            for (budget_name, budgets) in [
+                ("illisible", None),
+                ("aucun", Some(vec![])),
+                ("alerte seule", Some(vec![actions(5, false)])),
+                ("bloquant", Some(vec![actions(0, true)])),
+            ] {
+                for (retention_name, retention) in [
+                    ("flagged", flagged_retention()),
+                    ("quiet", quiet_retention),
+                    ("illisible", None),
+                ] {
+                    for minutes_near in [false, true] {
+                        for storage_near in [false, true] {
+                            for unknown_sku in [false, true] {
+                                let org = census_org(
+                                    plan,
+                                    budgets.clone(),
+                                    retention,
+                                    minutes_near,
+                                    storage_near,
+                                    unknown_sku,
+                                );
+                                census.push((
+                                    format!(
+                                        "plan {plan:?}, budget {budget_name}, retention \
+                                         {retention_name}, minutes near {minutes_near}, storage \
+                                         near {storage_near}, unknown SKU {unknown_sku}"
+                                    ),
+                                    needed_rows(&org),
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // The census as a table, for the record — `cargo test
+        // the_documented_height_floor -- --nocapture` prints it, with the
+        // three named fixtures this module measures elsewhere.
+        let mut heights: Vec<u16> = census.iter().map(|(_, rows)| *rows).collect();
+        heights.sort_unstable();
+        heights.dedup();
+        for height in heights {
+            let example = census
+                .iter()
+                .find(|(_, rows)| *rows == height)
+                .map_or("", |(label, _)| label.as_str());
+            println!("{height} rows — e.g. {example}");
+        }
+        println!(
+            "named: worst_case_org {}, secondbrain_september {}, densest_org {}",
+            needed_rows(&worst_case_org()),
+            needed_rows(&secondbrain_september()),
+            needed_rows(&densest_org())
+        );
+
+        let (densest, needed) = census
+            .iter()
+            .max_by_key(|(_, rows)| *rows)
+            .expect("the census walks at least one combination");
+        let needed = *needed;
+        assert_eq!(
+            needed,
+            needed_rows(&densest_org()),
+            "the census found a denser tab than `densest_org`: {densest} needs {needed} rows"
+        );
+
+        // The documentation carries the measurement, not a number typed
+        // beside it. Read from disk so the two cannot drift apart silently.
+        let readme = include_str!("../../../../../README.md");
+        let changelog = include_str!("../../../../../CHANGELOG.md");
+        assert!(
+            readme.contains(&format!("from a {needed}-row terminal")),
+            "README.md does not say the measured floor of {needed} rows ({densest})"
+        );
+        assert!(
+            changelog.contains(&format!("needs {needed} rows")),
+            "CHANGELOG.md does not say the measured floor of {needed} rows ({densest})"
+        );
+
+        // And the measurement is true of the real render, not only of
+        // `tab_lines`: at that height the densest tab is whole, and one row
+        // short it is not.
+        let mut app = billing_app(densest_org());
+        let s = screen(&mut app, 80, needed);
+        for needle in [
+            "Formule enterprise : quota partagé par tout le compte",
+            "entreprise, ces pourcentages sont des minimums.",
+            "Budget Actions : 0.00 $ · bloquant",
+            "⚠ budget 0.00 $ bloquant : 95 % du quota de minutes",
+            "⚠ budget 0.00 $ bloquant : 95 % du quota de stockage",
+            "GitHub bloquera l'usage Actions au quota atteint.",
+            "⚠ Rétention artefacts et journaux : 90 j (max. 400 j)",
+            "c'est ce réglage qui fait durer le stockage",
+            "Coûts   brut",
+            "⚠ SKU inconnu, compté ×1 : Actions Neptune",
+        ] {
+            assert!(
+                s.contains(needle),
+                "{needle:?} missing at 80x{needed}:\n{s}"
+            );
+        }
+        for note in RETENTION_NOTES.iter().flatten() {
+            assert!(
+                s.contains(note.trim_start()),
+                "{:?} missing at 80x{needed}:\n{s}",
+                note.trim_start()
+            );
+        }
+        let shorter = screen(&mut app, 80, needed - 1);
+        assert!(
+            !shorter.contains("SKU inconnu"),
+            "the floor is not tight: one row short, nothing is lost:\n{shorter}"
+        );
     }
 
     /// Ten repositories each burning both minutes and storage: enough rows
@@ -1972,9 +2421,11 @@ mod tests {
     /// can ever show once there is any usage to report) still leaves 23,
     /// short by 4. Neither breakdown can give back a line it does not have,
     /// so the second retention note and the cost line do not fit at 80x24
-    /// in this exact combination — see
-    /// `the_worst_case_tab_fits_from_its_documented_minimum_height` for the
-    /// height at which they do, the fallback the ruling itself names
+    /// in this exact combination — and the second note is left out whole
+    /// rather than cut after its first row (smoke S2,
+    /// `a_retention_note_is_shown_whole_or_not_at_all_at_eighty_by_twenty_four`).
+    /// See `the_blocking_budget_case_fits_at_eighty_by_twenty_eight` for the
+    /// height at which they do fit, the fallback the ruling itself names
     /// ("accepting the gap with a documented minimum height").
     #[test]
     fn both_breakdowns_yield_to_the_fixed_content_at_eighty_by_twenty_four() {
@@ -2020,15 +2471,25 @@ mod tests {
     /// The fallback the controller's own ruling names for the gap
     /// `both_breakdowns_yield_to_the_fixed_content_at_eighty_by_twenty_four`
     /// documents: "accepting the gap with a documented minimum height."
-    /// Measured (not guessed): the worst case's fixed content plus both
+    /// Measured (not guessed): this fixture's fixed content plus both
     /// breakdowns' one-line-each floor is 23 lines, so the body needs 23
     /// (content) + 2 (the panel's own border rows) = 25 rows, which this
     /// layout gives at a 28-row terminal (header, status and footer take
-    /// the other 3). Every load-bearing line is whole here, breakdowns
-    /// included this time since there is finally room for their real rows
-    /// rather than a summary.
+    /// the other 3).
+    ///
+    /// This is one combination's own floor, not the documented one: the
+    /// figure the README carries belongs to the densest tab the code can
+    /// build, measured by
+    /// `the_documented_height_floor_is_the_densest_tab_the_code_can_build`
+    /// — a `team` organization with a blocking budget is not it (smoke S1).
+    ///
+    /// Review RW-4: this doc comment used to claim the breakdowns show
+    /// "their real rows rather than a summary" while the test asserted no
+    /// breakdown row at all. It asserts them now — one real row on each
+    /// side, and neither `… et N autre(s)` line, which is what tells a real
+    /// row apart from the summary it degrades to at 80x24.
     #[test]
-    fn the_worst_case_tab_fits_from_its_documented_minimum_height() {
+    fn the_blocking_budget_case_fits_at_eighty_by_twenty_eight() {
         let mut app = billing_app(worst_case_org());
         let s = screen(&mut app, 80, 28);
         for needle in [
@@ -2042,7 +2503,7 @@ mod tests {
         ] {
             assert!(s.contains(needle), "{needle:?} missing at 80x28:\n{s}");
         }
-        for note in RETENTION_NOTES {
+        for note in RETENTION_NOTES.iter().flatten() {
             assert!(
                 s.contains(note.trim_start()),
                 "{:?} missing at 80x28:\n{s}",
@@ -2052,6 +2513,21 @@ mod tests {
         assert!(
             s.contains("Coûts   brut"),
             "cost line missing at 80x28:\n{s}"
+        );
+        // Both breakdowns show a real row, not the summary they fall back to
+        // at 80x24: the minutes row names its runner, the storage row its
+        // GB-hours (the gauge's own `371.85 / 1 440 GB-h` cannot satisfy it).
+        assert!(
+            s.contains("2 850 Linux"),
+            "the minutes breakdown shows no real row at 80x28:\n{s}"
+        );
+        assert!(
+            s.contains("371.85 GB-h"),
+            "the storage breakdown shows no real row at 80x28:\n{s}"
+        );
+        assert!(
+            !s.contains("autre(s) ligne(s)") && !s.contains("autre(s) dépôt(s)"),
+            "a breakdown is still summarised at 80x28:\n{s}"
         );
     }
 
@@ -2091,7 +2567,7 @@ mod tests {
         unreadable.billing = None;
         for org in [exec_d_september(), unreadable] {
             let mut app = with_retention(org, Some(7));
-            for note in RETENTION_NOTES {
+            for note in RETENTION_NOTES.iter().flatten() {
                 assert_shown_at_every_size(&mut app, note.trim_start());
             }
         }
