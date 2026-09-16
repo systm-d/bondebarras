@@ -261,10 +261,12 @@ mod tests {
             ])
         );
 
+        assert_eq!(v[1]["budgets_readable"], true);
         assert_eq!(
             v[1]["actions_budget"],
             serde_json::json!({ "amount": 50, "blocking": false })
         );
+        assert_eq!(v[1]["actions_sku_budgets"], serde_json::json!([]));
 
         assert_eq!(v[2]["budgets_readable"], true);
         assert!(v[2]["actions_budget"].is_null(), "got: {}", v[2]);

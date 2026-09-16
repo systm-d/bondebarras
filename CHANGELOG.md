@@ -57,12 +57,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   stopped at the allowance (0 $, as on exec-d), billed up to the budget then
   stopped (5 $, as on cloudalpes), or billed without a ceiling (no budget, as
   on SecondBrain-io). A gauge at 90 % or more with a blocking budget carries a
-  warning, on the month still running. A per-SKU Actions budget is named, not
-  interpreted. Budgets that cannot be read — a 400 on organizations the
-  account does not own — read `illisible`, never "no budget". Read-only,
+  warning, on the report's most recent month. A per-SKU Actions budget is
+  named, not interpreted. Budgets that cannot be read — a 400 on organizations
+  the account does not own — read `illisible`, never "no budget". Read-only,
   permanently. (#14)
 - `scan --json`: `budgets_readable`, `actions_budget` and
   `actions_sku_budgets`. (#14)
+- Billing tab: each organization's artifact and log retention, beside the
+  storage it governs, highlighted at 90 days or more when the organization
+  holds at least 36 GB-hours that month. The tab states that a workflow's
+  `retention-days` is bounded by this setting, and that a change only applies
+  to new artifacts and logs — verified on 2026-09-10, when an APK uploaded the
+  day before exec-d moved to 7 days kept its 2026-12-08 expiry. Read-only:
+  nothing here changes the setting. (#15)
+- `scan --json`: `artifact_retention_days`. (#15)
 
 ### Changed
 
@@ -100,6 +108,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the total and `formule inconnue`, with no percentage anywhere. (#11)
 - The Billing tab opens on the report's most recent month, not its oldest:
   `←` pages back to older months, `→` forward to newer ones. (#11)
+- Token scopes: `admin:org` is optional — only the Billing tab's retention
+  line needs it and reads `illisible` without it; reading budgets needs a
+  role (organization admin or billing manager), not a scope. No scope joins
+  the required list. (#14, #15)
 
 ### Fixed
 

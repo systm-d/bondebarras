@@ -202,8 +202,10 @@ pub const RETENTION_FLAG_DAYS: u32 = 90;
 
 /// GB-hours in a month from which an org's Actions storage is not
 /// negligible: 10 % of the smallest plan's included storage (0.5 GB × 720 h
-/// = 360 GB-h). Fixed, independent of the org's plan, so the highlight still
-/// works when the plan cannot be read.
+/// = 360 GB-h), 720 hours being taken as the reference month — this is a
+/// fixed figure, not a formula to recompute per month with `hours_in_month`,
+/// which reads 744 or 672 elsewhere. Fixed, independent of the org's plan,
+/// so the highlight still works when the plan cannot be read.
 pub const NOTABLE_STORAGE_GBH: f64 = 36.0;
 
 /// Whether the retention setting deserves to stand out: at least

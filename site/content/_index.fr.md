@@ -108,6 +108,9 @@ cta2 = "Installer"
 <ul>
 <li>Usage des minutes Actions face au quota de la formule de l'organisation, mois par mois</li>
 <li>Répartition par dépôt, le plus gros consommateur d'allocation d'abord</li>
+<li>Stockage Actions en GB-heures face au quota de stockage de la formule, avec les dépôts qui le portent</li>
+<li>Le budget Actions de l'organisation, et ce qu'il fait une fois le quota atteint</li>
+<li>Rétention des artefacts et des journaux, en lecture seule — le réglage qui décide de leur durée</li>
 <li>Strictement diagnostique — les minutes ne se récupèrent pas après coup</li>
 </ul>
 </div>

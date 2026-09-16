@@ -8,7 +8,7 @@ use crate::billing::{
     self, BillingReport, Budget, MinuteLine, StorageLine, StorageQuota, included_minutes_for,
     sku_multiplier,
 };
-use crate::model::OrgSummary;
+use crate::model::{ArtifactRetention, OrgSummary};
 use crate::tui::app::App;
 use crate::tui::theme;
 use crate::tui::views::{self, gauges};
@@ -29,6 +29,15 @@ const MAX_BREAKDOWN_LINES: usize = 8;
 const DELETION_DOES_NOT_REFUND: [&str; 2] = [
     "Supprimer des artefacts arrête l'accumulation,",
     "  mais ne rend pas les GB-heures déjà comptées.",
+];
+
+/// The two exact points #15 asks the tab to state, split to stay legible in
+/// a narrow frame. True whatever the setting, so always shown.
+const RETENTION_NOTES: [&str; 4] = [
+    "Note : retention-days, dans un workflow, fixe la durée",
+    "  de cet artefact, dans la limite de ce réglage.",
+    "Note : un changement de rétention ne vaut que pour",
+    "  les nouveaux artefacts et journaux.",
 ];
 
 /// What the storage gauge says for a report with no month at all: without a
@@ -437,6 +446,53 @@ fn storage_block(
     lines
 }
 
+/// The retention setting, beside the storage it governs. Highlighted — ⚠,
+/// warning colour, and the reason — when it is at least 90 days on an org
+/// whose storage counts (`billing::retention_worth_flagging`). Read-only:
+/// the tab shows the tap, it does not turn it.
+fn retention_lines(
+    retention: Option<ArtifactRetention>,
+    storage_gbh: Option<f64>,
+) -> Vec<Line<'static>> {
+    let Some(r) = retention else {
+        return vec![
+            Line::from(Span::styled(
+                "Rétention artefacts et journaux : illisible",
+                theme::muted(),
+            )),
+            Line::from(Span::styled(
+                "  (scope admin:org requis pour la lire)",
+                theme::muted(),
+            )),
+        ];
+    };
+    let maximum = r
+        .maximum_allowed_days
+        .map(|m| format!(" (max. {m} j)"))
+        .unwrap_or_default();
+    let text = format!("Rétention artefacts et journaux : {} j{maximum}", r.days);
+    if billing::retention_worth_flagging(r.days, storage_gbh) {
+        vec![
+            Line::from(Span::styled(format!("⚠ {text}"), theme::status_warn())),
+            Line::from(Span::styled(
+                "  c'est ce réglage qui fait durer le stockage",
+                theme::status_warn(),
+            )),
+        ]
+    } else {
+        vec![Line::from(Span::styled(text, theme::text_style()))]
+    }
+}
+
+/// #15's two notes, shown whatever the tab could read: both are true of the
+/// setting itself, not of any figure beside it.
+fn retention_notes() -> Vec<Line<'static>> {
+    RETENTION_NOTES
+        .iter()
+        .map(|text| Line::from(Span::styled(*text, theme::muted())))
+        .collect()
+}
+
 /// The month's costs, then any runner SKU `sku_multiplier` does not know.
 fn cost_block(report: &BillingReport, month: &str) -> Vec<Line<'static>> {
     let (gross, covered, billed) = report.cost(month);
@@ -465,36 +521,52 @@ fn cost_block(report: &BillingReport, month: &str) -> Vec<Line<'static>> {
 fn tab_lines(org: &OrgSummary, month_cursor: usize) -> Vec<Line<'static>> {
     let plan = org.plan.as_deref();
     let budgets = org.budgets.as_deref();
+    // Built once: the budgets are their own endpoint, refused on their own,
+    // so they are shown whether or not the usage report could be read. Each
+    // branch below only places them.
+    let budget_block = budget_lines(budgets);
     let mut lines = vec![header_line(&org.login, plan)];
 
-    let Some(report) = &org.billing else {
+    if let Some(report) = &org.billing {
+        let month = displayed_month(report, month_cursor);
+        let private = private_repos(org);
+        // The warning is in the future tense — GitHub *will* block once the
+        // allowance runs out — so it belongs to the month still running. Paged
+        // back to a closed month, the budget carries no warning: that month's
+        // outcome is already settled, whatever its gauges read.
+        let budget = budgets
+            .and_then(billing::actions_budget)
+            .filter(|_| report.months().last() == Some(&month));
+        // A readable report with no usage at all has no month: its line would
+        // be a bare ` · quota documenté…`.
+        if !month.is_empty() {
+            lines.push(month_line(&month));
+        }
+        lines.extend(enterprise_lines(plan));
+        lines.extend(budget_block);
+        lines.push(Line::from(""));
+        lines.extend(minutes_block(report, &month, &private, plan, budget));
+        lines.push(Line::from(""));
+        lines.extend(storage_block(report, &month, plan, budget));
+        // Beside the storage it governs, and weighed against that month's
+        // own GB-hours.
+        lines.extend(retention_lines(
+            org.retention,
+            Some(report.storage_gbh(&month)),
+        ));
+        lines.push(Line::from(""));
+        lines.extend(cost_block(report, &month));
+    } else {
         lines.push(unreadable_line());
-        lines.extend(budget_lines(budgets));
-        return lines;
-    };
-
-    let month = displayed_month(report, month_cursor);
-    let private = private_repos(org);
-    // The warning is in the future tense — GitHub *will* block once the
-    // allowance runs out — so it belongs to the month still running. Paged
-    // back to a closed month, the budget carries no warning: that month's
-    // outcome is already settled, whatever its gauges read.
-    let budget = budgets
-        .and_then(billing::actions_budget)
-        .filter(|_| report.months().last() == Some(&month));
-    // A readable report with no usage at all has no month: its line would be
-    // a bare ` · quota documenté…`.
-    if !month.is_empty() {
-        lines.push(month_line(&month));
+        lines.extend(budget_block);
+        // Storage unknown: the retention is shown, never highlighted —
+        // nobody can say whether it counts.
+        lines.extend(retention_lines(org.retention, None));
     }
-    lines.extend(enterprise_lines(plan));
-    lines.extend(budget_lines(budgets));
+
+    // #15's two notes close the tab, whatever it could read.
     lines.push(Line::from(""));
-    lines.extend(minutes_block(report, &month, &private, plan, budget));
-    lines.push(Line::from(""));
-    lines.extend(storage_block(report, &month, plan, budget));
-    lines.push(Line::from(""));
-    lines.extend(cost_block(report, &month));
+    lines.extend(retention_notes());
     lines
 }
 
@@ -522,7 +594,7 @@ pub fn render(app: &mut App, f: &mut Frame, area: Rect) {
 mod tests {
     use super::*;
     use crate::billing::{Budget, UsageItem};
-    use crate::model::RepoSummary;
+    use crate::model::{ArtifactRetention, RepoSummary};
     use crate::tui::app::View;
 
     /// One usage-report line with its unit spelled out: minutes and storage
@@ -1208,17 +1280,32 @@ mod tests {
     /// A budget on one Actions SKU has never been observed on the author's
     /// organizations, so the tab names it and says it means nothing to the
     /// warnings, rather than folding it into the product budget.
+    ///
+    /// Two of them, the second alert-only: with a single entry a loop
+    /// rendering only the first would pass, and the `alerte seule` arm would
+    /// never be rendered by any test.
     #[test]
     fn a_sku_budget_line_is_signalled_not_interpreted() {
-        let sku = Budget {
+        let sku = |name: &str, amount: u64, blocking: bool| Budget {
             budget_type: "SkuPricing".into(),
-            sku: "actions_linux".into(),
+            sku: name.into(),
             scope: "organization".into(),
-            amount: 5,
-            blocking: true,
+            amount,
+            blocking,
         };
-        let mut app = with_budgets(exec_d_september(), Some(vec![actions(0, true), sku]));
+        let mut app = with_budgets(
+            exec_d_september(),
+            Some(vec![
+                actions(0, true),
+                sku("actions_linux", 5, true),
+                sku("actions_windows", 7, false),
+            ]),
+        );
         assert_shown_at_every_size(&mut app, "Budget SKU actions_linux : 5.00 $ · bloquant");
+        assert_shown_at_every_size(
+            &mut app,
+            "Budget SKU actions_windows : 7.00 $ · alerte seule",
+        );
         assert_shown_at_every_size(
             &mut app,
             "signalé, non pris en compte par les avertissements",
@@ -1349,5 +1436,87 @@ mod tests {
         assert_shown_at_every_size(&mut app, "Budget Actions : 0.00 $ · bloquant");
         // No report, no month, no gauge — so nothing to warn under.
         assert_absent_at_every_width(&mut app, "du quota de");
+    }
+
+    /// `org` with the retention stage 1 read: `None` when GitHub refused it
+    /// (no `admin:org`), `Some(days)` otherwise. 400 days is the ceiling
+    /// GitHub reports, and the only figure `maximum_allowed_days` may show.
+    fn with_retention(mut org: OrgSummary, days: Option<u32>) -> App {
+        org.retention = days.map(|days| ArtifactRetention {
+            days,
+            maximum_allowed_days: Some(400),
+        });
+        billing_app(org)
+    }
+
+    /// exec-d before its change: 90 days, 371.85 GB-h in September — the
+    /// setting that made its storage overflow.
+    #[test]
+    fn retention_line_flags_ninety_days_when_storage_counts() {
+        let mut app = with_retention(exec_d_september(), Some(90));
+        assert_shown_at_every_size(
+            &mut app,
+            "⚠ Rétention artefacts et journaux : 90 j (max. 400 j)",
+        );
+        assert_shown_at_every_size(&mut app, "c'est ce réglage qui fait durer le stockage");
+    }
+
+    /// exec-d after its change. Asserting the highlighted form is absent —
+    /// not merely that "7 j" is present — is what fails a highlight that
+    /// ignores `days`.
+    #[test]
+    fn retention_line_leaves_seven_days_quiet() {
+        let mut app = with_retention(exec_d_september(), Some(7));
+        assert_shown_at_every_size(
+            &mut app,
+            "Rétention artefacts et journaux : 7 j (max. 400 j)",
+        );
+        assert_absent_at_every_width(&mut app, "⚠ Rétention");
+        assert_absent_at_every_width(&mut app, "fait durer le stockage");
+    }
+
+    /// 90 days on an org holding what systm-d/josephine alone held in
+    /// September (12.9 GB-h): below 36, no highlight. The storage half of
+    /// the rule must be able to fail too.
+    #[test]
+    fn retention_line_leaves_ninety_days_quiet_when_storage_is_negligible() {
+        let mut org = exec_d_september();
+        org.billing = Some(BillingReport {
+            items: vec![usage(
+                "2026-09",
+                "Actions storage",
+                "GigabyteHours",
+                12.9,
+                0.0,
+                "josephine",
+            )],
+        });
+        let mut app = with_retention(org, Some(90));
+        assert_shown_at_every_size(
+            &mut app,
+            "Rétention artefacts et journaux : 90 j (max. 400 j)",
+        );
+        assert_absent_at_every_width(&mut app, "⚠ Rétention");
+    }
+
+    #[test]
+    fn retention_line_reads_unreadable() {
+        let mut app = with_retention(exec_d_september(), None);
+        assert_shown_at_every_size(&mut app, "Rétention artefacts et journaux : illisible");
+        assert_shown_at_every_size(&mut app, "(scope admin:org requis pour la lire)");
+    }
+
+    /// The two exact points of #15, on a readable and an unreadable billing
+    /// report alike: they are true whatever the tab can read.
+    #[test]
+    fn the_tab_carries_both_retention_notes() {
+        let mut unreadable = exec_d_september();
+        unreadable.billing = None;
+        for org in [exec_d_september(), unreadable] {
+            let mut app = with_retention(org, Some(7));
+            for note in RETENTION_NOTES {
+                assert_shown_at_every_size(&mut app, note.trim_start());
+            }
+        }
     }
 }

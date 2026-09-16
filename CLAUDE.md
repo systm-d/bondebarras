@@ -126,6 +126,9 @@ shim).
   Reading budgets (the Billing tab's budget line) is a role, not a scope:
   organization admin or billing manager — anyone else reads `illisible`, and
   a budget is never written.
+  `admin:org` is optional, needed only to display artifact and log retention
+  (`api::retention`); without it that line reads `illisible`. The retention
+  `PUT` is never called.
 - User-facing strings (CLI/TUI output) may be in **French** (e.g.
   `Erreur : …`); code identifiers and documentation stay in English.
 
@@ -134,7 +137,7 @@ shim).
 | Need | File |
 |------|------|
 | Core types (`Resource`, `ResourceKind`, `RiskTier`, size formatting) | `crates/bondebarras-core/src/model.rs` |
-| Billing aggregation: SKU multipliers, allowance math, per-repo/-month rollups | `crates/bondebarras-core/src/billing.rs` |
+| Billing aggregation: SKU multipliers, per-plan allowances (minutes, storage GB-hours), budget selection, retention highlight threshold, per-repo/-month rollups | `crates/bondebarras-core/src/billing.rs` |
 | ⚑ stale-PR-cache detection | `crates/bondebarras-core/src/stale.rs` |
 | Token resolution, OAuth scopes | `crates/bondebarras-core/src/auth.rs` |
 | HTTP client, pagination, concurrency, delete retry | `crates/bondebarras-core/src/api/mod.rs` |
