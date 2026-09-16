@@ -160,6 +160,12 @@ again by anything.
   things worth knowing before changing it: a workflow's `retention-days` sets
   that one artifact's duration, within this setting; and a change only
   applies to new artifacts and logs. bondebarras only reads the setting.
+  The tab fits everything on screen from a 28-row terminal in its densest
+  case — a blocking-budget warning together with a flagged retention
+  setting. Below that height, the two per-repository breakdowns shrink
+  first, each keeping its `… et N autre(s)` line naming what it left out;
+  nothing else is cut until they run out of room to give. At 80×24, that
+  densest case loses the second retention note and the cost line.
 - **Headless CLI** — `bondebarras scan --json` for a machine-readable
   overview, and `bondebarras clean` for non-interactive cleanup, e.g. from a
   cron job.

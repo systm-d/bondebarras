@@ -112,6 +112,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   line needs it and reads `illisible` without it; reading budgets needs a
   role (organization admin or billing manager), not a scope. No scope joins
   the required list. (#14, #15)
+- Billing tab: fits its content to the terminal's height instead of always
+  reserving a fixed row budget for the two per-repository breakdowns —
+  they shrink first, each keeping its `… et N autre(s)` line naming what
+  it left out. The densest case (a blocking-budget warning together with
+  a flagged retention) needs 28 rows to show everything; below that it
+  loses the second retention note and the cost line first.
 
 ### Fixed
 
