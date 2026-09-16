@@ -172,15 +172,7 @@ where
             match key.code {
                 KeyCode::Char('q') | KeyCode::Esc => request_quit(&mut app),
                 KeyCode::Char('b') => app.view = View::Orgs,
-                KeyCode::Left => app.month_cursor = app.month_cursor.saturating_sub(1),
-                KeyCode::Right => {
-                    let max = app
-                        .orgs
-                        .get(app.org_cursor)
-                        .and_then(|o| o.billing.as_ref())
-                        .map_or(0, |b| b.months().len().saturating_sub(1));
-                    app.month_cursor = (app.month_cursor + 1).min(max);
-                }
+                KeyCode::Left | KeyCode::Right => page_months(&mut app, key.code),
                 _ => {}
             }
             continue;
@@ -460,6 +452,24 @@ fn column_after(focus: Focus, code: KeyCode) -> Option<Focus> {
     }
 }
 
+/// `←`/`→` on the Billing tab, paging through the org's report. The tab
+/// opens on the newest month — `month_cursor` counts back from it
+/// (`views::billing::displayed_month`) — so `←` goes to an older month and
+/// `→` back toward the newest, each stopping at its end. Any other key
+/// leaves the cursor alone.
+fn page_months(app: &mut App, code: KeyCode) {
+    let oldest = app
+        .orgs
+        .get(app.org_cursor)
+        .and_then(|o| o.billing.as_ref())
+        .map_or(0, |b| b.months().len().saturating_sub(1));
+    match code {
+        KeyCode::Left => app.month_cursor = (app.month_cursor + 1).min(oldest),
+        KeyCode::Right => app.month_cursor = app.month_cursor.saturating_sub(1),
+        _ => {}
+    }
+}
+
 /// Handle a `q`/`Esc` press, from either top-level view.
 ///
 /// A purge runs on a spawned task while the event loop keeps handling keys;
@@ -540,10 +550,13 @@ fn move_org_cursor(app: &mut App, next: usize) {
 /// row of its list (`App::resources_too_short`) — the same hidden list, by
 /// height: a terminal a dozen lines high left the column's head every line,
 /// and `A` ticked rows nobody saw (final review I2). The column says the
-/// window is too short instead.
+/// window is too short instead. Nor does `espace` act from the repos column
+/// while the last frame drew no repository row there
+/// (`App::repos_too_short`, pre-flight 4.14), whose title then says so too.
 fn column_action(app: &mut App, code: KeyCode) {
     match (app.focus, code) {
         (Focus::Resources, _) if app.resources_too_short => {}
+        (Focus::Repos, _) if app.repos_too_short => {}
         (Focus::Resources, KeyCode::Char(' ')) => app.toggle_selected(),
         (Focus::Resources, KeyCode::Char('A')) => app.select_safe(),
         (Focus::Resources, KeyCode::Char('V')) => app.select_safe_and_check(),
@@ -561,12 +574,18 @@ fn column_action(app: &mut App, code: KeyCode) {
 ///
 /// None either from the resources column while the last frame drew no row of
 /// its list (`App::resources_too_short`): Tier 1's bare confirmation does not
-/// list its items, and none would be on screen (final review I2).
+/// list its items, and none would be on screen (final review I2). Nor from
+/// the repos column while the last frame drew no repository row there
+/// (`App::repos_too_short`): it would archive a repository no frame showed
+/// (pre-flight 4.14).
 ///
 /// Split out of `event_loop` so what `d` opens can be asserted on without a
 /// terminal.
 fn plan_for_d(app: &App) -> Option<Plan> {
     if app.focus == Focus::Resources && app.resources_too_short {
+        return None;
+    }
+    if app.focus == Focus::Repos && app.repos_too_short {
         return None;
     }
     app.take_focused_plan()
@@ -604,6 +623,7 @@ mod tests {
                 class: crate::repos::RepoClass::Archivable,
             }],
             billing: None,
+            ..Default::default()
         }]);
         app.loaded = Some(("systm-d".into(), "josephine".into()));
         let cache =
@@ -815,7 +835,9 @@ mod tests {
     /// The final review's I2 probe as a fixture: a repository whose name
     /// (`SecondBrain-organisation/claudine-landing-positioning`) takes two
     /// lines of a narrow resources column, private and over its cache
-    /// ceiling — both gauges, and the eviction warning — with sizeless rows
+    /// ceiling — both gauges, and the eviction warning; no plan read, so the
+    /// minutes gauge is the taller unknown-plan one, with its `formule
+    /// inconnue` explanation (#11) — with sizeless rows
     /// whose explanation leaves the title, and package versions whose class
     /// takes a second line of their list item. Loaded, focus on the
     /// resources. The biggest row, under the cursor, is a ⛑ cache: `espace`,
@@ -849,6 +871,7 @@ mod tests {
                 class: crate::repos::RepoClass::Archivable,
             }],
             billing: Some(report),
+            ..Default::default()
         }]);
         app.loaded = Some((ORG.into(), REPO.into()));
         let cache = |id: u64, size_bytes: u64, safety: Safety| crate::model::Resource {
@@ -1003,6 +1026,98 @@ mod tests {
         );
     }
 
+    /// Pre-flight 4.14, final review I2 in the repos column: with too few
+    /// lines to draw one repository row — none inside the column's borders,
+    /// or one under a two-line item — `espace` ticked, and `d` planned the
+    /// archive of, a repository no frame showed.
+    ///
+    /// Swept over every height from 5 to 30 at 60, 80 and 100 columns, each
+    /// key pressed on a fresh app after a real frame, read off the repos
+    /// column's real rect, the repository holding storage (a two-line item
+    /// wherever the column has room for one): `espace` and `d` act exactly
+    /// when the repository's row is on screen — never without it, and not
+    /// refused while it shows. The sweep has to meet a height with no row,
+    /// or it proves nothing.
+    #[test]
+    fn repo_keys_act_only_while_a_repository_row_is_on_screen() {
+        const ORG: &str = "exec-d";
+        const REPO: &str = "vitrine";
+        let mut failures = Vec::new();
+        let mut hidden = 0;
+        for width in [60u16, 80, 100] {
+            for height in 5u16..=30 {
+                let fresh = |tick: bool| {
+                    let mut app = App::new(vec![crate::model::OrgSummary {
+                        login: ORG.into(),
+                        repos: vec![crate::model::RepoSummary {
+                            name: REPO.into(),
+                            cache_bytes: 1_000,
+                            cache_count: 1,
+                            private: true,
+                            age_days: 400,
+                            class: crate::repos::RepoClass::Archivable,
+                        }],
+                        billing: Some(crate::billing::BillingReport {
+                            items: vec![crate::billing::UsageItem {
+                                month: "2026-09".into(),
+                                product: "actions".into(),
+                                sku: "Actions storage".into(),
+                                quantity: 359.88,
+                                unit_type: "GigabyteHours".into(),
+                                gross: 0.0,
+                                discount: 0.0,
+                                net: 0.0,
+                                repo: REPO.into(),
+                            }],
+                        }),
+                        ..Default::default()
+                    }]);
+                    app.focus = Focus::Repos;
+                    if tick {
+                        app.selected_repo = Some((ORG.into(), REPO.into()));
+                    }
+                    let buf = views::testing::draw(&mut app, width, height);
+                    let (_, columns) = views::testing::layout(&app, width, height);
+                    let rect = columns.repos.expect("the focused column is on screen");
+                    let shown = views::testing::text_in(&buf, rect).contains(REPO);
+                    (app, shown)
+                };
+                let at = format!("{width}x{height}");
+
+                let (mut app, shown) = fresh(false);
+                if !shown {
+                    hidden += 1;
+                }
+                column_action(&mut app, KeyCode::Char(' '));
+                let ticked = app.selected_repo.is_some();
+                if ticked && !shown {
+                    failures.push(format!(
+                        "[espace] ticked a repository no frame showed at {at}"
+                    ));
+                }
+                if !ticked && shown {
+                    failures.push(format!(
+                        "[espace] refused while the row is on screen at {at}"
+                    ));
+                }
+
+                let (app, shown) = fresh(true);
+                let planned = plan_for_d(&app).is_some();
+                if planned && !shown {
+                    failures.push(format!("[d] planned an archive no frame showed at {at}"));
+                }
+                if !planned && shown {
+                    failures.push(format!("[d] refused while the row is on screen at {at}"));
+                }
+            }
+        }
+        assert!(
+            hidden > 0,
+            "no swept height hid the row: this sweep proves nothing"
+        );
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
     #[test]
     fn purge_finished_status_names_the_repo_when_archiving_succeeds() {
         // A repository archive is not a deletion — nothing is freed, the
@@ -1078,6 +1193,7 @@ mod tests {
             cache_count: 0,
             repos: vec![repo("josephine"), repo("claudine")],
             billing: None,
+            ..Default::default()
         }])
     }
 
@@ -1636,6 +1752,58 @@ mod tests {
         assert_eq!(column_after(Focus::Repos, KeyCode::Down), None);
     }
 
+    /// The Billing tab opens on the report's newest month (pre-flight 5.1),
+    /// so `←` pages back to older months and stops at the oldest, and `→`
+    /// comes forward again and stops at the newest. With the arrows the
+    /// 0.5.0 way round, `←` would be dead on opening and `→` would leave the
+    /// current month. Read off the Billing panel's real rect, three months.
+    #[test]
+    fn billing_left_pages_to_older_months_and_right_back_to_newer() {
+        let minutes = |month: &str| crate::billing::UsageItem {
+            month: month.into(),
+            product: "actions".into(),
+            sku: "Actions Linux".into(),
+            quantity: 10.0,
+            unit_type: "Minutes".into(),
+            gross: 0.06,
+            discount: 0.06,
+            net: 0.0,
+            repo: "disconnected".into(),
+        };
+        let mut app = App::new(vec![OrgSummary {
+            login: "exec-d".into(),
+            billing: Some(crate::billing::BillingReport {
+                items: vec![minutes("2026-09"), minutes("2026-07"), minutes("2026-08")],
+            }),
+            ..Default::default()
+        }]);
+        app.view = View::Billing;
+        let shown = |app: &mut App| {
+            let buf = views::testing::draw(app, 100, 30);
+            let (rows, _) = views::testing::layout(app, 100, 30);
+            let body = views::testing::text_in(&buf, rows.body);
+            ["2026-07", "2026-08", "2026-09"]
+                .into_iter()
+                .filter(|month| body.contains(&format!("{month} ·")))
+                .collect::<Vec<_>>()
+        };
+
+        assert_eq!(shown(&mut app), ["2026-09"], "on opening");
+        let mut pressed = Vec::new();
+        for (key, expected) in [
+            (KeyCode::Left, "2026-08"),
+            (KeyCode::Left, "2026-07"),
+            (KeyCode::Left, "2026-07"),
+            (KeyCode::Right, "2026-08"),
+            (KeyCode::Right, "2026-09"),
+            (KeyCode::Right, "2026-09"),
+        ] {
+            page_months(&mut app, key);
+            pressed.push(key);
+            assert_eq!(shown(&mut app), [expected], "after {pressed:?}");
+        }
+    }
+
     /// Final review minor, promoted (F-M2): `↓` on the last org and `↑` on
     /// the first moved no org, yet reset the cursors scoped beneath it and
     /// dropped the repository tick — ruling R7-1 lets only an org move clear
@@ -1659,6 +1827,7 @@ mod tests {
                 class: crate::repos::RepoClass::Archivable,
             }],
             billing: None,
+            ..Default::default()
         });
         let tick = |app: &mut App, month: usize| {
             app.focus = Focus::Repos;

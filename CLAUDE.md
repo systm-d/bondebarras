@@ -79,6 +79,17 @@ shim).
   `ResourceKind::PackageVersion`; never estimate or extrapolate one. The TUI
   shows `—` instead of formatting that zero, with a header line spelling out
   why — see `tui::views::repo::column_head`.
+- **No allowance, no percentage.** An organization's included Actions
+  minutes come from `billing::included_minutes_for` — `free`, `team`,
+  `enterprise`, nothing else — fed by `OrgSummary.plan`, which GitHub only
+  returns to an owner. An unread or unknown plan yields `None`, and every
+  gauge then shows the total and `formule inconnue`, never a percentage
+  against a guessed figure. Included Actions storage follows the same rule
+  through `billing::storage_quota`: included GB × the displayed month's
+  hours (`billing::hours_in_month`, days × 24 — the 720-vs-744 question is
+  an open measurement recorded in the billing-quotas design spec).
+  `tui::views::gauges::percent` is the crate's only percentage arithmetic,
+  shared by the column-3 gauges and the Billing tab.
 - **A purge's progress messages are tagged with the repository its plan
   concerns, recorded at launch.** `tui::spawn_purge` labels every message it
   forwards on the purge channel with `(plan.owner, plan.repo)`, since
@@ -105,13 +116,20 @@ shim).
   and the negative case is the one that matters — a classifier keying on
   "closed" alone would offer to delete work someone meant to resume.
 - Required token scopes: `repo`, `read:org`, `read:packages`, and
-  `delete:packages` cover everything bondebarras does, including the Billing
-  tab's usage report (a 403 there just means the token's owner isn't an org
-  owner). Branches, tags, and release assets (v0.4) need no scope beyond
+  `delete:packages` cover everything bondebarras does but one optional
+  display (see `admin:org` below), including the Billing tab's usage report
+  (a 403 there just means the token's owner isn't an org owner). Branches,
+  tags, and release assets (v0.4) need no scope beyond
   `repo`, already in that list — neither does repository archiving (v0.5):
   same `repo`-scoped endpoint, gated by the token's admin rights on that one
   repository rather than a scope to grant. Repository *deletion* is
   permanently out of scope, so `delete_repo` is never needed.
+  Reading budgets (the Billing tab's budget line) is a role, not a scope:
+  organization admin or billing manager — anyone else reads `illisible`, and
+  a budget is never written.
+  `admin:org` is optional, needed only to display artifact and log retention
+  (`api::retention`); without it that line reads `illisible`. The retention
+  `PUT` is never called.
 - User-facing strings (CLI/TUI output) may be in **French** (e.g.
   `Erreur : …`); code identifiers and documentation stay in English.
 
@@ -120,7 +138,7 @@ shim).
 | Need | File |
 |------|------|
 | Core types (`Resource`, `ResourceKind`, `RiskTier`, size formatting) | `crates/bondebarras-core/src/model.rs` |
-| Billing aggregation: SKU multipliers, allowance math, per-repo/-month rollups | `crates/bondebarras-core/src/billing.rs` |
+| Billing aggregation: SKU multipliers, per-plan allowances (minutes, storage GB-hours), budget selection, retention highlight threshold, per-repo/-month rollups | `crates/bondebarras-core/src/billing.rs` |
 | ⚑ stale-PR-cache detection | `crates/bondebarras-core/src/stale.rs` |
 | Token resolution, OAuth scopes | `crates/bondebarras-core/src/auth.rs` |
 | HTTP client, pagination, concurrency, delete retry | `crates/bondebarras-core/src/api/mod.rs` |
@@ -132,6 +150,9 @@ shim).
 | Repository archiving endpoint (`PATCH .../repos/{owner}/{repo}`) | `crates/bondebarras-core/src/api/archive.rs` |
 | Repository archiving classification (pure): archivable / already-archived / no admin rights | `crates/bondebarras-core/src/repos.rs` |
 | Billing usage-report fetch (403 degrades to `None`, not an error) | `crates/bondebarras-core/src/api/billing.rs` |
+| Organization plan name (`GET /orgs/{org}`; refused or absent → `None`, never a default) | `crates/bondebarras-core/src/api/orgs.rs` |
+| Organization budgets (read-only; paginated; any failure, malformed entry or truncation → unreadable, never "no budget") | `crates/bondebarras-core/src/api/budgets.rs` |
+| Artifact and log retention setting (read-only; refused → `None`; the `PUT` is never called) | `crates/bondebarras-core/src/api/retention.rs` |
 | Package version endpoints (list, delete) | `crates/bondebarras-core/src/api/packages.rs` |
 | Package version classification: untagged, orphaned attestation, tagged (pure) | `crates/bondebarras-core/src/packages.rs` |
 | Branch/tag endpoints (list, delete), default-branch lookup | `crates/bondebarras-core/src/api/refs.rs` |

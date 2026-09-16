@@ -7,12 +7,15 @@
 pub mod archive;
 pub mod artifacts;
 pub mod billing;
+pub mod budgets;
 pub mod caches;
+pub mod orgs;
 pub mod packages;
 pub mod prs;
 pub mod refs;
 pub mod releases;
 pub mod repos;
+pub mod retention;
 pub mod runs;
 
 use crate::auth::Scopes;
@@ -144,8 +147,14 @@ impl Client {
     ///
     /// Retry lives here rather than on reads because deletions are what hit
     /// the ceiling: a purge of 132 caches is a burst, and GitHub answers a
-    /// burst with its secondary rate limit. A stage-1 scan is 60 reads at a
-    /// concurrency of 8 and never gets close.
+    /// burst with its secondary rate limit. A stage-1 scan issues six reads
+    /// per organization (`scan::overview`: cache usage, the repository
+    /// list, the usage report, the plan, budgets, retention) and never gets
+    /// close — no total is given here, since that also depends on how many
+    /// organizations the token can see, and a stale total is exactly how
+    /// this comment went wrong once already (this figure used to read
+    /// "60 reads at a concurrency of 8", from before #11-#15 took the
+    /// per-organization count from three to six).
     pub async fn delete(&self, path: &str) -> Result<()> {
         let mut attempt = 0;
         loop {

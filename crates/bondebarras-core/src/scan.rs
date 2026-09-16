@@ -1,7 +1,9 @@
 //! Two-stage scanning.
 //!
-//! Stage 1 runs at launch and only touches org-level aggregates — three
-//! requests per org, so fifteen orgs still land in a few seconds. Stage 2
+//! Stage 1 runs at launch and only touches org-level data: the two reads
+//! that define an org (cache usage, repository list), and degradable reads
+//! that only enrich it — each refused on its own, never dropping the org.
+//! Fifteen orgs still land in a few seconds. Stage 2
 //! fetches a repository's individual resources, and only when the user opens
 //! it. Paying only for what you look at is what keeps manual navigation
 //! viable across a hundred repositories.
@@ -58,9 +60,15 @@ pub async fn overview(client: &Client, orgs: &[String]) -> Vec<OrgSummary> {
         }
         repos_out.sort_by_key(|r| std::cmp::Reverse(r.cache_bytes));
 
-        // Third and last stage-1 request. Deliberately not `?`-propagated: an
-        // org whose billing is refused is still worth showing.
-        let billing = crate::api::billing::fetch(client, org).await;
+        // The degradable stage-1 reads, joined: none depends on another, and
+        // none is `?`-propagated — an org whose billing, plan, budgets or
+        // retention is refused is still worth showing.
+        let (billing, plan, budgets, retention) = futures::join!(
+            crate::api::billing::fetch(client, org),
+            crate::api::orgs::plan(client, org),
+            crate::api::budgets::fetch(client, org),
+            crate::api::retention::fetch(client, org),
+        );
 
         Some(OrgSummary {
             login: org.clone(),
@@ -68,6 +76,9 @@ pub async fn overview(client: &Client, orgs: &[String]) -> Vec<OrgSummary> {
             cache_count,
             repos: repos_out,
             billing,
+            plan,
+            budgets,
+            retention,
         })
     });
 
@@ -2001,6 +2012,202 @@ mod tests {
         assert_eq!(out.len(), 1, "a billing 403 must not drop the org");
         assert_eq!(out[0].cache_bytes, 1000);
         assert!(out[0].billing.is_none());
+    }
+
+    /// #11: the plan decides whether any percentage can be shown at all, so
+    /// `overview` must carry it from `api::orgs::plan` onto the summary.
+    #[tokio::test]
+    async fn overview_carries_the_orgs_plan() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/orgs/exec-d/actions/cache/usage-by-repository"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({ "repository_cache_usages": [] })),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/orgs/exec-d/repos"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/orgs/exec-d"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "login": "exec-d",
+                "plan": { "name": "team" }
+            })))
+            .mount(&server)
+            .await;
+
+        let client = Client::with_base("t0ken", &server.uri()).unwrap();
+        let out = overview(&client, &["exec-d".to_string()]).await;
+
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].plan.as_deref(), Some("team"));
+    }
+
+    /// A refused plan costs the plan, never the org — same rule as billing.
+    #[tokio::test]
+    async fn overview_keeps_an_org_whose_plan_is_refused() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(
+                "/orgs/SecondBrain-io/actions/cache/usage-by-repository",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "repository_cache_usages": [
+                    { "full_name": "SecondBrain-io/monolith-back",
+                      "active_caches_size_in_bytes": 1000, "active_caches_count": 2 }
+                ]
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/orgs/SecondBrain-io/repos"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/orgs/SecondBrain-io"))
+            .respond_with(ResponseTemplate::new(403))
+            .mount(&server)
+            .await;
+
+        let client = Client::with_base("t0ken", &server.uri()).unwrap();
+        let out = overview(&client, &["SecondBrain-io".to_string()]).await;
+
+        assert_eq!(out.len(), 1, "a refused plan must not drop the org");
+        assert_eq!(out[0].cache_bytes, 1000);
+        assert!(out[0].plan.is_none());
+    }
+
+    /// #14: budgets ride along at stage 1, and a refusal — observed as a 400
+    /// — costs the budgets only, never the org.
+    ///
+    /// Two organizations, each with its own plan *and* its own budgets
+    /// answer: the joined stage-1 reads are only correct if each one is
+    /// asked about the org it is paired with. A `join!` that passed a fixed
+    /// login to `orgs::plan` — the defect Task 4 could only catch with a
+    /// throwaway test — gives both orgs the same plan here, and fails.
+    #[tokio::test]
+    async fn overview_carries_budgets_and_keeps_the_org_when_refused() {
+        let server = MockServer::start().await;
+        for (org, plan) in [("exec-d", "team"), ("le-vilain-petit-dev", "free")] {
+            Mock::given(method("GET"))
+                .and(path(format!(
+                    "/orgs/{org}/actions/cache/usage-by-repository"
+                )))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .set_body_json(serde_json::json!({ "repository_cache_usages": [] })),
+                )
+                .mount(&server)
+                .await;
+            Mock::given(method("GET"))
+                .and(path(format!("/orgs/{org}/repos")))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+                .mount(&server)
+                .await;
+            Mock::given(method("GET"))
+                .and(path(format!("/orgs/{org}")))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "login": org,
+                    "plan": { "name": plan }
+                })))
+                .mount(&server)
+                .await;
+        }
+        Mock::given(method("GET"))
+            .and(path("/organizations/exec-d/settings/billing/budgets"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "budgets": [{
+                    "budget_type": "ProductPricing", "budget_product_sku": "actions",
+                    "budget_scope": "organization", "budget_amount": 0,
+                    "prevent_further_usage": true
+                }],
+                "has_next_page": false
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(
+                "/organizations/le-vilain-petit-dev/settings/billing/budgets",
+            ))
+            .respond_with(
+                ResponseTemplate::new(400)
+                    .set_body_json(serde_json::json!({ "message": "Unable to get budgets." })),
+            )
+            .mount(&server)
+            .await;
+
+        let client = Client::with_base("t0ken", &server.uri()).unwrap();
+        let out = overview(
+            &client,
+            &["exec-d".to_string(), "le-vilain-petit-dev".to_string()],
+        )
+        .await;
+
+        let find = |login: &str| out.iter().find(|o| o.login == login).unwrap();
+        assert_eq!(out.len(), 2, "a refused budgets read must not drop the org");
+        assert_eq!(find("exec-d").budgets.as_ref().map(Vec::len), Some(1));
+        assert!(find("le-vilain-petit-dev").budgets.is_none());
+        // Each org's plan is its own: the pairing inside the `join!` holds.
+        assert_eq!(find("exec-d").plan.as_deref(), Some("team"));
+        assert_eq!(find("le-vilain-petit-dev").plan.as_deref(), Some("free"));
+    }
+
+    /// #15: retention rides along at stage 1; a token without `admin:org`
+    /// costs the retention only.
+    #[tokio::test]
+    async fn overview_carries_retention() {
+        let server = MockServer::start().await;
+        for org in ["exec-d", "systm-d"] {
+            Mock::given(method("GET"))
+                .and(path(format!(
+                    "/orgs/{org}/actions/cache/usage-by-repository"
+                )))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .set_body_json(serde_json::json!({ "repository_cache_usages": [] })),
+                )
+                .mount(&server)
+                .await;
+            Mock::given(method("GET"))
+                .and(path(format!("/orgs/{org}/repos")))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+                .mount(&server)
+                .await;
+        }
+        Mock::given(method("GET"))
+            .and(path(
+                "/orgs/exec-d/actions/permissions/artifact-and-log-retention",
+            ))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({ "days": 7 })),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(
+                "/orgs/systm-d/actions/permissions/artifact-and-log-retention",
+            ))
+            .respond_with(ResponseTemplate::new(403))
+            .mount(&server)
+            .await;
+
+        let client = Client::with_base("t0ken", &server.uri()).unwrap();
+        let out = overview(&client, &["exec-d".to_string(), "systm-d".to_string()]).await;
+
+        let find = |login: &str| out.iter().find(|o| o.login == login).unwrap();
+        assert_eq!(
+            out.len(),
+            2,
+            "a refused retention read must not drop the org"
+        );
+        assert_eq!(find("exec-d").retention.map(|r| r.days), Some(7));
+        assert!(find("systm-d").retention.is_none());
     }
 
     /// Debt 4 of the v0.4 final review: all seven family listings degrade

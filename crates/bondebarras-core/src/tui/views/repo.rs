@@ -307,10 +307,25 @@ const SIZELESS_WARNING: &str = "⚠ GitHub n'expose pas la taille de certaines r
 /// the one place that already enumerates every such kind.
 fn list_title(count: usize, ticked_bytes: u64, with_warning: bool) -> String {
     let ticked = human_size(ticked_bytes);
+    let items = plural(count, "élément");
     if with_warning {
-        format!(" RESSOURCES · {count} éléments · cochés {ticked} · {SIZELESS_WARNING} ")
+        format!(" RESSOURCES · {items} · cochés {ticked} · {SIZELESS_WARNING} ")
     } else {
-        format!(" RESSOURCES · {count} éléments · cochés {ticked} ")
+        format!(" RESSOURCES · {items} · cochés {ticked} ")
+    }
+}
+
+/// `count` and its noun, agreeing in number.
+///
+/// Smoke S5: the title read `RESSOURCES · 1 éléments` over a repository
+/// listing a single branch — live on `maxds-lyon/.github` and
+/// `SecondBrain-io/sbrain-auto-test`. French keeps the singular for zéro as
+/// well as for one, so only a count past one takes the `s`.
+fn plural(count: usize, noun: &str) -> String {
+    if count > 1 {
+        format!("{count} {noun}s")
+    } else {
+        format!("{count} {noun}")
     }
 }
 
@@ -411,7 +426,12 @@ fn repo_gauges(app: &App, width: u16) -> (Vec<Line<'static>>, Vec<Line<'static>>
     } else {
         0
     };
-    let minutes = gauges::minutes_gauge_line(minutes_used, !repo.private, width);
+    let minutes = gauges::minutes_gauge_line(
+        minutes_used,
+        !repo.private,
+        crate::billing::included_minutes_for(org.plan.as_deref()),
+        width,
+    );
     (cache, minutes)
 }
 
@@ -556,6 +576,11 @@ pub fn render(app: &mut App, f: &mut Frame, area: Rect) {
     } else {
         Some(app.res_cursor.min(items.len() - 1))
     });
+    // Smoke S3: an offset the last, shorter frame needed is not one this
+    // frame needs (`views::clamp_offset`). Measured against `list_area`, not
+    // the column: the head above it takes its rows first.
+    let heights: Vec<usize> = items.iter().map(ListItem::height).collect();
+    views::clamp_offset(&mut app.res_state, &heights, list_area.height);
 
     let list = List::new(items).highlight_style(views::cursor_style(focused));
 
@@ -1334,6 +1359,30 @@ mod tests {
         assert!(title.contains("100 o"), "got: {title}");
     }
 
+    /// Smoke S5: the title read `RESSOURCES · 1 éléments · cochés 0 o` over
+    /// a repository listing a single branch — seen live on
+    /// `maxds-lyon/.github` and `SecondBrain-io/sbrain-auto-test`. French
+    /// keeps the singular for zéro as well as for one, so only a count past
+    /// one takes the `s`.
+    ///
+    /// Each needle carries the separator that follows it, so `1 élément`
+    /// cannot be satisfied by the `1 éléments` this fixes.
+    #[test]
+    fn the_title_agrees_in_number_with_what_it_counts() {
+        for (count, expected) in [
+            (0, "0 élément ·"),
+            (1, "1 élément ·"),
+            (2, "2 éléments ·"),
+            (353, "353 éléments ·"),
+        ] {
+            let title = list_title(count, 0, false);
+            assert!(title.contains(expected), "got: {title}");
+            // The warning variant counts the same rows, and agrees the same.
+            let warned = list_title(count, 0, true);
+            assert!(warned.contains(expected), "got: {warned}");
+        }
+    }
+
     /// Debt 2 of the v0.4 final review: `render` computed the flag it hands
     /// `list_title` from `r.kind == ResourceKind::PackageVersion` alone, so a
     /// repository whose only sizeless rows were branches or tags — no
@@ -1426,6 +1475,9 @@ mod tests {
                 class: crate::repos::RepoClass::Archivable,
             }],
             billing: Some(report),
+            plan: Some("free".into()),
+            budgets: None,
+            retention: None,
         }
     }
 
@@ -1509,6 +1561,18 @@ mod tests {
                             y compris ceux de la branche par défaut, au profit des PR fermées";
     const PUBLIC_REASON: &str =
         "0 % (dépôt public : minutes Actions gratuites et illimitées, hors plafond)";
+    // Grouped like the Billing tab's own gauges (review FR-tui-3): the same
+    // figure read two different ways in one session would look like two
+    // different numbers.
+    //
+    // Split in two, unlike `CACHE_CAVEAT`/`EVICTION`: review T5-m6 strips
+    // the `· ` that used to join them when the explanation wraps onto rows
+    // of its own — a floating bullet with nothing to its left — so the
+    // joined prose legitimately reads with the separator inline and
+    // without it wrapped. Checking both halves separately stays true
+    // either way; one fixed string with `· ` baked in could not.
+    const UNKNOWN_PLAN_FIGURES: &str = "1 000 min";
+    const UNKNOWN_PLAN_REASON: &str = "formule inconnue, pas de quota";
 
     /// Final review I4 and smoke S1: spec §5 wants the hardcoded ceiling
     /// said ("la jauge le dit") and a public repository's 0 % given with its
@@ -1518,15 +1582,20 @@ mod tests {
     /// went mid-word.
     ///
     /// Swept over every terminal width from 60 to 200 on the resources
-    /// column's real rect, for a public repository over its ceiling and a
-    /// private one under it: each gauge's percentage and figures, with their
-    /// units, stand whole on one row; the caveat, the eviction warning and
-    /// the public reason read whole once the column's rows are joined — on
-    /// the gauge's row where they fit, on rows of their own otherwise.
+    /// column's real rect, for a public repository over its ceiling, a
+    /// private one under it, and that private one in an org whose plan was
+    /// not read (#11): each gauge's percentage and figures, with their
+    /// units, stand whole on one row; the caveat, the eviction warning, the
+    /// public reason and the unknown plan's explanation read whole once the
+    /// column's rows are joined — on the gauge's row where they fit, on rows
+    /// of their own otherwise — and the unknown plan's minutes row carries
+    /// no percentage at all.
     #[test]
     fn every_gauge_figure_and_explanation_stays_whole_across_swept_widths() {
         let mut public = gauged_app(false, 12_360_000_000);
         let mut private = gauged_app(true, 4_000_000_000);
+        let mut unknown_plan = gauged_app(true, 4_000_000_000);
+        unknown_plan.orgs[0].plan = None;
         for width in 60..=200u16 {
             let (_, column) =
                 views::testing::focused_column(&mut public, Focus::Resources, width, 40);
@@ -1553,7 +1622,7 @@ mod tests {
             );
             let minutes = row_holding(&column, "50 %");
             assert!(
-                minutes.contains("1000 / 2000"),
+                minutes.contains("1 000 / 2 000"),
                 "the minutes figures are cut at width {width}: {minutes:?}\n{column}"
             );
             assert!(
@@ -1563,6 +1632,20 @@ mod tests {
             assert!(
                 !column.contains("évince"),
                 "a cache under its ceiling warns of eviction at width {width}:\n{column}"
+            );
+
+            let (_, column) =
+                views::testing::focused_column(&mut unknown_plan, Focus::Resources, width, 40);
+            let prose = views::testing::unwrapped(&column);
+            let minutes = row_holding(&column, "Minutes");
+            assert!(
+                minutes.contains("1 000 min") && !minutes.contains('%'),
+                "the unknown plan's minutes row is cut or has a percentage at width \
+                 {width}: {minutes:?}\n{column}"
+            );
+            assert!(
+                prose.contains(UNKNOWN_PLAN_FIGURES) && prose.contains(UNKNOWN_PLAN_REASON),
+                "the unknown plan's explanation is not whole at width {width}:\n{column}"
             );
         }
     }
@@ -1574,10 +1657,38 @@ mod tests {
     /// height from 3 to 40 at widths across the three layouts, public
     /// repository over its ceiling: whatever part of the head is on screen
     /// reads whole, and no explanation stays on screen without its gauge.
+    ///
+    /// Task 5's review (T5-m3): the same sweep for a private repository in
+    /// an org whose plan was not read (#11), the taller unknown-plan minutes
+    /// gauge — its `formule inconnue, pas de quota` explanation stays with
+    /// its figures, whole, or goes with them.
     #[test]
     fn the_column_head_keeps_each_part_whole_or_drops_it_across_swept_heights() {
         for width in [60u16, 78, 80, 99, 100, 101, 120, 160, 200] {
             for height in 3u16..=40 {
+                let mut unknown_plan = gauged_app(true, 4_000_000_000);
+                unknown_plan.orgs[0].plan = None;
+                let (_, column) = views::testing::focused_column(
+                    &mut unknown_plan,
+                    Focus::Resources,
+                    width,
+                    height,
+                );
+                let at = format!("at {width}x{height}, no plan read:\n{column}");
+                if column.contains("Minutes") {
+                    let prose = views::testing::unwrapped(&column);
+                    assert!(
+                        prose.contains(UNKNOWN_PLAN_FIGURES) && prose.contains(UNKNOWN_PLAN_REASON),
+                        "the unknown plan's minutes gauge shows without all of its \
+                         explanation {at}"
+                    );
+                } else {
+                    assert!(
+                        !column.contains("formule inconnue"),
+                        "the unknown plan's explanation shows without its gauge {at}"
+                    );
+                }
+
                 let mut app = gauged_app(false, 12_360_000_000);
                 let (_, column) =
                     views::testing::focused_column(&mut app, Focus::Resources, width, height);
@@ -1669,6 +1780,51 @@ mod tests {
                     "the title shows an unlabelled size at width {width}: {title:?}"
                 );
             }
+        }
+    }
+
+    /// Smoke S3, on the column that shares the repos column's mechanism: an
+    /// offset left over from a shorter frame hides the head of the list once
+    /// the terminal grows back, with room to spare. Same shape as
+    /// `views::repos::tests::a_resize_leaves_no_stale_offset_behind_in_the_repos_column`,
+    /// read off the resources column's own rect.
+    ///
+    /// Thirty rows with the cursor on the twenty-eighth: enough that 80x24
+    /// cannot show the cursor from the top of the list and has to scroll —
+    /// the state the taller frame then inherits — while every one of them
+    /// fits under the column's head at the heights swept here, so a correct
+    /// render starts at the first row.
+    #[test]
+    fn a_resize_leaves_no_stale_offset_behind_in_the_resources_column() {
+        let fresh = || {
+            let mut app = App::new(vec![]);
+            app.resources = (1..=30)
+                .map(|n| Resource {
+                    id: n,
+                    label: format!("cache-{n:02}"),
+                    ..res(false)
+                })
+                .collect();
+            app.res_cursor = 27;
+            app
+        };
+
+        for tall in 45..=50u16 {
+            let mut app = fresh();
+            views::testing::focused_column(&mut app, Focus::Resources, 100, tall);
+            views::testing::focused_column(&mut app, Focus::Resources, 80, 24);
+            let (_, after) = views::testing::focused_column(&mut app, Focus::Resources, 100, tall);
+
+            let (_, never_resized) =
+                views::testing::focused_column(&mut fresh(), Focus::Resources, 100, tall);
+            assert_eq!(
+                after, never_resized,
+                "a resize down to 80x24 and back left the column scrolled at 100x{tall}"
+            );
+            assert!(
+                after.contains("cache-01"),
+                "the list's first row is off screen at 100x{tall} after a resize:\n{after}"
+            );
         }
     }
 }

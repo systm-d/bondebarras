@@ -57,6 +57,10 @@ pub fn render(app: &mut App, f: &mut Frame, area: Rect) {
     } else {
         Some(app.org_cursor.min(items.len() - 1))
     });
+    // Smoke S3: an offset the last, shorter frame needed is not one this
+    // frame needs (`views::clamp_offset`).
+    let heights: Vec<usize> = items.iter().map(ListItem::height).collect();
+    views::clamp_offset(&mut app.org_state, &heights, area.height.saturating_sub(2));
 
     let list = List::new(items)
         .block(views::column_block(" ORGS ", focused))
@@ -93,6 +97,7 @@ mod tests {
                 class: RepoClass::Archivable,
             }],
             billing: None,
+            ..Default::default()
         }]);
 
         for width in 60..=200u16 {

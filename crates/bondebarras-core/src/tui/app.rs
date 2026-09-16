@@ -174,6 +174,14 @@ pub struct App {
     /// act on rows no frame showed. Final review I2 — ruling A's hidden list,
     /// by height rather than width.
     pub(crate) resources_too_short: bool,
+    /// Whether the last frame had no line inside the repos column to draw a
+    /// repository row on — written by `tui::views::repos::render`. While it
+    /// is, `espace` and `d` do nothing from the repos column
+    /// (`tui::column_action`, `tui::plan_for_d`): they would tick, or
+    /// archive, a repository no frame showed — and the column's title says
+    /// the window is too short. Pre-flight 4.14 — final review I2 in the
+    /// repos column.
+    pub(crate) repos_too_short: bool,
     /// The org a running purge belongs to, for the post-purge cache refresh.
     /// The user can navigate away while it runs — purges execute on a
     /// spawned task while the event loop keeps handling keys — so `loaded`
@@ -295,6 +303,7 @@ impl App {
             repo_state: ListState::default(),
             res_state: ListState::default(),
             resources_too_short: false,
+            repos_too_short: false,
             purging_org: None,
             view: View::Orgs,
             month_cursor: 0,
@@ -1696,6 +1705,7 @@ mod tests {
             cache_count: 0,
             repos: vec![repo("josephine"), repo("claudine")],
             billing: None,
+            ..Default::default()
         }]);
         a.repo_cursor = 1;
 
@@ -1726,6 +1736,7 @@ mod tests {
                 cache_count: 0,
                 repos: vec![repo("claudine")],
                 billing: None,
+                ..Default::default()
             },
             OrgSummary {
                 login: "josephine-org".into(),
@@ -1733,6 +1744,7 @@ mod tests {
                 cache_count: 0,
                 repos: vec![repo("josephine")],
                 billing: None,
+                ..Default::default()
             },
         ]);
         a.resources = vec![res(1, "cache-1", 100, 1, false)];
@@ -1779,6 +1791,7 @@ mod tests {
             cache_count: 0,
             repos: vec![repo_summary("lokiprint", class, 685)],
             billing: None,
+            ..Default::default()
         }]);
         a.focus = Focus::Repos;
         a
@@ -1878,6 +1891,7 @@ mod tests {
             cache_count: 0,
             repos: vec![repo("first"), repo("second")],
             billing: None,
+            ..Default::default()
         }]);
         a.selected_repo = Some(("org".to_string(), "second".to_string()));
 
@@ -1972,6 +1986,7 @@ mod tests {
                 repo("josephine", 0, 0),
             ],
             billing: None,
+            ..Default::default()
         }]);
 
         // The fresh report is exactly what usage-by-repository returns after
@@ -2081,6 +2096,7 @@ mod tests {
             cache_count: 0,
             repos: vec![repo("lokiprint"), repo("claudine")],
             billing: None,
+            ..Default::default()
         }]);
         a.focus = Focus::Repos;
         a.repo_cursor = 0;
@@ -2175,6 +2191,7 @@ mod tests {
                 .map(|name| repo_summary(name, crate::repos::RepoClass::Archivable, 1))
                 .collect(),
             billing: None,
+            ..Default::default()
         }
     }
 

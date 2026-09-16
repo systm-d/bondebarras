@@ -92,8 +92,9 @@ again by anything.
   cache usage against GitHub's documented (but API-unexposed) 10 GiB
   per-repository ceiling — past 100 % it warns that GitHub is already
   evicting least-recently-read caches to make room — and Actions minutes
-  against the free monthly allowance. Neither is ever clamped at 100 %: a
-  number past the ceiling is real, not an error.
+  against the allowance of the organization's plan (`formule inconnue`, with
+  no percentage, when the plan cannot be read). Neither is ever clamped at
+  100 %: a number past the ceiling is real, not an error.
 - **A progress row** appears between the status line and the footer while a
   purge, an archive, or a repository load is running, with a real, counted
   done/total — never an estimate.
@@ -107,18 +108,72 @@ again by anything.
   merged branches, tags, and release assets — none of them come back once
   deleted) — followed by a background purge with a per-item result. The TUI
   stays responsive throughout.
-- **Billing tab** — per-organization Actions-minutes usage against the free
-  allowance, month by month, with a per-repository breakdown of what is
-  burning it. The gauge counts **private repositories only**: GitHub's usage
-  report discounts a private repo still inside its allowance exactly like a
-  public one, so visibility — not the discount fields — is the only signal
-  that tells them apart, and a public repo's Actions runs are free and
-  unlimited regardless of volume. On the author's own account,
-  `SecondBrain-io`'s `monolith-back` burnt **24,632 private
-  Linux-equivalent minutes in July 2026** — exactly the kind of runaway usage
-  the tab exists to surface, since minutes cannot be reclaimed after the
-  fact. (That org is on a different plan, so no allowance percentage is
-  given here.)
+- **Billing tab** — per-organization Actions-minutes usage against the
+  allowance of the organization's **current plan** (`free` 2,000, `team`
+  3,000, `enterprise` 50,000 minutes a month), month by month, with a
+  per-repository breakdown of what is burning it. The plan comes from
+  `GET /orgs/{org}`, which only tells an owner: when it cannot be read, or
+  names a plan bondebarras has no figure for, the tab shows the total and says
+  `formule inconnue` — **never a percentage against a guessed allowance**.
+  Every month the tab pages through is measured against today's plan, and the
+  tab says so (`quota documenté de la formule actuelle`). On `enterprise`, the
+  allowance belongs to the enterprise account and is shared by its
+  organizations, so the percentage is a minimum. The gauge counts **private
+  repositories only**: GitHub's usage report discounts a private repo still
+  inside its allowance exactly like a public one, so visibility — not the
+  discount fields — is the only signal that tells them apart, and a public
+  repo's Actions runs are free and unlimited regardless of volume. On the
+  author's own account, `SecondBrain-io`'s `monolith-back` burnt **24,632
+  private Linux-equivalent minutes in July 2026** — exactly the kind of
+  runaway usage the tab exists to surface, since minutes cannot be reclaimed
+  after the fact. (That org is on `enterprise`: 49 % of its 50,000 included
+  minutes — a minimum, since that allowance is shared across the enterprise.)
+  Below the minutes, **Actions storage**, billed in GB-hours — every hour a
+  gigabyte of artifacts exists — against the plan's included storage
+  (`free` 0.5 GB, `team` 2 GB, `enterprise` 50 GB) times the hours of the
+  displayed month, a base the gauge states (`base 720 h`). Public
+  repositories' storage is counted: GitHub's documentation says their
+  minutes are free, and says nothing of their storage. The repositories
+  holding it are named, heaviest first, and the tab says what deleting
+  artifacts can and cannot do: it stops the accumulation, it does not refund
+  hours already counted. The repositories column shows, under a repository's
+  row, its GB-hours for the most recent month of the usage report — the
+  month the resources column's minutes gauge reads, named on the line — and
+  marks with ⚠ a repository whose caches are past the included 10 GiB
+  (10.7 Go as displayed), past which GitHub evicts, or bills the excess at
+  its hourly peak if the repository's cache limit was raised.
+  The tab also says what happens once an allowance runs out, from the
+  organization's **Actions budget**: `0.00 $ · bloquant` (GitHub stops
+  Actions at the allowance), `5.00 $ · bloquant` (billed up to 5 $, then
+  stopped), or no budget at all (overage billed with no ceiling, if a payment
+  method is on file). A gauge at 90 % or more with a blocking budget carries a
+  warning under it, on the report's most recent month — the only one GitHub
+  can still block. A budget on a single Actions SKU is named as such, never
+  interpreted. Budgets are read, never changed: changing one commits money,
+  and that is permanently out of scope.
+  Beside the storage, the organization's **artifact and log retention**
+  (90 days is GitHub's default), highlighted when it is 90 days or more on an
+  organization holding at least 36 GB-hours of storage that month — 10 % of
+  the smallest plan's included storage (0.5 GB × 720 h = 360 GB-h), a fixed
+  figure independent of the displayed month's own hour count. It is the tap:
+  every artifact a workflow uploads is kept that long. The tab states the two
+  things worth knowing before changing it: a workflow's `retention-days` sets
+  that one artifact's duration, within this setting; and a change only
+  applies to new artifacts and logs. bondebarras only reads the setting.
+  The tab fits everything on screen from a 33-row terminal in its densest
+  case — an `enterprise` organization (whose shared-quota note takes two
+  lines), a blocking Actions budget warning under *both* gauges, a flagged
+  retention setting, and a runner SKU the usage report names but
+  bondebarras has no multiplier for. Below that height, the two
+  per-repository breakdowns shrink first, each keeping its `… et N
+  autre(s)` line naming what it left out; only then does the tab drop
+  content, always from the bottom and always one whole block at a time —
+  the unknown-SKU line, then the cost line, then the second retention note,
+  then the first. A note is shown whole or not at all, never cut after its
+  first line. At 80×24 that densest case gets as far as the deletion
+  notice; an organization with no budget warning gets as far as its
+  retention line and the reason under it. A budget on a single SKU adds two
+  more lines, and GitHub allows any number of those.
 - **Headless CLI** — `bondebarras scan --json` for a machine-readable
   overview, and `bondebarras clean` for non-interactive cleanup, e.g. from a
   cron job.
@@ -344,6 +399,19 @@ bondebarras clean --org exec-d --repo terminus --assets --older-than 180 --yes
 | `--older-than <days>` | Restricts `clean` to resources at least that old |
 | `--yes` | Confirms without a prompt |
 
+`scan --json` prints one object per organization: `org`, `cache_bytes`,
+`cache_count`, `billing_readable` and `repos`, plus `plan` (the plan name, or
+`null` when it cannot be read) and `minutes_allowance` (that plan's included
+minutes, or `null` — never a default). `billing_month` names the current
+month (`YYYY-MM`, in UTC), for which `storage_gbh` and
+`storage_allowance_gbh` are given per organization and `storage_gbh` per
+repository — `null` when billing or the plan cannot be read, never zero.
+`budgets_readable`, `actions_budget` (`{"amount", "blocking"}`, or `null` when
+the organization has no Actions budget) and `actions_sku_budgets` (`null`, not
+`[]`, when budgets cannot be read) keep "no budget" and "unreadable" apart.
+`artifact_retention_days` is the retention setting, or `null` when it cannot
+be read.
+
 **Without `--yes`, `clean` prints the plan and deletes nothing** — the same
 dry-run-by-default rule as the TUI's confirmation modal, just without a
 keypress to drive it. Naming no resource family selects nothing either: a
@@ -382,17 +450,32 @@ interactive TUI) is the only way in.
 ### Required token scopes
 
 `repo`, `read:org`, `read:packages`, and `delete:packages` are enough for
-everything bondebarras does — reading and deleting caches, artifacts,
-workflow runs, and container package versions; listing the organizations and
-repositories a token can see; and reading the Billing tab's usage report (a
-403 there just means the token's owner isn't an org owner — the org stays
-otherwise navigable). Branches, tags, and release assets need no scope
+everything bondebarras does but one optional display (see `admin:org`
+below) — reading and deleting caches, artifacts, workflow runs, and
+container package versions; listing the organizations and repositories a
+token can see; and reading the Billing tab's usage report (a 403 there just
+means the token's owner isn't an org owner — the org stays otherwise
+navigable). Branches, tags, and release assets need no scope
 beyond `repo`, already in that list — nothing new to grant for them.
 Repository archiving needs no new scope either: it goes through the same
 `repo`-scoped endpoint as everything else, and requires admin rights on the
 repository itself — a right the token either has or doesn't, not a scope to
 grant. Repository *deletion* is explicitly and permanently out of scope for
 this tool, so `delete_repo` is never required.
+
+Reading **budgets** is not a scope question: GitHub reserves the budgets
+endpoint for organization admins and billing managers. Anyone else is refused
+— observed as a 400, not the 403 the documentation announces — and the
+Billing tab reads `Budget Actions : illisible` instead of guessing, while
+`scan --json` reports `budgets_readable: false`. The rest of the tab, and the
+organization itself, are unaffected.
+
+`admin:org` is **optional**, and needed for one thing only: displaying an
+organization's artifact and log retention, which GitHub only reveals to that
+scope (or to the fine-grained "Actions policies" permission). bondebarras
+never changes the setting. Without it, the Billing tab reads
+`Rétention artefacts et journaux : illisible` and `scan --json` reports
+`artifact_retention_days: null`; everything else works unchanged.
 
 ---
 

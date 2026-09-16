@@ -23,9 +23,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   says how many such rows a press left unticked.
 - **Two per-repository gauges**, at the head of the resources column: Actions
   cache usage against GitHub's documented (but API-unexposed) 10 GiB
-  per-repository ceiling, and Actions minutes against the free monthly
-  allowance — both uncapped past 100 %, since GitHub itself does not clamp
-  there either.
+  per-repository ceiling, and Actions minutes against the allowance of the
+  organization's plan — `formule inconnue`, with no percentage, when the plan
+  cannot be read — both uncapped past 100 %, since GitHub itself does not
+  clamp there either.
 - **Load-after-pause with a per-session cache**: a repository's resources
   load once the cursor rests on it for 300 ms, are kept for the rest of the
   session, and `Entrée` forces an immediate reload, bypassing both the pause
@@ -34,6 +35,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **A progress row**, between the status line and the footer, while a purge,
   an archive, or a repository load runs — a real, counted done/total, never
   an estimate. Several purges running at once share one bar.
+- `scan --json`: `plan` and `minutes_allowance` per organization, `null` when
+  unknown. (#11)
+- Billing tab: Actions storage, in GB-hours, against the plan's included
+  storage (`free` 0.5 GB, `team` 2 GB, `enterprise` 50 GB) times the
+  displayed month's hours — the base is written on the gauge — with the
+  heaviest repositories named and a fixed line saying deleting artifacts
+  stops the accumulation but refunds nothing already counted. Public
+  repositories' storage is counted, and the tab says so. No extra request:
+  the usage report loaded at stage 1 already carried it. Measured on
+  2026-09-10: exec-d at 371.85 GB-hours in September, 359.88 of them in
+  `disconnected`. (#13)
+- Repositories column: a repository's GB-hours for the most recent month of
+  the usage report, with that month, on a detail line under its row, and a
+  ⚠ before a cache footprint past the included 10 GiB (10.7 Go as
+  displayed). (#13)
+- `scan --json`: `billing_month`, `storage_gbh` and `storage_allowance_gbh`
+  per organization, `storage_gbh` per repository. (#13)
+- Billing tab: the organization's Actions budget — its amount and whether it
+  blocks — read at stage 1, and what it means past the allowance: Actions
+  stopped at the allowance (0.00 $, as on exec-d), billed up to the budget
+  then stopped (5.00 $, as on cloudalpes), or billed without a ceiling (no
+  budget, as on SecondBrain-io). A gauge at 90 % or more with a blocking
+  budget carries a warning, on the report's most recent month. A per-SKU
+  Actions budget is named, not interpreted. Budgets that cannot be read — a
+  400 on organizations the account does not own — read `illisible`, never "no
+  budget". Read-only, permanently. (#14)
+- `scan --json`: `budgets_readable`, `actions_budget` and
+  `actions_sku_budgets`. (#14)
+- Billing tab: each organization's artifact and log retention, beside the
+  storage it governs, highlighted at 90 days or more when the organization
+  holds at least 36 GB-hours that month. The tab states that a workflow's
+  `retention-days` is bounded by this setting, and that a change only applies
+  to new artifacts and logs — verified on 2026-09-10, when an APK uploaded the
+  day before exec-d moved to 7 days kept its 2026-12-08 expiry. Read-only:
+  nothing here changes the setting. (#15)
+- `scan --json`: `artifact_retention_days`. (#15)
 
 ### Changed
 
@@ -62,6 +99,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   JWT; its default one pulls `rsa` (RUSTSEC-2023-0071, no fix available),
   so bondebarras selects `aws-lc-rs` instead. Precompiled packages are
   unaffected.
+- Billing tab: the minutes gauge measures against the allowance of the
+  organization's current plan — `free` 2,000, `team` 3,000, `enterprise`
+  50,000 — read from `GET /orgs/{org}` at stage 1, instead of the Free plan's
+  2,000 for every organization. Measured on 2026-09-10: exec-d (Team) read
+  50 % for 1,004 minutes where 33 % is right; SecondBrain-io (Enterprise) read
+  901 % for 18,016 where 36 % is right. An unreadable or unknown plan shows
+  the total and `formule inconnue`, with no percentage anywhere. (#11)
+- The Billing tab opens on the report's most recent month, not its oldest:
+  `←` pages back to older months, `→` forward to newer ones. (#11)
+- Token scopes: `admin:org` is optional — only the Billing tab's retention
+  line needs it and reads `illisible` without it; reading budgets needs a
+  role (organization admin or billing manager), not a scope. No scope joins
+  the required list. (#14, #15)
+- Billing tab: fits its content to the terminal's height instead of always
+  reserving a fixed row budget for the two per-repository breakdowns —
+  they shrink first, each keeping its `… et N autre(s)` line naming what
+  it left out. Past that, the tab drops content from the bottom, one whole
+  block at a time. The densest case — an `enterprise` organization, a
+  blocking-budget warning under both gauges, a flagged retention and a
+  runner SKU with no known multiplier — needs 33 rows to show everything;
+  below that it loses the unknown-SKU line, then the cost line, then the
+  retention notes.
+
+### Fixed
+
+- Billing tab: an organization that spent its Actions minutes on public
+  repositories now reads why its allowance shows `0 / 3 000` beside a real
+  bill — a public repository's runs are free and never counted against it.
+  The tab showed both figures and explained neither, so it looked like it
+  contradicted itself; it says this in the same words the resources column
+  has used since #11.
+- Resources column: `1 élément`, not `1 éléments`.
+- Billing tab: the per-repository storage rows group their thousands like
+  the gauge above them — `12 345.67 GB-h`, not `12345.67 GB-h`.
+- Three-column TUI: growing the terminal back after making it shorter no
+  longer leaves a column scrolled where the short frame had put it. With
+  the cursor low in a long repositories list, 100x50 → 80x24 → 100x50 drew
+  the list from its tenth row — hiding the only ⚠ one — with nineteen blank
+  rows underneath and room for the whole list. The cursor stayed visible
+  throughout, so nothing flagged it.
+- Billing tab: a note written across two lines is no longer cut after its
+  first line when the terminal is too short for it — it is shown whole or
+  not at all, like every other multi-line explanation the tab carries. At
+  80×24 the tab used to end on `Note : retention-days, dans un workflow,
+  fixe la durée`, with the rest of that sentence gone.
+- Billing tab: amounts are shown in US dollars (`6.15 $`), the currency of
+  GitHub's usage report (`pricePerUnit` is 0.006 for Actions Linux). They were
+  printed with a `€` sign — the right figure in the wrong currency. Nothing is
+  converted: bondebarras has no exchange rate and does not invent one. (#12)
 
 ## [0.5.0] - 2026-07-29
 

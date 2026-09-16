@@ -106,8 +106,11 @@ cta2 = "Install"
 <h3>Track billing</h3>
 <p class="mission-line">See which repository is burning the allowance.</p>
 <ul>
-<li>Actions-minutes usage against the free allowance, month by month</li>
+<li>Actions-minutes usage against the allowance of the organization's plan, month by month</li>
 <li>Per-repository breakdown, heaviest allowance consumer first</li>
+<li>Actions storage in GB-hours against the plan's included storage, with the repositories holding it</li>
+<li>The organization's Actions budget, and what it does once the allowance runs out</li>
+<li>Artifact and log retention, read-only — the setting that decides how long all of it is kept</li>
 <li>Strictly diagnostic — minutes can't be reclaimed after the fact</li>
 </ul>
 </div>
