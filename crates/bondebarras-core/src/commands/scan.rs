@@ -37,7 +37,14 @@ pub async fn run(client: &Client, orgs: &[String], json: bool) -> Result<()> {
 /// Pure — no network, no stdout — so every field can be asserted on directly.
 /// A figure the API did not give is `null`, never a default:
 /// `minutes_allowance` is `null` for an unreadable or unknown plan, not the
-/// Free plan's 2 000, and storage is `null` when billing is unreadable, not 0.
+/// Free plan's 2 000, and `storage_gbh` is `null` when billing is
+/// unreadable, not 0. `storage_allowance_gbh` degrades on `plan` alone, not
+/// on whether the usage report itself was read, so a known plan beside an
+/// unreadable report is a real, non-`null` `storage_allowance_gbh` next to
+/// a `null` `storage_gbh` — correct by design (the allowance is a fact
+/// about the plan; the usage is a fact about a report that could not be
+/// read), but worth spelling out since the two fields can otherwise read as
+/// contradictory.
 /// `actions_sku_budgets` is `[]` for a readable organization with no budget
 /// and `null` when the budgets are unreadable.
 /// `month` is the month storage is read for; `run` passes the current UTC
@@ -191,6 +198,33 @@ mod tests {
         assert!(v[1]["storage_gbh"].is_null(), "got: {}", v[1]);
         assert!(v[1]["storage_allowance_gbh"].is_null(), "got: {}", v[1]);
         assert!(v[1]["repos"][0]["storage_gbh"].is_null(), "got: {}", v[1]);
+    }
+
+    /// The mixed case the doc comment above `overview_json` now calls out:
+    /// `storage_allowance_gbh` degrades on `plan` alone, so a known plan
+    /// beside an unreadable usage report gives a real allowance next to a
+    /// `null` usage — the allowance is a fact about the plan, the usage a
+    /// fact about a report that could not be read, and the two need not
+    /// agree on whether there is something to say.
+    #[test]
+    fn a_known_plan_with_unreadable_billing_gives_an_allowance_but_no_usage() {
+        let org = OrgSummary {
+            login: "cloudalpes".into(),
+            plan: Some("team".into()),
+            billing: None,
+            ..Default::default()
+        };
+
+        let v = overview_json(&[org], "2026-09");
+
+        assert!(v[0]["storage_gbh"].is_null(), "got: {}", v[0]);
+        // Team's 2 GB × September's 720 hours: real, not null, despite the
+        // unreadable report right beside it.
+        assert!(
+            (number(&v[0]["storage_allowance_gbh"]) - 1_440.0).abs() < 1e-9,
+            "got: {}",
+            v[0]
+        );
     }
 
     /// `blocking` is a parameter, never a constant: every fixture used to

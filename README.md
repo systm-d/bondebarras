@@ -154,11 +154,12 @@ again by anything.
   Beside the storage, the organization's **artifact and log retention**
   (90 days is GitHub's default), highlighted when it is 90 days or more on an
   organization holding at least 36 GB-hours of storage that month — 10 % of
-  the smallest plan's included storage. It is the tap: every artifact a
-  workflow uploads is kept that long. The tab states the two things worth
-  knowing before changing it: a workflow's `retention-days` sets that one
-  artifact's duration, within this setting; and a change only applies to new
-  artifacts and logs. bondebarras only reads the setting.
+  the smallest plan's included storage (0.5 GB × 720 h = 360 GB-h), a fixed
+  figure independent of the displayed month's own hour count. It is the tap:
+  every artifact a workflow uploads is kept that long. The tab states the two
+  things worth knowing before changing it: a workflow's `retention-days` sets
+  that one artifact's duration, within this setting; and a change only
+  applies to new artifacts and logs. bondebarras only reads the setting.
 - **Headless CLI** — `bondebarras scan --json` for a machine-readable
   overview, and `bondebarras clean` for non-interactive cleanup, e.g. from a
   cron job.

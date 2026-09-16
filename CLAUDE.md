@@ -116,9 +116,10 @@ shim).
   and the negative case is the one that matters — a classifier keying on
   "closed" alone would offer to delete work someone meant to resume.
 - Required token scopes: `repo`, `read:org`, `read:packages`, and
-  `delete:packages` cover everything bondebarras does, including the Billing
-  tab's usage report (a 403 there just means the token's owner isn't an org
-  owner). Branches, tags, and release assets (v0.4) need no scope beyond
+  `delete:packages` cover everything bondebarras does but one optional
+  display (see `admin:org` below), including the Billing tab's usage report
+  (a 403 there just means the token's owner isn't an org owner). Branches,
+  tags, and release assets (v0.4) need no scope beyond
   `repo`, already in that list — neither does repository archiving (v0.5):
   same `repo`-scoped endpoint, gated by the token's admin rights on that one
   repository rather than a scope to grant. Repository *deletion* is
