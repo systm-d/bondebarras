@@ -261,6 +261,32 @@ impl BillingReport {
             .sum()
     }
 
+    /// Minutes of the month that never draw on the allowance: those of the
+    /// repositories outside `private_repos`.
+    ///
+    /// The mirror of `included_minutes`, over the same two filters — and
+    /// read for the same reason the Billing tab reads that one. An
+    /// organization whose allowance shows 0 beside a real bill spent its
+    /// minutes on public repositories, whose Actions runs GitHub gives away;
+    /// until the tab says so, a gauge at 0 % next to `brut 9.43 $` reads as
+    /// a contradiction (smoke S4).
+    ///
+    /// "Not private" rather than "public", the same reading
+    /// `included_minutes` already rests on: the usage report discounts both
+    /// kinds alike, so the repository listing stage 1 fetched is the only
+    /// place that distinction survives.
+    pub fn uncounted_minutes(&self, month: &str, private_repos: &HashSet<String>) -> u64 {
+        self.items
+            .iter()
+            .filter(|i| i.month == month && i.unit_type == "Minutes")
+            .filter(|i| !private_repos.contains(&i.repo))
+            .map(|i| {
+                let mult = sku_multiplier(&i.sku).unwrap_or(1) as f64;
+                (i.quantity * mult).round() as u64
+            })
+            .sum()
+    }
+
     /// `(gross, covered, billed)` for the month, all products together.
     pub fn cost(&self, month: &str) -> (f64, f64, f64) {
         self.items

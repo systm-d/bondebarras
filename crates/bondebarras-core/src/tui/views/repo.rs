@@ -307,10 +307,25 @@ const SIZELESS_WARNING: &str = "⚠ GitHub n'expose pas la taille de certaines r
 /// the one place that already enumerates every such kind.
 fn list_title(count: usize, ticked_bytes: u64, with_warning: bool) -> String {
     let ticked = human_size(ticked_bytes);
+    let items = plural(count, "élément");
     if with_warning {
-        format!(" RESSOURCES · {count} éléments · cochés {ticked} · {SIZELESS_WARNING} ")
+        format!(" RESSOURCES · {items} · cochés {ticked} · {SIZELESS_WARNING} ")
     } else {
-        format!(" RESSOURCES · {count} éléments · cochés {ticked} ")
+        format!(" RESSOURCES · {items} · cochés {ticked} ")
+    }
+}
+
+/// `count` and its noun, agreeing in number.
+///
+/// Smoke S5: the title read `RESSOURCES · 1 éléments` over a repository
+/// listing a single branch — live on `maxds-lyon/.github` and
+/// `SecondBrain-io/sbrain-auto-test`. French keeps the singular for zéro as
+/// well as for one, so only a count past one takes the `s`.
+fn plural(count: usize, noun: &str) -> String {
+    if count > 1 {
+        format!("{count} {noun}s")
+    } else {
+        format!("{count} {noun}")
     }
 }
 
@@ -1342,6 +1357,30 @@ mod tests {
         let title = list_title(3, 100, false);
         assert!(!title.contains("GitHub"), "got: {title}");
         assert!(title.contains("100 o"), "got: {title}");
+    }
+
+    /// Smoke S5: the title read `RESSOURCES · 1 éléments · cochés 0 o` over
+    /// a repository listing a single branch — seen live on
+    /// `maxds-lyon/.github` and `SecondBrain-io/sbrain-auto-test`. French
+    /// keeps the singular for zéro as well as for one, so only a count past
+    /// one takes the `s`.
+    ///
+    /// Each needle carries the separator that follows it, so `1 élément`
+    /// cannot be satisfied by the `1 éléments` this fixes.
+    #[test]
+    fn the_title_agrees_in_number_with_what_it_counts() {
+        for (count, expected) in [
+            (0, "0 élément ·"),
+            (1, "1 élément ·"),
+            (2, "2 éléments ·"),
+            (353, "353 éléments ·"),
+        ] {
+            let title = list_title(count, 0, false);
+            assert!(title.contains(expected), "got: {title}");
+            // The warning variant counts the same rows, and agrees the same.
+            let warned = list_title(count, 0, true);
+            assert!(warned.contains(expected), "got: {warned}");
+        }
     }
 
     /// Debt 2 of the v0.4 final review: `render` computed the flag it hands

@@ -73,7 +73,13 @@ const EVICTION: &str = "⚠ évince : GitHub supprime déjà les caches les moin
                         compris ceux de la branche par défaut, au profit des PR fermées";
 
 /// Why a public repository's minutes gauge reads 0 %.
-const PUBLIC_REASON: &str =
+///
+/// `pub(crate)`: the Billing tab says the same thing when an organization's
+/// whole allowance reads 0 while its report shows minutes and a bill
+/// (`views::billing::minutes_fixed_lines`, smoke S4). One sentence, said in
+/// one place — two phrasings of the same fact would each look like a
+/// different fact.
+pub(crate) const PUBLIC_REASON: &str =
     "(dépôt public : minutes Actions gratuites et illimitées, hors plafond)";
 
 /// Why a minutes gauge gives a total and no percentage: no allowance is
@@ -273,6 +279,33 @@ mod tests {
         let line = text(&minutes_gauge_line(1_004, false, None, 60));
         assert!(!line.contains('%'), "got: {line}");
         assert!(line.contains("formule inconnue"), "got: {line}");
+    }
+
+    /// Review RW-1: `UNKNOWN_PLAN` carries its own `· ` for the case where
+    /// the explanation sits beside the figures, and after A6 split the
+    /// wrapped form's assertions into two halves nothing pinned that joined
+    /// form any more — deleting `· ` from the constant left the suite green.
+    /// Both forms are pinned here: the whole row when it fits on one, and
+    /// the halves, dot-free, when it does not.
+    #[test]
+    fn the_unknown_plan_explanation_joins_its_figures_with_a_middle_dot() {
+        let inline = text(&minutes_gauge_line(1_000, false, None, 60));
+        assert_eq!(
+            inline,
+            "Minutes  1 000 min · formule inconnue, pas de quota"
+        );
+
+        let wrapped = minutes_gauge_line(1_000, false, None, 20);
+        let rows: Vec<String> = wrapped
+            .iter()
+            .map(|line| text(std::slice::from_ref(line)).trim().to_string())
+            .collect();
+        assert_eq!(rows[0], "Minutes  1 000 min");
+        assert!(
+            rows[1..].iter().all(|row| !row.starts_with('·')),
+            "a wrapped row opens on the separator: {rows:?}"
+        );
+        assert_eq!(rows[1..].join(" "), "formule inconnue, pas de quota");
     }
 
     /// T5-m6: on rows of their own — an inner width under 50 cells, forcing

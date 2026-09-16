@@ -239,6 +239,14 @@ fn sku_label(sku: &str) -> String {
 /// (`1 004` -> `1 0`).
 const MINUTE_REPO_WIDTH: usize = 20;
 
+/// How wide an explanation needing rows of its own is broken to
+/// (`views::wrap_words`), its two-space indent not counted.
+///
+/// 54 plus that indent is 56 cells, the line budget this tab works to (plan
+/// item 4.16), well inside the 58 a 60-column frame leaves the panel. Broken
+/// at spaces, so no word of it is ever cut.
+const REASON_WIDTH: usize = 54;
+
 /// One row of the per-repository breakdown, in the shape of the design
 /// mockup: repo, raw quantity, runner (with its multiplier), equivalent.
 fn minute_line_row(line: &MinuteLine) -> Line<'static> {
@@ -256,13 +264,19 @@ fn minute_line_row(line: &MinuteLine) -> Line<'static> {
 
 /// One row of the storage breakdown: the repository, cut to its 20 cells so
 /// the GB-hours keep their column, a space, then its GB-hours right-aligned
-/// on 13 cells (room for `99999.99 GB-h`). The space is written out rather
+/// on 14 cells (room for `99 999.99 GB-h`). The space is written out rather
 /// than left to the padding: a figure as wide as its field has none, and a
 /// cut name would run into it.
+///
+/// Grouped through `thousands_gbh` (review RW-2): the storage gauge a few
+/// rows above reads `54 000.00 / 36 000 GB-h`, and the same quantity left
+/// ungrouped here read as a different number. Grouping costs the field one
+/// cell — 13 to 14 — which the row absorbs: 38 of the 58 cells a 60-column
+/// frame leaves inside the panel.
 fn storage_line_row(line: &StorageLine) -> Line<'static> {
-    let amount = format!("{:.2} GB-h", line.gbh);
+    let amount = format!("{} GB-h", thousands_gbh(line.gbh));
     Line::from(Span::styled(
-        format!("   {} {amount:>13}", views::fit(&line.repo, 20)),
+        format!("   {} {amount:>14}", views::fit(&line.repo, 20)),
         theme::muted(),
     ))
 }
@@ -529,6 +543,19 @@ fn minutes_fixed_lines(
             theme::text_style(),
         )),
     ]];
+    // Smoke S4: 0 against the allowance beside a real bill is right — a
+    // public repository's Actions runs are free and never counted — and
+    // reads as a contradiction until the tab says why. The resources
+    // column's own minutes gauge has carried this sentence since #11; this
+    // is that sentence, not a second phrasing of the same fact.
+    if used == 0 && report.uncounted_minutes(month, private) > 0 {
+        lines.push(
+            views::wrap_words(gauges::PUBLIC_REASON, REASON_WIDTH)
+                .into_iter()
+                .map(|row| Line::from(Span::styled(format!("  {row}"), theme::muted())))
+                .collect(),
+        );
+    }
     // No allowance, no percentage — and so nothing to warn against either:
     // the budget would have no ratio to be near.
     if let Some(allowance) = allowance {
@@ -1055,6 +1082,78 @@ mod tests {
         assert_absent_at_every_width(&mut app, "50 %");
     }
 
+    /// Why the tab reads `0 / 3 000` beside a real bill, word for word as
+    /// the user sees it — typed out here rather than read from the
+    /// production constant, the way `views::repo`'s own gauge tests do, so a
+    /// change to what the screen says cannot pass unnoticed.
+    const PUBLIC_MINUTES_REASON: &str =
+        "(dépôt public : minutes Actions gratuites et illimitées, hors plafond)";
+
+    /// The tab's rows as prose: side borders stripped, blank rows dropped,
+    /// rows joined by single spaces — so a sentence broken across rows reads
+    /// back whole, and one clipped at a border does not.
+    fn prose(screen: &str) -> String {
+        crate::tui::views::testing::unwrapped(screen)
+    }
+
+    /// Smoke S4: exec-d's Billing tab showed `0 / 3 000     0 %` beside
+    /// `brut 9.43 $` and explained neither. Both figures are right — the
+    /// 1 549 Linux minutes GitHub billed that month belong to `terminus-32`,
+    /// a *public* repository, and a public repository's Actions runs never
+    /// draw on the allowance — but a reader sees "no minutes used" next to
+    /// nearly ten dollars of Actions, and the tab looks like it contradicts
+    /// itself. The resources column has had the sentence for this since #11;
+    /// the tab now says it in the same words, not a second phrasing.
+    ///
+    /// The reason is read back as prose, not as a row: it is wider than the
+    /// tab's 56-cell line budget and goes on rows of its own, broken at
+    /// spaces.
+    #[test]
+    fn a_zero_allowance_beside_a_real_bill_says_the_minutes_are_public() {
+        assert_eq!(
+            PUBLIC_MINUTES_REASON,
+            gauges::PUBLIC_REASON,
+            "the tab and the resources column must say this in the same words"
+        );
+        let mut org = exec_d_september();
+        org.plan = Some("team".into());
+        // `terminus-32` is not in `repos`, so it is not private — the one
+        // signal that separates a public repository from a private one.
+        org.repos = vec![private_repo("disconnected")];
+        org.billing = Some(BillingReport {
+            items: vec![usage(
+                "2026-09",
+                "Actions Linux",
+                "Minutes",
+                1_549.0,
+                9.43,
+                "terminus-32",
+            )],
+        });
+        let mut app = billing_app(org);
+        let s = screen(&mut app, 80, 50);
+        assert!(s.contains("0 / 3 000"), "the gauge is not zero:\n{s}");
+        assert!(s.contains("brut 9.43 $"), "the bill is not on screen:\n{s}");
+        assert!(
+            prose(&s).contains(PUBLIC_MINUTES_REASON),
+            "the zero allowance is left unexplained beside a real bill:\n{s}"
+        );
+    }
+
+    /// The other half of the rule, and the one that can fail on a condition
+    /// written too loosely: an organization whose minutes *are* private and
+    /// counted says nothing of the sort, at any width. Zero is not the
+    /// trigger on its own either — `exec_d_september`'s 1 004 minutes are
+    /// real, and an unread plan already has its own reason to give.
+    #[test]
+    fn a_counted_month_never_claims_its_minutes_are_public() {
+        let mut org = exec_d_september();
+        org.plan = Some("team".into());
+        let mut app = billing_app(org);
+        assert_shown_at_every_size(&mut app, "1 004 / 3 000");
+        assert_absent_at_every_width(&mut app, "dépôt public");
+    }
+
     /// No plan, no percentage — anywhere in the tab, not only on the minutes
     /// line. Later blocks (storage, budget warnings) must keep this green.
     #[test]
@@ -1505,7 +1604,7 @@ mod tests {
             .collect()
         };
         let long = text("ptitjardinier-app-monorepo");
-        assert_eq!(long, "   ptitjardinier-app-m…   359.88 GB-h");
+        assert_eq!(long, "   ptitjardinier-app-m…    359.88 GB-h");
         assert_eq!(long.chars().count(), text("disconnected").chars().count());
     }
 
@@ -1572,7 +1671,7 @@ mod tests {
         let mut app = billing_app(org);
         // Breakdown-row needle: width-only sweep (see
         // `assert_shown_at_every_width`).
-        assert_shown_at_every_width(&mut app, "ptitjardinier-app-m… 12345.67 GB-h");
+        assert_shown_at_every_width(&mut app, "ptitjardinier-app-m… 12 345.67 GB-h");
     }
 
     /// `org` with the budgets stage 1 read: `None` when the listing itself
@@ -2101,8 +2200,10 @@ mod tests {
 
     /// One organization for the height census below: a plan, a budget, a
     /// retention setting, whether each gauge sits near enough its quota for
-    /// a blocking budget to warn under it, and whether the month holds a SKU
-    /// `sku_multiplier` does not know — one more row in the cost block.
+    /// a blocking budget to warn under it, whether the month holds a SKU
+    /// `sku_multiplier` does not know — one more row in the cost block — and
+    /// whether its minutes belong to a public repository, which costs the
+    /// minutes block the two rows of `gauges::PUBLIC_REASON` (smoke S4).
     ///
     /// The figures are derived from the plan rather than written down, so
     /// "near its quota" means 95 % of whatever that plan includes, for every
@@ -2114,6 +2215,7 @@ mod tests {
         minutes_near_quota: bool,
         storage_near_quota: bool,
         unknown_sku: bool,
+        public_minutes: bool,
     ) -> OrgSummary {
         let allowance = included_minutes_for(plan).unwrap_or(2_000) as f64;
         let minutes = if minutes_near_quota {
@@ -2129,6 +2231,15 @@ mod tests {
         } else {
             40.0
         };
+        // Whose minutes these are decides whether they count at all: a
+        // repository absent from `repos` is not private, so its minutes are
+        // free, the gauge reads 0, and the tab explains that zero instead of
+        // warning about it.
+        let minutes_repo = if public_minutes {
+            "terminus-32"
+        } else {
+            "disconnected"
+        };
         let mut items = vec![
             usage(
                 "2026-09",
@@ -2136,7 +2247,7 @@ mod tests {
                 "Minutes",
                 minutes,
                 6.0,
-                "disconnected",
+                minutes_repo,
             ),
             usage(
                 "2026-09",
@@ -2154,7 +2265,7 @@ mod tests {
                 "Minutes",
                 5.0,
                 0.0,
-                "disconnected",
+                minutes_repo,
             ));
         }
         OrgSummary {
@@ -2195,7 +2306,26 @@ mod tests {
             true,
             true,
             true,
+            false,
         )
+    }
+
+    /// Every combination of the four independent yes/no facts `census_org`
+    /// takes, as `[minutes near quota, storage near quota, unknown SKU,
+    /// public minutes]` — flattened so the census below stays four loops
+    /// deep instead of seven.
+    fn flag_sets() -> Vec<[bool; 4]> {
+        let mut out = Vec::new();
+        for minutes_near in [false, true] {
+            for storage_near in [false, true] {
+                for unknown_sku in [false, true] {
+                    for public_minutes in [false, true] {
+                        out.push([minutes_near, storage_near, unknown_sku, public_minutes]);
+                    }
+                }
+            }
+        }
+        out
     }
 
     /// The terminal height at which `org`'s tab shows everything it has: the
@@ -2225,10 +2355,11 @@ mod tests {
     /// combination the tab can render — five plan variants (including the
     /// two that yield no quota at all), four budget states, three retention
     /// states, each gauge near its quota or not, with and without an unknown
-    /// SKU — measures each through `tab_lines`, and takes the maximum. The
-    /// README and the CHANGELOG are then read from disk and must carry that
-    /// very number: change what the tab draws and this test fails until the
-    /// documentation follows.
+    /// SKU, and with the month's minutes public or private — measures each
+    /// through `tab_passages`, and takes the maximum. The README and the
+    /// CHANGELOG are then read from disk and must carry that very number:
+    /// change what the tab draws and this test fails until the documentation
+    /// follows.
     ///
     /// Not covered by the floor, and deliberately: a per-SKU budget adds two
     /// rows and GitHub allows any number of them, as it does of unknown
@@ -2259,27 +2390,25 @@ mod tests {
                     ("quiet", quiet_retention),
                     ("illisible", None),
                 ] {
-                    for minutes_near in [false, true] {
-                        for storage_near in [false, true] {
-                            for unknown_sku in [false, true] {
-                                let org = census_org(
-                                    plan,
-                                    budgets.clone(),
-                                    retention,
-                                    minutes_near,
-                                    storage_near,
-                                    unknown_sku,
-                                );
-                                census.push((
-                                    format!(
-                                        "plan {plan:?}, budget {budget_name}, retention \
-                                         {retention_name}, minutes near {minutes_near}, storage \
-                                         near {storage_near}, unknown SKU {unknown_sku}"
-                                    ),
-                                    needed_rows(&org),
-                                ));
-                            }
-                        }
+                    for [minutes_near, storage_near, unknown_sku, public_minutes] in flag_sets() {
+                        let org = census_org(
+                            plan,
+                            budgets.clone(),
+                            retention,
+                            minutes_near,
+                            storage_near,
+                            unknown_sku,
+                            public_minutes,
+                        );
+                        census.push((
+                            format!(
+                                "plan {plan:?}, budget {budget_name}, retention \
+                                 {retention_name}, minutes near {minutes_near}, storage near \
+                                 {storage_near}, unknown SKU {unknown_sku}, public minutes \
+                                 {public_minutes}"
+                            ),
+                            needed_rows(&org),
+                        ));
                     }
                 }
             }

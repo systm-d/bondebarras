@@ -124,6 +124,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Billing tab: an organization that spent its Actions minutes on public
+  repositories now reads why its allowance shows `0 / 3 000` beside a real
+  bill — a public repository's runs are free and never counted against it.
+  The tab showed both figures and explained neither, so it looked like it
+  contradicted itself; it says this in the same words the resources column
+  has used since #11.
+- Resources column: `1 élément`, not `1 éléments`.
+- Billing tab: the per-repository storage rows group their thousands like
+  the gauge above them — `12 345.67 GB-h`, not `12345.67 GB-h`.
 - Three-column TUI: growing the terminal back after making it shorter no
   longer leaves a column scrolled where the short frame had put it. With
   the cursor low in a long repositories list, 100x50 → 80x24 → 100x50 drew
