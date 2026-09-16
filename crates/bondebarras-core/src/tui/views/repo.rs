@@ -1517,7 +1517,18 @@ mod tests {
                             y compris ceux de la branche par défaut, au profit des PR fermées";
     const PUBLIC_REASON: &str =
         "0 % (dépôt public : minutes Actions gratuites et illimitées, hors plafond)";
-    const UNKNOWN_PLAN: &str = "1000 min · formule inconnue, pas de quota";
+    // Grouped like the Billing tab's own gauges (review FR-tui-3): the same
+    // figure read two different ways in one session would look like two
+    // different numbers.
+    //
+    // Split in two, unlike `CACHE_CAVEAT`/`EVICTION`: review T5-m6 strips
+    // the `· ` that used to join them when the explanation wraps onto rows
+    // of its own — a floating bullet with nothing to its left — so the
+    // joined prose legitimately reads with the separator inline and
+    // without it wrapped. Checking both halves separately stays true
+    // either way; one fixed string with `· ` baked in could not.
+    const UNKNOWN_PLAN_FIGURES: &str = "1 000 min";
+    const UNKNOWN_PLAN_REASON: &str = "formule inconnue, pas de quota";
 
     /// Final review I4 and smoke S1: spec §5 wants the hardcoded ceiling
     /// said ("la jauge le dit") and a public repository's 0 % given with its
@@ -1567,7 +1578,7 @@ mod tests {
             );
             let minutes = row_holding(&column, "50 %");
             assert!(
-                minutes.contains("1000 / 2000"),
+                minutes.contains("1 000 / 2 000"),
                 "the minutes figures are cut at width {width}: {minutes:?}\n{column}"
             );
             assert!(
@@ -1584,12 +1595,12 @@ mod tests {
             let prose = views::testing::unwrapped(&column);
             let minutes = row_holding(&column, "Minutes");
             assert!(
-                minutes.contains("1000 min") && !minutes.contains('%'),
+                minutes.contains("1 000 min") && !minutes.contains('%'),
                 "the unknown plan's minutes row is cut or has a percentage at width \
                  {width}: {minutes:?}\n{column}"
             );
             assert!(
-                prose.contains(UNKNOWN_PLAN),
+                prose.contains(UNKNOWN_PLAN_FIGURES) && prose.contains(UNKNOWN_PLAN_REASON),
                 "the unknown plan's explanation is not whole at width {width}:\n{column}"
             );
         }
@@ -1621,8 +1632,9 @@ mod tests {
                 );
                 let at = format!("at {width}x{height}, no plan read:\n{column}");
                 if column.contains("Minutes") {
+                    let prose = views::testing::unwrapped(&column);
                     assert!(
-                        views::testing::unwrapped(&column).contains(UNKNOWN_PLAN),
+                        prose.contains(UNKNOWN_PLAN_FIGURES) && prose.contains(UNKNOWN_PLAN_REASON),
                         "the unknown plan's minutes gauge shows without all of its \
                          explanation {at}"
                     );

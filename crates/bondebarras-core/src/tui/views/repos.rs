@@ -480,7 +480,14 @@ mod tests {
                     }
                 } else {
                     drawable_seen += 1;
-                    if !title.contains(" DÉPÔTS ") || !column.contains("disconnec…") {
+                    // Review T9-f: `title.contains(" DÉPÔTS ")` alone is
+                    // also true of `TOO_SHORT_TITLE` (" DÉPÔTS · fenêtre
+                    // trop basse "), so it could not fail on a title that
+                    // never shed the too-short suffix — the companion
+                    // negative check below was doing all the work. The
+                    // title's border fill (`┌ DÉPÔTS ───…`) is a `─` right
+                    // after the space, never `·`, so this discriminates.
+                    if !title.contains(" DÉPÔTS ─") || !column.contains("disconnec…") {
                         failures.push(format!("no title or no repository row at {at}:\n{column}"));
                     }
                     if column.contains("fenêtre trop basse") {

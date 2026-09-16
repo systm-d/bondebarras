@@ -116,6 +116,15 @@ fn own_rows(text: &str, style: Style, width: u16) -> Vec<Line<'static>> {
 /// fits in `width`, otherwise the figures alone and the explanation on rows
 /// of its own under them — the rule `views::repo::column_head` follows for
 /// the size explanation (ruling B). Never clipped either way.
+///
+/// `UNKNOWN_PLAN` carries a leading `· ` for the beside-the-figures case —
+/// the separator between the figures and its reason, the way `gauge_line`
+/// puts one between two spans on one line. Review T5-m6: on rows of their
+/// own, that same `· ` became the first character of an otherwise bare row,
+/// a floating bullet with nothing to its left; stripped here, since a row
+/// with nothing before it needs no separator from it. `PUBLIC_REASON` never
+/// carries this prefix — its own parentheses already mark it off — so it
+/// never had this defect and needs no matching change.
 fn explained(figures: String, style: Style, explanation: &str, width: u16) -> Vec<Line<'static>> {
     let beside = format!(" {explanation}");
     if views::cells(&figures) + views::cells(&beside) <= usize::from(width) {
@@ -124,8 +133,9 @@ fn explained(figures: String, style: Style, explanation: &str, width: u16) -> Ve
             Span::styled(beside, style),
         ])];
     }
+    let own = explanation.strip_prefix("· ").unwrap_or(explanation);
     let mut lines = vec![Line::from(Span::styled(figures, style))];
-    lines.extend(own_rows(explanation, style, width));
+    lines.extend(own_rows(own, style, width));
     lines
 }
 
@@ -188,14 +198,23 @@ pub fn minutes_gauge_line(
     }
     let Some(allowance) = allowance else {
         return explained(
-            format!("Minutes  {used} min"),
+            format!("Minutes  {} min", views::thousands(used)),
             theme::muted(),
             UNKNOWN_PLAN,
             width,
         );
     };
     let pct = percent(used, allowance);
-    let figures = figures_row("Minutes ", pct, &format!("{used} / {allowance}"), width);
+    let figures = figures_row(
+        "Minutes ",
+        pct,
+        &format!(
+            "{} / {}",
+            views::thousands(used),
+            views::thousands(allowance)
+        ),
+        width,
+    );
     vec![Line::from(Span::styled(figures, theme::text_style()))]
 }
 
@@ -243,7 +262,10 @@ mod tests {
         // exec-d on Team: 1 004 of 3 000. Against the old 2 000, 50 %.
         let line = text(&minutes_gauge_line(1_004, false, Some(3_000), 60));
         assert!(line.contains(" 33 %"), "got: {line}");
-        assert!(line.contains("1004 / 3000"), "got: {line}");
+        // Grouped like the Billing tab's own gauge for the same allowance
+        // (review FR-tui-3): the same figure read two different ways in one
+        // session would look like two different numbers.
+        assert!(line.contains("1 004 / 3 000"), "got: {line}");
     }
 
     #[test]
@@ -251,6 +273,25 @@ mod tests {
         let line = text(&minutes_gauge_line(1_004, false, None, 60));
         assert!(!line.contains('%'), "got: {line}");
         assert!(line.contains("formule inconnue"), "got: {line}");
+    }
+
+    /// T5-m6: on rows of their own — an inner width under 50 cells, forcing
+    /// the explanation off the figures' row — `UNKNOWN_PLAN`'s leading `· `
+    /// used to become the first character of an otherwise bare row.
+    /// `PUBLIC_REASON` carries no such prefix, so it never had a matching
+    /// defect to fix.
+    #[test]
+    fn an_unknown_plan_explanation_does_not_wrap_starting_with_the_middle_dot() {
+        let lines = minutes_gauge_line(1_004, false, None, 20);
+        assert!(
+            lines.len() > 1,
+            "expected the explanation pushed to rows of its own: {lines:?}"
+        );
+        let first_explanation_row = text(&lines[1..2]);
+        assert!(
+            !first_explanation_row.trim_start().starts_with('·'),
+            "got: {first_explanation_row:?}"
+        );
     }
 
     /// Amended (2026-09-11, controller): the un-amended version of this test

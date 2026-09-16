@@ -44,6 +44,20 @@ const RETENTION_NOTES: [&str; 4] = [
 /// month there is no hour count to build a quota from, whatever the plan.
 const NO_USAGE: &str = "aucun usage signalé";
 
+/// Why a gauge shows a total with no percentage: either no plan was read at
+/// all (`formule inconnue`), or one was — the header already names it — but
+/// this crate has no included-quota figure for it (`quota inconnu`). Review
+/// T5-m5: the two are different facts, and read as one contradicted the
+/// other — the header saying `· formule legacy-plan` while the gauge right
+/// below said `formule inconnue`, when the plan was in fact known, only its
+/// quota was not.
+fn no_quota_reason(plan: Option<&str>) -> String {
+    match plan {
+        Some(name) => format!("formule {name}, quota inconnu"),
+        None => "formule inconnue, pas de quota".to_string(),
+    }
+}
+
 /// One line summarising allowance consumption.
 ///
 /// Deliberately not clamped at 100 %: an org well past its included minutes
@@ -52,16 +66,17 @@ const NO_USAGE: &str = "aucun usage signalé";
 /// gauges rather than kept as a second copy of the same uncapped,
 /// zero-guarded formula. Without a known allowance — no plan read, or a plan
 /// this crate has no figure for — the line gives the total and says why
-/// there is no percentage, rather than dividing by a guess.
-pub fn gauge_line(used: u64, allowance: Option<u64>) -> String {
+/// there is no percentage (`no_quota_reason`), rather than dividing by a
+/// guess.
+pub fn gauge_line(used: u64, allowance: Option<u64>, plan: Option<&str>) -> String {
     let Some(allowance) = allowance else {
-        return format!("{} min   formule inconnue, pas de quota", thousands(used));
+        return format!("{} min   {}", views::thousands(used), no_quota_reason(plan));
     };
     let percent = gauges::percent(used, allowance);
     format!(
         "{} / {}   {}  {} %",
-        thousands(used),
-        thousands(allowance),
+        views::thousands(used),
+        views::thousands(allowance),
         bar(percent),
         percent
     )
@@ -100,31 +115,44 @@ fn storage_percent(used: f64, quota: StorageQuota) -> u64 {
 /// Actions storage consumed against the plan's included GB-hours, with the
 /// hour base written out — the base is an open measurement, so the line
 /// never lets a percentage stand without it. Not clamped, like the minutes.
-pub fn storage_gauge_line(used: f64, quota: Option<StorageQuota>) -> String {
+///
+/// `used` is grouped the same way `quota.gbh` is (`thousands_gbh`, review
+/// FR-tui-2): an Enterprise org near its quota used to read
+/// `54000.00 / 36 000 GB-h` — the same quantity, formatted two ways on one
+/// line, because only one side of the `/` went through `thousands`.
+pub fn storage_gauge_line(used: f64, quota: Option<StorageQuota>, plan: Option<&str>) -> String {
     let Some(quota) = quota else {
-        return format!("{used:.2} GB-h   formule inconnue, pas de quota");
+        return format!("{} GB-h   {}", thousands_gbh(used), no_quota_reason(plan));
     };
     let percent = storage_percent(used, quota);
     format!(
-        "{used:.2} / {} GB-h   {}  {} %   base {} h",
-        thousands(quota.gbh.round() as u64),
+        "{} / {} GB-h   {}  {} %   base {} h",
+        thousands_gbh(used),
+        views::thousands(quota.gbh.round() as u64),
         capped_bar(percent, STORAGE_BAR_CELLS),
         percent,
         quota.hours
     )
 }
 
-/// Groups digits with a narrow space, as French convention wants.
-fn thousands(n: u64) -> String {
-    let s = n.to_string();
-    let mut out = String::new();
-    for (i, c) in s.chars().enumerate() {
-        if i > 0 && (s.len() - i).is_multiple_of(3) {
-            out.push(' ');
-        }
-        out.push(c);
+/// A GB-hours figure with its integer part grouped like `views::thousands`
+/// groups a whole number, its two decimals kept ungrouped: `54 000.00`, not
+/// `54000.00` nor `54 000.00`'s decimals split apart. Built on `{n:.2}`'s
+/// own rounding — the same rounding every other GB-hours figure in this
+/// module already uses — rather than a second, float-based rounding that
+/// could disagree with it by a cent.
+fn thousands_gbh(n: f64) -> String {
+    let formatted = format!("{n:.2}");
+    match formatted.split_once('.') {
+        Some((whole, cents)) => match whole.parse::<u64>() {
+            Ok(whole) => format!("{}.{cents}", views::thousands(whole)),
+            // Never observed (GB-hours are never negative), but a figure
+            // `thousands` cannot group is shown as `{n:.2}` gave it rather
+            // than panicking.
+            Err(_) => formatted,
+        },
+        None => formatted,
     }
-    out
 }
 
 /// Short runner name plus its multiplier, e.g. `"Windows ×2"`. An unknown SKU
@@ -143,16 +171,31 @@ fn sku_label(sku: &str) -> String {
     }
 }
 
+/// Widest a repository name gets in `minute_line_row` before it is cut with
+/// `…` (`views::fit`, review FR-tui-1). The row's other fields — the
+/// leading indent, the quantity, a separating space, the SKU label and the
+/// equivalent — need 34 cells at their nominal, padded-but-unbounded
+/// widths (`3 + 8 + 1 + 12 + 10`); this leaves 20 of the 58-cell inner
+/// width a 60-column frame gives the row (matching `storage_line_row`'s own
+/// `views::fit(&line.repo, 20)` just below), with 4 cells of slack for a
+/// quantity or equivalent that runs slightly past its own nominal width —
+/// the same margin `STORAGE_BAR_CELLS` leaves the hour base. Without this,
+/// a name past 12 characters (`claudine-landing-positioning`, 28, already a
+/// fixture elsewhere in this branch) pushed the row past 58 cells, and the
+/// equivalent figure was clipped into a different, shorter number
+/// (`1 004` -> `1 0`).
+const MINUTE_REPO_WIDTH: usize = 20;
+
 /// One row of the per-repository breakdown, in the shape of the design
 /// mockup: repo, raw quantity, runner (with its multiplier), equivalent.
 fn minute_line_row(line: &MinuteLine) -> Line<'static> {
     Line::from(Span::styled(
         format!(
-            "   {:<12}{:>8} {:<12}{:>10}",
-            line.repo,
-            thousands(line.quantity),
+            "   {}{:>8} {:<12}{:>10}",
+            views::fit(&line.repo, MINUTE_REPO_WIDTH),
+            views::thousands(line.quantity),
             sku_label(&line.sku),
-            thousands(line.equivalent),
+            views::thousands(line.equivalent),
         ),
         theme::muted(),
     ))
@@ -234,8 +277,15 @@ fn budget_lines(budgets: Option<&[Budget]>) -> Vec<Line<'static>> {
         } else {
             "alerte seule"
         };
+        // Review T12-m3: `mode` right after "SKU" rather than trailing the
+        // line, so a long SKU name (`b.sku` is never bounded — GitHub's own
+        // name, past roughly 27 characters at 60 columns) cannot push the
+        // `bloquant` / `alerte seule` distinction — the whole reason this
+        // line exists — off the frame. Ratatui clips a line's tail when it
+        // outgrows its area, never its head, so anything placed early
+        // always survives.
         lines.push(Line::from(Span::styled(
-            format!("Budget SKU {} : {} · {mode}", b.sku, usd(b.amount as f64)),
+            format!("Budget SKU {mode} {} : {}", b.sku, usd(b.amount as f64)),
             theme::muted(),
         )));
         lines.push(Line::from(Span::styled(
@@ -262,9 +312,16 @@ fn budget_warning_lines(quota: &str, percent: u64, budget: Option<&Budget>) -> V
         )
     };
     vec![
+        // Review T12-m3: `bloquant :` right after the amount, ahead of
+        // `percent` and `quota`, so a five-digit budget with a four-digit
+        // percentage (`9999 % du quota de stockage`, the widest realistic
+        // case at 60 columns) cannot clip the trailing colon that
+        // introduces `consequence` on the next line — the same
+        // head-survives-a-clipped-tail reasoning as the SKU budget line
+        // just above.
         Line::from(Span::styled(
             format!(
-                "⚠ {percent} % du quota de {quota}, budget {} bloquant :",
+                "⚠ budget {} bloquant : {percent} % du quota de {quota}",
                 usd(b.amount as f64)
             ),
             theme::status_warn(),
@@ -347,29 +404,56 @@ fn private_repos(org: &OrgSummary) -> HashSet<String> {
         .collect()
 }
 
-/// The first `MAX_BREAKDOWN_LINES` rows, then `… et N autre(s) {rest}` when
-/// some were left out: a truncation that leaves no trace would bury the
-/// count of hidden rows. Every breakdown of the tab truncates through here.
-fn breakdown<T>(rows: &[T], row: impl Fn(&T) -> Line<'static>, rest: &str) -> Vec<Line<'static>> {
-    let mut lines: Vec<Line<'static>> = rows.iter().take(MAX_BREAKDOWN_LINES).map(row).collect();
-    if rows.len() > MAX_BREAKDOWN_LINES {
+/// How many of `rows_len` rows a breakdown may show as its own lines before
+/// it must summarise the rest instead, given `share` — its slice of the
+/// body height `tab_lines` computed after every fixed line took its own
+/// (final-review-inputs.md, "the no-scroll item").
+///
+/// `MAX_BREAKDOWN_LINES` stays the ceiling whenever `share` has room for it
+/// and the one summary line it may still need — the ordinary case, where
+/// the height sweep in `tab_lines`'s own tests passes 50 rows and neither
+/// breakdown is capped below it. Only once `share` cannot hold that does
+/// the cap give way to it, always leaving one line free for the summary —
+/// so `breakdown` never shows more rows than `share` allows *together with*
+/// its own `… et N autre(s)` line, except the zero-share floor: a breakdown
+/// given no room at all still shows that line alone, one line over its
+/// empty budget, "rather than a silently truncated list with no sign of
+/// it."
+fn breakdown_cap(rows_len: usize, share: usize) -> usize {
+    let ideal = rows_len.min(MAX_BREAKDOWN_LINES);
+    let ideal_total = ideal + usize::from(rows_len > MAX_BREAKDOWN_LINES);
+    if ideal_total <= share {
+        ideal
+    } else {
+        share.saturating_sub(1)
+    }
+}
+
+/// The first `cap` rows, then `… et N autre(s) {rest}` when some were left
+/// out: a truncation that leaves no trace would bury the count of hidden
+/// rows. Every breakdown of the tab truncates through here, `cap` coming
+/// from `breakdown_cap`.
+fn breakdown<T>(
+    rows: &[T],
+    row: impl Fn(&T) -> Line<'static>,
+    rest: &str,
+    cap: usize,
+) -> Vec<Line<'static>> {
+    let mut lines: Vec<Line<'static>> = rows.iter().take(cap).map(row).collect();
+    if rows.len() > cap {
         lines.push(Line::from(Span::styled(
-            format!(
-                "   … et {} autre(s) {rest}",
-                rows.len() - MAX_BREAKDOWN_LINES
-            ),
+            format!("   … et {} autre(s) {rest}", rows.len() - cap),
             theme::muted(),
         )));
     }
     lines
 }
 
-/// The minutes gauge, the budget warning it may carry, and the
-/// per-repository breakdown behind it.
-///
-/// The breakdown is the tab's reason to exist: minutes cannot be reclaimed
-/// once burnt, so the actionable part is *which repository* burnt them.
-fn minutes_block(
+/// The minutes gauge and the budget warning it may carry — everything about
+/// the minutes block except its per-repository breakdown, whose length
+/// `tab_lines` now decides from the available height rather than always
+/// `MAX_BREAKDOWN_LINES`.
+fn minutes_fixed_lines(
     report: &BillingReport,
     month: &str,
     private: &HashSet<String>,
@@ -384,7 +468,7 @@ fn minutes_block(
             theme::text_style(),
         )),
         Line::from(Span::styled(
-            gauge_line(used, allowance),
+            gauge_line(used, allowance, plan),
             theme::text_style(),
         )),
     ];
@@ -394,20 +478,14 @@ fn minutes_block(
         let percent = gauges::percent(used, allowance);
         lines.extend(budget_warning_lines("minutes", percent, budget));
     }
-    // Counted in rows, not repositories: one repo can contribute several rows
-    // (one per SKU).
-    lines.extend(breakdown(
-        &report.minute_lines(month, private),
-        minute_line_row,
-        "ligne(s)",
-    ));
     lines
 }
 
-/// The storage gauge, the budget warning it may carry, the repositories
-/// holding the storage, and what deleting can and cannot do about it. No
-/// request of its own: the usage report stage 1 loaded carries every line.
-fn storage_block(
+/// The storage gauge and the budget warning it may carry — everything about
+/// the storage block except its per-repository breakdown (see
+/// `minutes_fixed_lines`) and the deletion notice, which `tab_lines` places
+/// right after the breakdown, as before.
+fn storage_fixed_lines(
     report: &BillingReport,
     month: &str,
     plan: Option<&str>,
@@ -421,7 +499,7 @@ fn storage_block(
     let gauge = if month.is_empty() {
         format!("{used:.2} GB-h   {NO_USAGE}")
     } else {
-        storage_gauge_line(used, quota)
+        storage_gauge_line(used, quota, plan)
     };
     let mut lines = vec![
         Line::from(Span::styled(
@@ -435,15 +513,16 @@ fn storage_block(
         let percent = storage_percent(used, quota);
         lines.extend(budget_warning_lines("stockage", percent, budget));
     }
-    lines.extend(breakdown(
-        &report.storage_lines(month),
-        storage_line_row,
-        "dépôt(s)",
-    ));
-    for text in DELETION_DOES_NOT_REFUND {
-        lines.push(Line::from(Span::styled(text, theme::muted())));
-    }
     lines
+}
+
+/// What GitHub's documentation insists on (`DELETION_DOES_NOT_REFUND`), as
+/// styled lines.
+fn deletion_notice() -> Vec<Line<'static>> {
+    DELETION_DOES_NOT_REFUND
+        .iter()
+        .map(|text| Line::from(Span::styled(*text, theme::muted())))
+        .collect()
 }
 
 /// The retention setting, beside the storage it governs. Highlighted — ⚠,
@@ -533,7 +612,18 @@ fn cost_block(report: &BillingReport, month: &str) -> Vec<Line<'static>> {
 ///
 /// Built from owned lines so the borrow of `app.orgs` ends before rendering,
 /// and so each block can be asserted on through the real render.
-fn tab_lines(org: &OrgSummary, month_cursor: usize) -> Vec<Line<'static>> {
+///
+/// `body_height` is the Billing panel's own content height — `render`'s
+/// `area.height` less the block's two border rows — the same rect
+/// `tui::views::testing` reads back in its tests. Everything on the tab
+/// except the two per-repository breakdowns is fixed: header, month,
+/// enterprise note, both gauges, budget lines and warnings, the deletion
+/// notice, retention line and its two notes, cost block. `tab_lines` sizes
+/// those first, then gives what is left of `body_height` to the
+/// breakdowns, split between minutes and storage — controller ruling,
+/// final-review-inputs.md "the no-scroll item": no scroll, no reordering,
+/// the breakdowns yield instead.
+fn tab_lines(org: &OrgSummary, month_cursor: usize, body_height: usize) -> Vec<Line<'static>> {
     let plan = org.plan.as_deref();
     let budgets = org.budgets.as_deref();
     // Built once: the budgets are their own endpoint, refused on their own,
@@ -554,23 +644,65 @@ fn tab_lines(org: &OrgSummary, month_cursor: usize) -> Vec<Line<'static>> {
             .filter(|_| report.months().last() == Some(&month));
         // A readable report with no usage at all has no month: its line would
         // be a bare ` · quota documenté…`.
-        if !month.is_empty() {
+        let has_month_line = !month.is_empty();
+        let enterprise = enterprise_lines(plan);
+        let minutes_fixed = minutes_fixed_lines(report, &month, &private, plan, budget);
+        let storage_fixed = storage_fixed_lines(report, &month, plan, budget);
+        let deletion = deletion_notice();
+        let retention = retention_block(org.retention, Some(report.storage_gbh(&month)));
+        let cost = cost_block(report, &month);
+        let minutes_rows = report.minute_lines(&month, &private);
+        let storage_rows = report.storage_lines(&month);
+
+        // Everything above and below the two breakdowns: three blank
+        // separators, both fixed prefixes, the deletion notice, retention
+        // (with its two notes) and the cost block. What is left of
+        // `body_height` once this is subtracted is what the breakdowns get.
+        let fixed_lines = 1 // header
+            + usize::from(has_month_line)
+            + enterprise.len()
+            + budget_block.len()
+            + 1 // blank before the minutes block
+            + minutes_fixed.len()
+            + 1 // blank before the storage block
+            + storage_fixed.len()
+            + deletion.len()
+            + retention.len()
+            + 1 // blank before the cost block
+            + cost.len();
+        let remainder = body_height.saturating_sub(fixed_lines);
+        // Minutes first: an odd remaining row goes to the block the tab
+        // lists first, rather than splitting it arbitrarily.
+        let minutes_share = remainder.div_ceil(2);
+        let storage_share = remainder - minutes_share;
+        let minutes_cap = breakdown_cap(minutes_rows.len(), minutes_share);
+        let storage_cap = breakdown_cap(storage_rows.len(), storage_share);
+
+        if has_month_line {
             lines.push(month_line(&month));
         }
-        lines.extend(enterprise_lines(plan));
+        lines.extend(enterprise);
         lines.extend(budget_block);
         lines.push(Line::from(""));
-        lines.extend(minutes_block(report, &month, &private, plan, budget));
-        lines.push(Line::from(""));
-        lines.extend(storage_block(report, &month, plan, budget));
-        // Beside the storage it governs, and weighed against that month's
-        // own GB-hours.
-        lines.extend(retention_block(
-            org.retention,
-            Some(report.storage_gbh(&month)),
+        lines.extend(minutes_fixed);
+        lines.extend(breakdown(
+            &minutes_rows,
+            minute_line_row,
+            "ligne(s)",
+            minutes_cap,
         ));
         lines.push(Line::from(""));
-        lines.extend(cost_block(report, &month));
+        lines.extend(storage_fixed);
+        lines.extend(breakdown(
+            &storage_rows,
+            storage_line_row,
+            "dépôt(s)",
+            storage_cap,
+        ));
+        lines.extend(deletion);
+        lines.extend(retention);
+        lines.push(Line::from(""));
+        lines.extend(cost);
     } else {
         lines.push(unreadable_line());
         lines.extend(budget_block);
@@ -590,7 +722,11 @@ pub fn render(app: &mut App, f: &mut Frame, area: Rect) {
         );
         return;
     };
-    let lines = tab_lines(org, app.month_cursor);
+    // The Billing panel's own content height: `render`'s `area` less the
+    // block's two border rows, the same budget `tab_lines` splits between
+    // its fixed content and the two breakdowns.
+    let body_height = usize::from(area.height.saturating_sub(2));
+    let lines = tab_lines(org, app.month_cursor, body_height);
     f.render_widget(
         Paragraph::new(lines).block(
             Block::default()
@@ -720,6 +856,25 @@ mod tests {
         }
     }
 
+    /// `needle` must be on screen at every width from 60 to 200, at a
+    /// height (50) generous enough that neither breakdown is capped.
+    ///
+    /// For a needle that is itself a per-repository breakdown row (a repo
+    /// name, or its `… et N autre(s)` summary): since `tab_lines` now sizes
+    /// the two breakdowns from the available height (final-review-inputs.md
+    /// "the no-scroll item"), such a needle's presence is no longer
+    /// height-invariant the way `assert_shown_at_every_size`'s own height
+    /// sweep assumes — its floor is derived from the needle's row at height
+    /// 50, but a shorter terminal can shrink the breakdown that row belongs
+    /// to before it shrinks anything above the needle. The ruling's own
+    /// guarantee is scoped the same way: "at 50 rows, nothing is capped."
+    fn assert_shown_at_every_width(app: &mut App, needle: &str) {
+        for width in 60..=200u16 {
+            let s = screen(app, width, 50);
+            assert!(s.contains(needle), "{needle:?} missing at {width}x50:\n{s}");
+        }
+    }
+
     /// `needle` must appear nowhere on screen, at any width from 60 to 200.
     fn assert_absent_at_every_width(app: &mut App, needle: &str) {
         for width in 60..=200u16 {
@@ -757,7 +912,7 @@ mod tests {
     fn the_gauge_reports_overshoot_rather_than_capping_at_full() {
         // An illustrative figure, not a measured one — clamping overshoot to
         // 100 % would hide exactly the thing the tab exists to show.
-        let line = gauge_line(16_369, Some(2_000));
+        let line = gauge_line(16_369, Some(2_000), Some("team"));
         assert!(line.contains("818"), "got: {line}");
         assert!(
             line.contains("16 369") || line.contains("16369"),
@@ -770,7 +925,7 @@ mod tests {
         // Without the guard this computes inf and the cast saturates to
         // u64::MAX, which renders as a large finite number — so asserting the
         // absence of "NaN"/"inf" would not catch it. Assert the value.
-        let line = gauge_line(100, Some(0));
+        let line = gauge_line(100, Some(0), Some("team"));
         assert!(line.ends_with(" 0 %"), "got: {line}");
         assert!(!line.contains(&u64::MAX.to_string()), "got: {line}");
     }
@@ -779,15 +934,29 @@ mod tests {
     fn an_unused_month_reads_zero_percent() {
         // `.contains('0')` would pass on any percentage: the allowance operand
         // "2 000" carries a zero of its own.
-        assert!(gauge_line(0, Some(2_000)).ends_with(" 0 %"));
+        assert!(gauge_line(0, Some(2_000), Some("team")).ends_with(" 0 %"));
     }
 
     #[test]
     fn gauge_line_without_an_allowance_has_no_percentage() {
         assert_eq!(
-            gauge_line(1_004, None),
+            gauge_line(1_004, None, None),
             "1 004 min   formule inconnue, pas de quota"
         );
+    }
+
+    /// T5-m5: the plan was read (the header says `· formule legacy-plan`),
+    /// but this crate has no included-minutes figure for it — a different
+    /// fact from "no plan was read at all", and the gauge must not say
+    /// `formule inconnue` when the header just said otherwise. No `%`
+    /// either: a quota-less gauge never divides by a guess.
+    #[test]
+    fn gauge_line_names_the_plan_when_only_its_quota_is_unknown() {
+        assert_eq!(
+            gauge_line(1_004, None, Some("legacy-plan")),
+            "1 004 min   formule legacy-plan, quota inconnu"
+        );
+        assert!(!gauge_line(1_004, None, Some("legacy-plan")).contains('%'));
     }
 
     /// #11's real figures: exec-d, on Team since 2026-09-10, burnt 1 004
@@ -810,6 +979,24 @@ mod tests {
     fn an_unknown_plan_shows_no_percentage_anywhere_in_the_tab() {
         let mut app = billing_app(exec_d_september());
         assert_shown_at_every_size(&mut app, "formule inconnue, pas de quota");
+        assert_absent_at_every_width(&mut app, "%");
+    }
+
+    /// T5-m5, through the full render: a plan GitHub actually returned but
+    /// this crate has no figure for (`legacy-plan`, unlike the case above,
+    /// where no plan was read at all). The header names it
+    /// (`· formule legacy-plan`); both gauges must say so too, not the
+    /// `formule inconnue` that would flatly contradict it — and, as when no
+    /// plan is known at all, no percentage anywhere on the tab, since there
+    /// is still no quota to divide by.
+    #[test]
+    fn a_read_but_unfigured_plan_names_itself_instead_of_saying_inconnue() {
+        let mut org = exec_d_september();
+        org.plan = Some("legacy-plan".into());
+        let mut app = billing_app(org);
+        assert_shown_at_every_size(&mut app, "exec-d · formule legacy-plan");
+        assert_shown_at_every_size(&mut app, "formule legacy-plan, quota inconnu");
+        assert_absent_at_every_width(&mut app, "formule inconnue");
         assert_absent_at_every_width(&mut app, "%");
     }
 
@@ -918,10 +1105,61 @@ mod tests {
     #[test]
     fn the_minutes_block_stops_at_eight_rows_and_counts_the_rest() {
         let mut app = billing_app(ten_repos_of("Actions Linux", "Minutes", 100.0));
-        assert_shown_at_every_size(&mut app, "depot-08");
-        assert_shown_at_every_size(&mut app, "… et 2 autre(s) ligne(s)");
+        // Breakdown-row needles: width-only, at the generous height where
+        // neither breakdown is capped (see `assert_shown_at_every_width`).
+        assert_shown_at_every_width(&mut app, "depot-08");
+        assert_shown_at_every_width(&mut app, "… et 2 autre(s) ligne(s)");
         assert_absent_at_every_width(&mut app, "depot-09");
         assert_absent_at_every_width(&mut app, "depot-10");
+    }
+
+    /// Review FR-tui-1: a repository name longer than `MINUTE_REPO_WIDTH`
+    /// (`claudine-landing-positioning`, 28 characters, already a fixture
+    /// elsewhere in this branch) used to shift every field after it right,
+    /// unbounded, until the row outgrew the frame and ratatui clipped the
+    /// last few cells off the end — the equivalent figure, cut into a
+    /// shorter, wrong number.
+    ///
+    /// Two lines with different quantities and equivalents so the number
+    /// under test (`12 344`, the Windows-repo row's *equivalent*) cannot be
+    /// satisfied by anything else on screen — not that row's own quantity
+    /// (`6 172`), not the other row's, and not the gauge's total (`12 394`,
+    /// the sum of both).
+    #[test]
+    fn a_long_repo_name_does_not_clip_the_minutes_equivalent_figure() {
+        let org = OrgSummary {
+            login: "exec-d".into(),
+            repos: vec![
+                private_repo("claudine-landing-positioning"),
+                private_repo("other-repo"),
+            ],
+            billing: Some(BillingReport {
+                items: vec![
+                    usage(
+                        "2026-09",
+                        "Actions Windows",
+                        "Minutes",
+                        6_172.0,
+                        0.0,
+                        "claudine-landing-positioning",
+                    ),
+                    usage(
+                        "2026-09",
+                        "Actions Linux",
+                        "Minutes",
+                        50.0,
+                        0.0,
+                        "other-repo",
+                    ),
+                ],
+            }),
+            ..Default::default()
+        };
+        let mut app = billing_app(org);
+        // Breakdown-row needle: width-only sweep (see
+        // `assert_shown_at_every_width`), at the 60-column width review
+        // FR-tui-1 measured the defect at.
+        assert_shown_at_every_width(&mut app, "12 344");
     }
 
     /// exec-d's September lines per repository, on Team. Listed lightest
@@ -966,13 +1204,21 @@ mod tests {
     /// (720 or 744 hours) — stated on the line, not hidden.
     #[test]
     fn storage_gauge_states_its_hour_base() {
-        let september = storage_gauge_line(371.85, billing::storage_quota(Some("free"), "2026-09"));
+        let september = storage_gauge_line(
+            371.85,
+            billing::storage_quota(Some("free"), "2026-09"),
+            Some("free"),
+        );
         assert_eq!(
             september,
             "371.85 / 360 GB-h   ██████████  103 %   base 720 h"
         );
 
-        let july = storage_gauge_line(371.85, billing::storage_quota(Some("free"), "2026-07"));
+        let july = storage_gauge_line(
+            371.85,
+            billing::storage_quota(Some("free"), "2026-07"),
+            Some("free"),
+        );
         assert!(july.starts_with("371.85 / 372 GB-h"), "got: {july}");
         assert!(july.ends_with("100 %   base 744 h"), "got: {july}");
     }
@@ -980,8 +1226,37 @@ mod tests {
     #[test]
     fn storage_gauge_without_a_plan_has_no_percentage() {
         assert_eq!(
-            storage_gauge_line(371.85, None),
+            storage_gauge_line(371.85, None, None),
             "371.85 GB-h   formule inconnue, pas de quota"
+        );
+    }
+
+    /// T5-m5, the storage gauge's own version: a plan was read, but this
+    /// crate has no included-storage figure for it, so the gauge names the
+    /// plan and says its quota is unknown — never `formule inconnue`, which
+    /// would contradict the header naming that very plan right above it.
+    #[test]
+    fn storage_gauge_names_the_plan_when_only_its_quota_is_unknown() {
+        assert_eq!(
+            storage_gauge_line(371.85, None, Some("legacy-plan")),
+            "371.85 GB-h   formule legacy-plan, quota inconnu"
+        );
+        assert!(!storage_gauge_line(371.85, None, Some("legacy-plan")).contains('%'));
+    }
+
+    /// Review FR-tui-2: `quota.gbh` went through `thousands` but `used` did
+    /// not, so an Enterprise org near its quota read `54000.00 / 36 000
+    /// GB-h` — the same quantity, formatted two ways, on one line.
+    /// `gauge_line` (the minutes gauge) already grouped both sides; this is
+    /// its exact illustrative figure, the one `the_storage_gauge_keeps_its_
+    /// hour_base_whole_past_its_quota` also uses for "150 %".
+    #[test]
+    fn storage_gauge_groups_used_like_it_groups_the_quota() {
+        let quota = billing::storage_quota(Some("enterprise"), "2026-09")
+            .expect("enterprise has a storage quota");
+        assert_eq!(
+            storage_gauge_line(54_000.0, Some(quota), Some("enterprise")),
+            "54 000.00 / 36 000 GB-h   ██████████  150 %   base 720 h"
         );
     }
 
@@ -1005,8 +1280,10 @@ mod tests {
     #[test]
     fn the_storage_block_names_the_heaviest_repo_first() {
         let mut app = billing_app(exec_d_september_by_repo());
-        assert_shown_at_every_size(&mut app, "359.88 GB-h");
-        assert_shown_at_every_size(&mut app, "11.21 GB-h");
+        // Breakdown-row needles: width-only sweep (see
+        // `assert_shown_at_every_width`).
+        assert_shown_at_every_width(&mut app, "359.88 GB-h");
+        assert_shown_at_every_width(&mut app, "11.21 GB-h");
 
         let s = screen(&mut app, 100, 50);
         let row_of = |needle: &str| {
@@ -1055,8 +1332,10 @@ mod tests {
     #[test]
     fn the_storage_block_stops_at_eight_repos_and_counts_the_rest() {
         let mut app = billing_app(ten_repos_of("Actions storage", "GigabyteHours", 10.0));
-        assert_shown_at_every_size(&mut app, "depot-08");
-        assert_shown_at_every_size(&mut app, "… et 2 autre(s) dépôt(s)");
+        // Breakdown-row needles: width-only sweep (see
+        // `assert_shown_at_every_width`).
+        assert_shown_at_every_width(&mut app, "depot-08");
+        assert_shown_at_every_width(&mut app, "… et 2 autre(s) dépôt(s)");
         assert_absent_at_every_width(&mut app, "depot-09");
         assert_absent_at_every_width(&mut app, "depot-10");
     }
@@ -1209,7 +1488,9 @@ mod tests {
             )],
         });
         let mut app = billing_app(org);
-        assert_shown_at_every_size(&mut app, "ptitjardinier-app-m… 12345.67 GB-h");
+        // Breakdown-row needle: width-only sweep (see
+        // `assert_shown_at_every_width`).
+        assert_shown_at_every_width(&mut app, "ptitjardinier-app-m… 12345.67 GB-h");
     }
 
     /// `org` with the budgets stage 1 read: `None` when the listing itself
@@ -1313,14 +1594,33 @@ mod tests {
                 sku("actions_windows", 7, false),
             ]),
         );
-        assert_shown_at_every_size(&mut app, "Budget SKU actions_linux : 5.00 $ · bloquant");
-        assert_shown_at_every_size(
-            &mut app,
-            "Budget SKU actions_windows : 7.00 $ · alerte seule",
-        );
+        assert_shown_at_every_size(&mut app, "Budget SKU bloquant actions_linux : 5.00 $");
+        assert_shown_at_every_size(&mut app, "Budget SKU alerte seule actions_windows : 7.00 $");
         assert_shown_at_every_size(
             &mut app,
             "signalé, non pris en compte par les avertissements",
+        );
+    }
+
+    /// Review T12-m3: a SKU name past roughly 27 characters used to push
+    /// ` · bloquant` off a 60-column frame — the one thing the line exists
+    /// to say. `mode` now sits right after "SKU", so the widest realistic
+    /// SKU name GitHub's API can hand back (a runner identifier with its
+    /// core count, well past that threshold) never touches it.
+    #[test]
+    fn a_long_sku_name_does_not_clip_the_budget_mode_at_sixty_columns() {
+        let sku = Budget {
+            budget_type: "SkuPricing".into(),
+            sku: "actions_linux_64_core_large_runner".into(),
+            scope: "organization".into(),
+            amount: 5,
+            blocking: true,
+        };
+        let mut app = with_budgets(exec_d_september(), Some(vec![actions(0, true), sku]));
+        let s = screen(&mut app, 60, 50);
+        assert!(
+            s.contains("Budget SKU bloquant actions_linux_64_core_large_runner"),
+            "got:\n{s}"
         );
     }
 
@@ -1329,7 +1629,7 @@ mod tests {
         let mut app = with_budgets(team_at_95_percent(), Some(vec![actions(0, true)]));
         assert_shown_at_every_size(
             &mut app,
-            "⚠ 95 % du quota de minutes, budget 0.00 $ bloquant :",
+            "⚠ budget 0.00 $ bloquant : 95 % du quota de minutes",
         );
         assert_shown_at_every_size(
             &mut app,
@@ -1345,7 +1645,7 @@ mod tests {
                 .unwrap_or_else(|| panic!("{needle:?} missing:\n{s}"))
         };
         assert_eq!(
-            row_of("⚠ 95 % du quota de minutes"),
+            row_of("95 % du quota de minutes"),
             row_of("2 850 / 3 000") + 1,
             "the warning belongs directly under the gauge:\n{s}"
         );
@@ -1356,7 +1656,7 @@ mod tests {
         let mut app = with_budgets(team_at_95_percent(), Some(vec![actions(5, true)]));
         assert_shown_at_every_size(
             &mut app,
-            "⚠ 95 % du quota de minutes, budget 5.00 $ bloquant :",
+            "⚠ budget 5.00 $ bloquant : 95 % du quota de minutes",
         );
         assert_shown_at_every_size(
             &mut app,
@@ -1373,10 +1673,37 @@ mod tests {
         let mut app = with_budgets(org, Some(vec![actions(0, true)]));
         assert_shown_at_every_size(
             &mut app,
-            "⚠ 103 % du quota de stockage, budget 0.00 $ bloquant :",
+            "⚠ budget 0.00 $ bloquant : 103 % du quota de stockage",
         );
         // 1 004 of Free's 2 000 minutes is 50 %: no minutes warning.
         assert_absent_at_every_width(&mut app, "du quota de minutes");
+    }
+
+    /// Review T12-m3: a five-digit budget with a four-digit percentage —
+    /// 299 970 of Team's 3 000 minutes is 9 999 % — used to clip the
+    /// trailing `:` that introduces the consequence line right under it.
+    /// `bloquant :` now sits right after the amount, ahead of `percent` and
+    /// `quota`, so it survives regardless of how wide either grows.
+    #[test]
+    fn a_five_digit_budget_and_four_digit_percent_keep_their_colon_at_sixty_columns() {
+        let mut org = exec_d_september();
+        org.plan = Some("team".into());
+        org.billing = Some(BillingReport {
+            items: vec![usage(
+                "2026-09",
+                "Actions Linux",
+                "Minutes",
+                299_970.0,
+                0.0,
+                "disconnected",
+            )],
+        });
+        let mut app = with_budgets(org, Some(vec![actions(99_999, true)]));
+        let s = screen(&mut app, 60, 50);
+        assert!(
+            s.contains("⚠ budget 99999.00 $ bloquant : 9999 % du quota de minutes"),
+            "got:\n{s}"
+        );
     }
 
     /// The same 95 % month must stay quiet when nothing will be blocked, or
@@ -1426,7 +1753,7 @@ mod tests {
     fn an_older_month_never_warns_about_a_blocking_budget() {
         let mut app = with_budgets(two_months_at_95_percent(), Some(vec![actions(0, true)]));
         assert_shown_at_every_size(&mut app, "2026-09 ·");
-        assert_shown_at_every_size(&mut app, "⚠ 95 % du quota de minutes");
+        assert_shown_at_every_size(&mut app, "95 % du quota de minutes");
 
         app.month_cursor = 1;
         assert_shown_at_every_size(&mut app, "2026-08 ·");
@@ -1557,6 +1884,203 @@ mod tests {
         let mut app = with_retention(exec_d_september(), None);
         assert_shown_at_every_size(&mut app, "Rétention artefacts et journaux : illisible");
         assert_shown_at_every_size(&mut app, "(scope admin:org requis pour la lire)");
+    }
+
+    /// The worst realistic case final-review-inputs.md's "no-scroll item"
+    /// names: a readable report close enough to a blocking budget to warn
+    /// under the minutes gauge, and a retention setting flagged because the
+    /// storage it governs is notable. Team (a blocking budget and a 90 %+
+    /// gauge both need a real allowance to warn against): 2 850 of 3 000
+    /// minutes (95 %), 371.85 GB-h of storage — well past
+    /// `NOTABLE_STORAGE_GBH` — and 90-day retention.
+    fn worst_case_org() -> OrgSummary {
+        let mut org = team_at_95_percent();
+        org.billing
+            .as_mut()
+            .expect("team_at_95_percent carries a report")
+            .items
+            .push(usage(
+                "2026-09",
+                "Actions storage",
+                "GigabyteHours",
+                371.85,
+                0.0,
+                "disconnected",
+            ));
+        org.budgets = Some(vec![actions(0, true)]);
+        org.retention = Some(ArtifactRetention {
+            days: 90,
+            maximum_allowed_days: Some(400),
+        });
+        org
+    }
+
+    /// Ten repositories each burning both minutes and storage: enough rows
+    /// in *both* breakdowns that neither can show them all even generously,
+    /// so both `… et N autre(s)` lines are exercised together.
+    fn ten_repos_of_both() -> OrgSummary {
+        let names: Vec<String> = (1..=10).map(|n| format!("depot-{n:02}")).collect();
+        OrgSummary {
+            login: "exec-d".into(),
+            repos: names.iter().map(|name| private_repo(name)).collect(),
+            billing: Some(BillingReport {
+                items: names
+                    .iter()
+                    .zip((1..=10).rev())
+                    .flat_map(|(name, weight)| {
+                        let weight = f64::from(weight);
+                        vec![
+                            usage(
+                                "2026-09",
+                                "Actions Linux",
+                                "Minutes",
+                                weight * 100.0,
+                                0.0,
+                                name,
+                            ),
+                            usage(
+                                "2026-09",
+                                "Actions storage",
+                                "GigabyteHours",
+                                weight * 10.0,
+                                0.0,
+                                name,
+                            ),
+                        ]
+                    })
+                    .collect(),
+            }),
+            ..Default::default()
+        }
+    }
+
+    /// Controller ruling, final-review-inputs.md "the no-scroll item": the
+    /// two breakdowns yield to the available height rather than pushing the
+    /// tab's fixed content off the bottom. At 80x24 (the body holds 19
+    /// content lines — `the_retention_notes_fit_an_eighty_by_twenty_four_terminal`
+    /// measures the same rect), both breakdowns are squeezed to their
+    /// `… et N autre(s)` summary — proof the mechanism ran, not that it sat
+    /// idle — while the fixed lines ahead of them stay whole: both gauges,
+    /// the budget line, the minutes warning, and the retention line with its
+    /// explanation and first note.
+    ///
+    /// What this fixture does *not* claim: with a blocking-budget warning
+    /// (2 lines) stacked on a flagged retention (2 lines + 4 notes), the
+    /// fixed content alone — before either breakdown contributes a single
+    /// row — is 21 lines, already 2 more than the 19-line body; even
+    /// reducing both breakdowns to their one-line summary (the least either
+    /// can ever show once there is any usage to report) still leaves 23,
+    /// short by 4. Neither breakdown can give back a line it does not have,
+    /// so the second retention note and the cost line do not fit at 80x24
+    /// in this exact combination — see
+    /// `the_worst_case_tab_fits_from_its_documented_minimum_height` for the
+    /// height at which they do, the fallback the ruling itself names
+    /// ("accepting the gap with a documented minimum height").
+    #[test]
+    fn both_breakdowns_yield_to_the_fixed_content_at_eighty_by_twenty_four() {
+        let mut app = billing_app(worst_case_org());
+        let s = screen(&mut app, 80, 24);
+        for needle in [
+            "2 850 / 3 000",                                          // minutes gauge
+            "371.85 / 1 440 GB-h",                                    // storage gauge
+            "Budget Actions : 0.00 $ · bloquant",                     // budget line
+            "⚠ budget 0.00 $ bloquant : 95 % du quota de minutes",    // warning
+            "GitHub bloquera l'usage Actions au quota atteint.",      // warning, 2nd line
+            "⚠ Rétention artefacts et journaux : 90 j (max. 400 j)",  // retention line
+            "c'est ce réglage qui fait durer le stockage",            // retention explanation
+            "Note : retention-days, dans un workflow, fixe la durée", // retention note 1
+            "de cet artefact, dans la limite de ce réglage.",         // retention note 1, cont'd
+            "… et 1 autre(s) ligne(s)",                               // minutes breakdown yielded
+            "… et 1 autre(s) dépôt(s)",                               // storage breakdown yielded
+        ] {
+            assert!(s.contains(needle), "{needle:?} missing at 80x24:\n{s}");
+        }
+    }
+
+    /// Whatever the breakdowns show, their `… et N autre(s)` line is
+    /// present — even generously, at 80x24, with ten repositories in each
+    /// breakdown (nowhere near this fixture's own worst case above: no
+    /// blocking budget, no flagged retention, so there is ample height and
+    /// the only question is whether the summary line survives on its own
+    /// terms). Can-fail: drop the summary line under a cap, and this fails.
+    #[test]
+    fn the_et_n_autres_line_survives_whatever_the_breakdowns_show() {
+        let mut app = billing_app(ten_repos_of_both());
+        let s = screen(&mut app, 80, 24);
+        assert!(
+            s.contains("autre(s) ligne(s)"),
+            "minutes truncation notice missing at 80x24:\n{s}"
+        );
+        assert!(
+            s.contains("autre(s) dépôt(s)"),
+            "storage truncation notice missing at 80x24:\n{s}"
+        );
+    }
+
+    /// The fallback the controller's own ruling names for the gap
+    /// `both_breakdowns_yield_to_the_fixed_content_at_eighty_by_twenty_four`
+    /// documents: "accepting the gap with a documented minimum height."
+    /// Measured (not guessed): the worst case's fixed content plus both
+    /// breakdowns' one-line-each floor is 23 lines, so the body needs 23
+    /// (content) + 2 (the panel's own border rows) = 25 rows, which this
+    /// layout gives at a 28-row terminal (header, status and footer take
+    /// the other 3). Every load-bearing line is whole here, breakdowns
+    /// included this time since there is finally room for their real rows
+    /// rather than a summary.
+    #[test]
+    fn the_worst_case_tab_fits_from_its_documented_minimum_height() {
+        let mut app = billing_app(worst_case_org());
+        let s = screen(&mut app, 80, 28);
+        for needle in [
+            "2 850 / 3 000",
+            "371.85 / 1 440 GB-h",
+            "Budget Actions : 0.00 $ · bloquant",
+            "⚠ budget 0.00 $ bloquant : 95 % du quota de minutes",
+            "GitHub bloquera l'usage Actions au quota atteint.",
+            "⚠ Rétention artefacts et journaux : 90 j (max. 400 j)",
+            "c'est ce réglage qui fait durer le stockage",
+        ] {
+            assert!(s.contains(needle), "{needle:?} missing at 80x28:\n{s}");
+        }
+        for note in RETENTION_NOTES {
+            assert!(
+                s.contains(note.trim_start()),
+                "{:?} missing at 80x28:\n{s}",
+                note.trim_start()
+            );
+        }
+        assert!(
+            s.contains("Coûts   brut"),
+            "cost line missing at 80x28:\n{s}"
+        );
+    }
+
+    /// A sweep over heights, at the worst case's own fixture: the
+    /// load-bearing lines that fit at 80x24 — the gauges, the budget line,
+    /// the warning, the retention line and its first note — never
+    /// disappear as the terminal grows from there. `tab_lines` only ever
+    /// gives the breakdowns *more* room as height grows (`breakdown_cap` is
+    /// monotonic in `share`), so nothing that already fit at the smallest
+    /// height in the sweep can be pushed back off by a taller one.
+    #[test]
+    fn the_load_bearing_lines_that_fit_never_disappear_as_height_grows() {
+        let mut app = billing_app(worst_case_org());
+        for height in 24..=45u16 {
+            let s = screen(&mut app, 80, height);
+            for needle in [
+                "2 850 / 3 000",
+                "371.85 / 1 440 GB-h",
+                "Budget Actions : 0.00 $ · bloquant",
+                "⚠ budget 0.00 $ bloquant : 95 % du quota de minutes",
+                "⚠ Rétention artefacts et journaux : 90 j (max. 400 j)",
+                "Note : retention-days, dans un workflow, fixe la durée",
+            ] {
+                assert!(
+                    s.contains(needle),
+                    "{needle:?} missing at 80x{height}:\n{s}"
+                );
+            }
+        }
     }
 
     /// The two exact points of #15, on a readable and an unreadable billing

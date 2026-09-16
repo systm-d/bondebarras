@@ -127,6 +127,25 @@ pub(crate) fn cells(text: &str) -> usize {
     Span::raw(text).width()
 }
 
+/// Groups digits with a narrow space, as French convention wants —
+/// `12 345`, not `12345` nor `12,345`. Shared by the Billing tab
+/// (`billing::gauge_line`, `billing::storage_gauge_line`,
+/// `billing::minute_line_row`) and the resources column's own minutes gauge
+/// (`gauges::minutes_gauge_line`, review FR-tui-3): the same figure grouped
+/// two different ways, in the same session, would read as two different
+/// numbers.
+pub(crate) fn thousands(n: u64) -> String {
+    let s = n.to_string();
+    let mut out = String::new();
+    for (i, c) in s.chars().enumerate() {
+        if i > 0 && (s.len() - i).is_multiple_of(3) {
+            out.push(' ');
+        }
+        out.push(c);
+    }
+    out
+}
+
 /// `text` broken at spaces into lines at most `width` cells wide — for the
 /// explanations the resources column puts on rows of their own (the size
 /// explanation, the gauges' caveat, warning and reason). A word wider than
