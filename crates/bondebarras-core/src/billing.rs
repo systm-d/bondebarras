@@ -140,6 +140,61 @@ fn is_actions_storage(item: &UsageItem) -> bool {
     item.sku == ACTIONS_STORAGE_SKU && item.unit_type == GIGABYTE_HOURS
 }
 
+/// One budget from `GET /organizations/{org}/settings/billing/budgets`.
+///
+/// Read-only, permanently: changing a budget commits money. Every field is
+/// required — an entry missing one makes the whole listing unreadable (see
+/// `api::budgets::fetch`), since the dropped entry could be the Actions
+/// budget, and "no budget: overage billed" would then be said of an org
+/// GitHub actually blocks.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Budget {
+    /// `budget_type`: `ProductPricing` or `SkuPricing`.
+    pub budget_type: String,
+    /// `budget_product_sku`: a product (`actions`) or, for `SkuPricing`, a SKU.
+    pub sku: String,
+    /// `budget_scope`: `organization`, `repository`, `enterprise`, …
+    pub scope: String,
+    /// `budget_amount`, whole US dollars — an integer in GitHub's schema.
+    pub amount: u64,
+    /// `prevent_further_usage`: GitHub stops the usage once the budget is spent.
+    pub blocking: bool,
+}
+
+/// From this percentage of a gauge, a blocking budget earns a warning.
+pub const BUDGET_WARNING_PERCENT: u64 = 90;
+
+/// The organization's Actions budget: scope `organization`, type
+/// `ProductPricing`, product `actions`. `None` when there is none — which,
+/// on a readable listing, means overage is billed with no ceiling.
+pub fn actions_budget(budgets: &[Budget]) -> Option<&Budget> {
+    budgets.iter().find(|b| {
+        b.scope == "organization" && b.budget_type == "ProductPricing" && b.sku == "actions"
+    })
+}
+
+/// Organization budgets on a single Actions SKU (`SkuPricing`). Never
+/// observed on the author's organizations, so never interpreted: the tab
+/// names each one instead of folding it into the product budget's meaning.
+pub fn actions_sku_budgets(budgets: &[Budget]) -> Vec<&Budget> {
+    budgets
+        .iter()
+        .filter(|b| {
+            b.scope == "organization"
+                && b.budget_type == "SkuPricing"
+                && b.sku.to_ascii_lowercase().starts_with("actions")
+        })
+        .collect()
+}
+
+/// Whether a gauge at `percent` should warn that GitHub will stop Actions
+/// once the allowance runs out: at least `BUDGET_WARNING_PERCENT`, with a
+/// blocking Actions budget. Takes the percentage the gauge displays, so the
+/// warning can never contradict it.
+pub fn nears_blocking_budget(percent: u64, budget: Option<&Budget>) -> bool {
+    percent >= BUDGET_WARNING_PERCENT && budget.is_some_and(|b| b.blocking)
+}
+
 /// How many Linux-equivalent minutes one minute of this runner costs.
 ///
 /// `None` means the SKU is unknown — a new runner family GitHub added. The
@@ -745,5 +800,96 @@ mod tests {
             .unwrap()
             .with_timezone(&chrono::Utc);
         assert_eq!(month_of(t), "2026-09");
+    }
+
+    fn budget(budget_type: &str, sku: &str, amount: u64, blocking: bool) -> Budget {
+        Budget {
+            budget_type: budget_type.into(),
+            sku: sku.into(),
+            scope: "organization".into(),
+            amount,
+            blocking,
+        }
+    }
+
+    /// exec-d's real response on 2026-09-10: four org-level product budgets,
+    /// all 0 $ and blocking. Identical amounts, so the test must check *which*
+    /// budget came back — and the Actions one is third, so "the first
+    /// budget" fails.
+    #[test]
+    fn actions_budget_picks_the_org_actions_product_budget() {
+        let exec_d = vec![
+            budget("ProductPricing", "codespaces", 0, true),
+            budget("ProductPricing", "packages", 0, true),
+            budget("ProductPricing", "actions", 0, true),
+            budget("ProductPricing", "git_lfs", 0, true),
+        ];
+        let b = actions_budget(&exec_d).expect("exec-d has an Actions budget");
+        assert_eq!(b.sku, "actions");
+        assert_eq!((b.amount, b.blocking), (0, true));
+
+        // cloudalpes: 5 $, blocking.
+        let cloudalpes = vec![budget("ProductPricing", "actions", 5, true)];
+        assert_eq!(actions_budget(&cloudalpes).map(|b| b.amount), Some(5));
+
+        // SecondBrain-io: no budget at all.
+        assert!(actions_budget(&[]).is_none());
+
+        // An Actions budget of another scope is not the organization's.
+        let mut repo_scoped = budget("ProductPricing", "actions", 5, true);
+        repo_scoped.scope = "repository".into();
+        assert!(actions_budget(&[repo_scoped]).is_none());
+    }
+
+    /// The SKU alone cannot tell a `SkuPricing` budget from the
+    /// organization's `ProductPricing` one when the two happen to share a
+    /// name: only the `budget_type` check keeps them apart.
+    #[test]
+    fn actions_budget_requires_the_product_pricing_type() {
+        let budgets = vec![budget("SkuPricing", "actions", 5, true)];
+        assert!(actions_budget(&budgets).is_none());
+    }
+
+    /// Never observed, so never interpreted — and never silently ignored.
+    /// SKU names here are illustrative: the real shape is an open
+    /// measurement.
+    #[test]
+    fn a_sku_pricing_actions_budget_is_surfaced_not_ignored() {
+        let budgets = vec![
+            budget("SkuPricing", "actions_linux", 5, true),
+            budget("SkuPricing", "codespaces_storage", 5, true),
+            budget("ProductPricing", "actions", 0, true),
+        ];
+        let skus: Vec<&str> = actions_sku_budgets(&budgets)
+            .iter()
+            .map(|b| b.sku.as_str())
+            .collect();
+        assert_eq!(skus, vec!["actions_linux"]);
+        // It does not stand in for the product budget.
+        assert_eq!(
+            actions_budget(&budgets).map(|b| b.sku.as_str()),
+            Some("actions")
+        );
+    }
+
+    /// Same reasoning as `actions_budget`'s own scope check: a
+    /// repository-scoped SKU budget must not be counted among the
+    /// organization's.
+    #[test]
+    fn actions_sku_budgets_requires_organization_scope() {
+        let mut repo_scoped = budget("SkuPricing", "actions_linux", 5, true);
+        repo_scoped.scope = "repository".into();
+        assert!(actions_sku_budgets(&[repo_scoped]).is_empty());
+    }
+
+    #[test]
+    fn nears_blocking_budget_needs_ninety_percent_and_a_blocking_budget() {
+        let blocking = budget("ProductPricing", "actions", 0, true);
+        let alert_only = budget("ProductPricing", "actions", 5, false);
+        assert!(nears_blocking_budget(90, Some(&blocking)));
+        assert!(nears_blocking_budget(103, Some(&blocking)));
+        assert!(!nears_blocking_budget(89, Some(&blocking)));
+        assert!(!nears_blocking_budget(95, Some(&alert_only)));
+        assert!(!nears_blocking_budget(95, None));
     }
 }
