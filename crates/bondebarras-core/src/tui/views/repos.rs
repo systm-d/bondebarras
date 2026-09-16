@@ -215,6 +215,11 @@ pub fn render(app: &mut App, f: &mut Frame, area: Rect) {
     } else {
         Some(app.repo_cursor.min(items.len() - 1))
     });
+    // Smoke S3: an offset the last, shorter frame needed is not one this
+    // frame needs (`views::clamp_offset`). Heights, not a count: a
+    // repository holding storage this month carries a detail line.
+    let heights: Vec<usize> = items.iter().map(ListItem::height).collect();
+    views::clamp_offset(&mut app.repo_state, &heights, inner.height);
 
     let title = if too_short {
         TOO_SHORT_TITLE
@@ -716,6 +721,70 @@ mod tests {
                 !column.contains('⚠') && column.contains("10.7 Go"),
                 "a cache at exactly 10 GiB is marked, or its figure is gone, at \
                  {width}x{height}:\n{column}"
+            );
+        }
+    }
+
+    /// Smoke S3 (finding B): 100x50 → 80x24 → 100x50, with the cursor deep
+    /// in a long list, left the column scrolled to index 9 — its first nine
+    /// repositories off screen, including the only ⚠ row, and about
+    /// nineteen blank rows under the last one, with ample room for all 33.
+    /// ratatui walks a `ListState`'s offset *forward* to keep the selected
+    /// item on screen when the area shrinks, and never walks it back when
+    /// the area grows again, so the cursor stayed visible and every existing
+    /// guard passed.
+    ///
+    /// Through the real render, and swept over every tall height from 39 —
+    /// where the whole list first fits inside the column's borders: 33 rows
+    /// plus `repo-01`'s detail line — to 50. The needle is a freshly built
+    /// `App` drawn at the same size with the same cursor: comparing against
+    /// it catches both symptoms at once, the hidden head and the blank tail,
+    /// where either alone can hide in a passing assertion.
+    #[test]
+    fn a_resize_leaves_no_stale_offset_behind_in_the_repos_column() {
+        let fresh = || {
+            let mut app = App::new(vec![OrgSummary {
+                login: "SecondBrain-io".into(),
+                repos: (1..=33)
+                    .map(|n| RepoSummary {
+                        name: format!("repo-{n:02}"),
+                        // The first row is the informative one, as it was on
+                        // the real organization: the only cache past the
+                        // ceiling, and the only storage detail line.
+                        cache_bytes: if n == 1 {
+                            gauges::CACHE_CEILING_BYTES + 1
+                        } else {
+                            1_000
+                        },
+                        cache_count: 1,
+                        private: true,
+                        age_days: 3,
+                        class: RepoClass::Archivable,
+                    })
+                    .collect(),
+                billing: Some(crate::billing::BillingReport {
+                    items: vec![storage("2026-09", "repo-01", 60.0)],
+                }),
+                ..Default::default()
+            }]);
+            app.repo_cursor = 26;
+            app
+        };
+
+        for tall in 39..=50u16 {
+            let mut app = fresh();
+            testing::focused_column(&mut app, Focus::Repos, 100, tall);
+            testing::focused_column(&mut app, Focus::Repos, 80, 24);
+            let (_, after) = testing::focused_column(&mut app, Focus::Repos, 100, tall);
+
+            let (_, never_resized) = testing::focused_column(&mut fresh(), Focus::Repos, 100, tall);
+            assert_eq!(
+                after, never_resized,
+                "a resize down to 80x24 and back left the column scrolled at 100x{tall}"
+            );
+            assert!(
+                after.contains("repo-01") && after.contains('⚠'),
+                "the list's first row is off screen at 100x{tall} after a resize:\n{after}"
             );
         }
     }

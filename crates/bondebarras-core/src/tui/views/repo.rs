@@ -561,6 +561,11 @@ pub fn render(app: &mut App, f: &mut Frame, area: Rect) {
     } else {
         Some(app.res_cursor.min(items.len() - 1))
     });
+    // Smoke S3: an offset the last, shorter frame needed is not one this
+    // frame needs (`views::clamp_offset`). Measured against `list_area`, not
+    // the column: the head above it takes its rows first.
+    let heights: Vec<usize> = items.iter().map(ListItem::height).collect();
+    views::clamp_offset(&mut app.res_state, &heights, list_area.height);
 
     let list = List::new(items).highlight_style(views::cursor_style(focused));
 
@@ -1736,6 +1741,51 @@ mod tests {
                     "the title shows an unlabelled size at width {width}: {title:?}"
                 );
             }
+        }
+    }
+
+    /// Smoke S3, on the column that shares the repos column's mechanism: an
+    /// offset left over from a shorter frame hides the head of the list once
+    /// the terminal grows back, with room to spare. Same shape as
+    /// `views::repos::tests::a_resize_leaves_no_stale_offset_behind_in_the_repos_column`,
+    /// read off the resources column's own rect.
+    ///
+    /// Thirty rows with the cursor on the twenty-eighth: enough that 80x24
+    /// cannot show the cursor from the top of the list and has to scroll —
+    /// the state the taller frame then inherits — while every one of them
+    /// fits under the column's head at the heights swept here, so a correct
+    /// render starts at the first row.
+    #[test]
+    fn a_resize_leaves_no_stale_offset_behind_in_the_resources_column() {
+        let fresh = || {
+            let mut app = App::new(vec![]);
+            app.resources = (1..=30)
+                .map(|n| Resource {
+                    id: n,
+                    label: format!("cache-{n:02}"),
+                    ..res(false)
+                })
+                .collect();
+            app.res_cursor = 27;
+            app
+        };
+
+        for tall in 45..=50u16 {
+            let mut app = fresh();
+            views::testing::focused_column(&mut app, Focus::Resources, 100, tall);
+            views::testing::focused_column(&mut app, Focus::Resources, 80, 24);
+            let (_, after) = views::testing::focused_column(&mut app, Focus::Resources, 100, tall);
+
+            let (_, never_resized) =
+                views::testing::focused_column(&mut fresh(), Focus::Resources, 100, tall);
+            assert_eq!(
+                after, never_resized,
+                "a resize down to 80x24 and back left the column scrolled at 100x{tall}"
+            );
+            assert!(
+                after.contains("cache-01"),
+                "the list's first row is off screen at 100x{tall} after a resize:\n{after}"
+            );
         }
     }
 }

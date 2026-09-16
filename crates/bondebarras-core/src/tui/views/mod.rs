@@ -23,7 +23,7 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::widgets::{Block, Borders, ListState, Paragraph};
 
 /// No selection, no `d`, nothing destructive: the Billing tab is strictly
 /// diagnostic, and its footer must not advertise a key it does not act on.
@@ -363,6 +363,52 @@ pub(crate) fn fit(text: &str, width: usize) -> String {
     }
 }
 
+/// The largest first-visible index that still fills `height` rows from the
+/// end of a list whose items are `heights` rows tall.
+///
+/// `0` whenever the whole list fits: a list shorter than its area starts at
+/// its first row, never partway down it. Counted in rows, not items — a
+/// repository row carrying a storage detail line is two rows tall, and so is
+/// a package version whose class suffix needs one of its own.
+fn max_offset(heights: &[usize], height: usize) -> usize {
+    let mut rows = 0;
+    let mut first = heights.len();
+    for (index, item) in heights.iter().enumerate().rev() {
+        rows += item;
+        if rows > height {
+            break;
+        }
+        first = index;
+    }
+    first.min(heights.len().saturating_sub(1))
+}
+
+/// Pulls a list's scroll offset back to what its items can actually fill.
+///
+/// Smoke S3 (finding B): ratatui walks a `ListState`'s offset *forward* when
+/// the area shrinks — `List::get_items_bounds` advances it until the
+/// selected item is back on screen — and nothing ever walks it back when the
+/// area grows again. Shrinking a 100x50 terminal to 80x24 with the cursor
+/// deep in a 33-repository list and growing it back left the column drawn
+/// from index 9: its first nine rows off screen, including the only ⚠ one
+/// and the only storage detail line, with about nineteen blank rows under
+/// the last row and room to spare for the whole list. The cursor stayed
+/// visible the whole time, which is exactly why no existing guard caught it.
+///
+/// Only ever lowers the offset, never raises it: a list too long for its
+/// area keeps wherever the reader had scrolled to, less the blank tail. A
+/// resize is not a reason to send someone back to the top of a list.
+///
+/// Called by all three columns, each right after it has told the state which
+/// row the cursor is on and before it renders — the offset ratatui is about
+/// to read.
+pub(crate) fn clamp_offset(state: &mut ListState, heights: &[usize], height: u16) {
+    let max = max_offset(heights, usize::from(height));
+    if state.offset() > max {
+        *state.offset_mut() = max;
+    }
+}
+
 pub fn render(app: &mut App, f: &mut Frame, pending: Option<&Plan>) {
     let rows = screen(f.area(), progress::shown(app).is_some());
     let columns = match app.view {
@@ -573,6 +619,26 @@ pub(crate) mod testing {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `max_offset` is the offset a full last screen needs: zero while the
+    /// whole list fits — a shorter list is never scrolled at all — and
+    /// otherwise the first item whose tail still fills the area, counted in
+    /// rows so a two-row item costs two. An item taller than the area on its
+    /// own cannot be scrolled past, so the last index is the ceiling.
+    #[test]
+    fn max_offset_leaves_no_blank_tail_and_no_needless_scroll() {
+        assert_eq!(max_offset(&[], 10), 0, "an empty list");
+        assert_eq!(max_offset(&[1, 1, 1], 10), 0, "shorter than its area");
+        assert_eq!(max_offset(&[1, 1, 1], 3), 0, "exactly its area");
+        assert_eq!(max_offset(&[1; 10], 4), 6, "six rows scrolled past");
+        assert_eq!(
+            max_offset(&[2, 1, 1, 1], 3),
+            1,
+            "a two-row item at the head"
+        );
+        assert_eq!(max_offset(&[1, 1, 2], 2), 2, "a two-row item at the tail");
+        assert_eq!(max_offset(&[3], 1), 0, "an item taller than the area");
+    }
     use crate::model::{OrgSummary, RepoSummary, Resource, ResourceKind};
     use crate::repos::RepoClass;
 

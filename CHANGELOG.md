@@ -124,6 +124,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Three-column TUI: growing the terminal back after making it shorter no
+  longer leaves a column scrolled where the short frame had put it. With
+  the cursor low in a long repositories list, 100x50 → 80x24 → 100x50 drew
+  the list from its tenth row — hiding the only ⚠ one — with nineteen blank
+  rows underneath and room for the whole list. The cursor stayed visible
+  throughout, so nothing flagged it.
 - Billing tab: a note written across two lines is no longer cut after its
   first line when the terminal is too short for it — it is shown whole or
   not at all, like every other multi-line explanation the tab carries. At
