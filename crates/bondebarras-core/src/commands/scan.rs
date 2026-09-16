@@ -46,6 +46,7 @@ pub fn overview_json(summaries: &[OrgSummary], month: &str) -> serde_json::Value
 
 fn org_json(o: &OrgSummary, month: &str) -> serde_json::Value {
     let plan = o.plan.as_deref();
+    let budgets = o.budgets.as_deref();
     serde_json::json!({
         "org": o.login,
         "cache_bytes": o.cache_bytes,
@@ -56,6 +57,15 @@ fn org_json(o: &OrgSummary, month: &str) -> serde_json::Value {
         "billing_month": month,
         "storage_gbh": o.billing.as_ref().map(|b| b.storage_gbh(month)),
         "storage_allowance_gbh": billing::storage_quota(plan, month).map(|q| q.gbh),
+        "budgets_readable": budgets.is_some(),
+        "actions_budget": budgets.and_then(billing::actions_budget).map(|b| serde_json::json!({
+            "amount": b.amount,
+            "blocking": b.blocking,
+        })),
+        "actions_sku_budgets": budgets.map(|all| billing::actions_sku_budgets(all)
+            .into_iter()
+            .map(|b| serde_json::json!({ "sku": b.sku, "amount": b.amount, "blocking": b.blocking }))
+            .collect::<Vec<_>>()),
         "repos": o.repos.iter().map(|r| serde_json::json!({
             "name": r.name,
             "cache_bytes": r.cache_bytes,
@@ -178,5 +188,60 @@ mod tests {
         assert!(v[1]["storage_gbh"].is_null(), "got: {}", v[1]);
         assert!(v[1]["storage_allowance_gbh"].is_null(), "got: {}", v[1]);
         assert!(v[1]["repos"][0]["storage_gbh"].is_null(), "got: {}", v[1]);
+    }
+
+    fn budget(budget_type: &str, sku: &str, amount: u64) -> crate::billing::Budget {
+        crate::billing::Budget {
+            budget_type: budget_type.into(),
+            sku: sku.into(),
+            scope: "organization".into(),
+            amount,
+            blocking: true,
+        }
+    }
+
+    /// "No budget" and "budgets unreadable" must never produce the same
+    /// object: the first means overage is billed without a ceiling, the
+    /// second means nobody knows.
+    #[test]
+    fn scan_json_tells_no_budget_from_unreadable_budgets() {
+        let blocked = OrgSummary {
+            login: "exec-d".into(),
+            budgets: Some(vec![
+                budget("ProductPricing", "codespaces", 0),
+                budget("ProductPricing", "actions", 0),
+                budget("SkuPricing", "actions_linux", 5),
+            ]),
+            ..Default::default()
+        };
+        let no_budget = OrgSummary {
+            login: "SecondBrain-io".into(),
+            budgets: Some(vec![]),
+            ..Default::default()
+        };
+        let unreadable = OrgSummary {
+            login: "le-vilain-petit-dev".into(),
+            ..Default::default()
+        };
+
+        let v = overview_json(&[blocked, no_budget, unreadable], "2026-09");
+
+        assert_eq!(v[0]["budgets_readable"], true);
+        assert_eq!(
+            v[0]["actions_budget"],
+            serde_json::json!({ "amount": 0, "blocking": true })
+        );
+        assert_eq!(
+            v[0]["actions_sku_budgets"],
+            serde_json::json!([{ "sku": "actions_linux", "amount": 5, "blocking": true }])
+        );
+
+        assert_eq!(v[1]["budgets_readable"], true);
+        assert!(v[1]["actions_budget"].is_null(), "got: {}", v[1]);
+        assert_eq!(v[1]["actions_sku_budgets"], serde_json::json!([]));
+
+        assert_eq!(v[2]["budgets_readable"], false);
+        assert!(v[2]["actions_budget"].is_null(), "got: {}", v[2]);
+        assert!(v[2]["actions_sku_budgets"].is_null(), "got: {}", v[2]);
     }
 }

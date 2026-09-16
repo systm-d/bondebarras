@@ -7,6 +7,7 @@
 pub mod archive;
 pub mod artifacts;
 pub mod billing;
+pub mod budgets;
 pub mod caches;
 pub mod orgs;
 pub mod packages;

@@ -229,6 +229,10 @@ pub struct OrgSummary {
     /// whether any allowance percentage can be shown at all (see
     /// `billing::included_minutes_for`).
     pub plan: Option<String>,
+    /// The org's budgets, or `None` when they cannot be read — GitHub
+    /// reserves them to admins and billing managers. `Some(vec![])` is a
+    /// readable org with no budget at all; the two must never be confused.
+    pub budgets: Option<Vec<crate::billing::Budget>>,
 }
 
 #[cfg(test)]

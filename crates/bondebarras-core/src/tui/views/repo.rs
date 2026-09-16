@@ -1432,6 +1432,7 @@ mod tests {
             }],
             billing: Some(report),
             plan: Some("free".into()),
+            budgets: None,
         }
     }
 

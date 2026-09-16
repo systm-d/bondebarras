@@ -61,11 +61,12 @@ pub async fn overview(client: &Client, orgs: &[String]) -> Vec<OrgSummary> {
         repos_out.sort_by_key(|r| std::cmp::Reverse(r.cache_bytes));
 
         // The degradable stage-1 reads, joined: none depends on another, and
-        // none is `?`-propagated — an org whose billing or plan is refused is
-        // still worth showing.
-        let (billing, plan) = futures::join!(
+        // none is `?`-propagated — an org whose billing, plan or budgets are
+        // refused is still worth showing.
+        let (billing, plan, budgets) = futures::join!(
             crate::api::billing::fetch(client, org),
             crate::api::orgs::plan(client, org),
+            crate::api::budgets::fetch(client, org),
         );
 
         Some(OrgSummary {
@@ -75,6 +76,7 @@ pub async fn overview(client: &Client, orgs: &[String]) -> Vec<OrgSummary> {
             repos: repos_out,
             billing,
             plan,
+            budgets,
         })
     });
 
@@ -2077,6 +2079,81 @@ mod tests {
         assert_eq!(out.len(), 1, "a refused plan must not drop the org");
         assert_eq!(out[0].cache_bytes, 1000);
         assert!(out[0].plan.is_none());
+    }
+
+    /// #14: budgets ride along at stage 1, and a refusal — observed as a 400
+    /// — costs the budgets only, never the org.
+    ///
+    /// Two organizations, each with its own plan *and* its own budgets
+    /// answer: the joined stage-1 reads are only correct if each one is
+    /// asked about the org it is paired with. A `join!` that passed a fixed
+    /// login to `orgs::plan` — the defect Task 4 could only catch with a
+    /// throwaway test — gives both orgs the same plan here, and fails.
+    #[tokio::test]
+    async fn overview_carries_budgets_and_keeps_the_org_when_refused() {
+        let server = MockServer::start().await;
+        for (org, plan) in [("exec-d", "team"), ("le-vilain-petit-dev", "free")] {
+            Mock::given(method("GET"))
+                .and(path(format!(
+                    "/orgs/{org}/actions/cache/usage-by-repository"
+                )))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .set_body_json(serde_json::json!({ "repository_cache_usages": [] })),
+                )
+                .mount(&server)
+                .await;
+            Mock::given(method("GET"))
+                .and(path(format!("/orgs/{org}/repos")))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+                .mount(&server)
+                .await;
+            Mock::given(method("GET"))
+                .and(path(format!("/orgs/{org}")))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "login": org,
+                    "plan": { "name": plan }
+                })))
+                .mount(&server)
+                .await;
+        }
+        Mock::given(method("GET"))
+            .and(path("/organizations/exec-d/settings/billing/budgets"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "budgets": [{
+                    "budget_type": "ProductPricing", "budget_product_sku": "actions",
+                    "budget_scope": "organization", "budget_amount": 0,
+                    "prevent_further_usage": true
+                }],
+                "has_next_page": false
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(
+                "/organizations/le-vilain-petit-dev/settings/billing/budgets",
+            ))
+            .respond_with(
+                ResponseTemplate::new(400)
+                    .set_body_json(serde_json::json!({ "message": "Unable to get budgets." })),
+            )
+            .mount(&server)
+            .await;
+
+        let client = Client::with_base("t0ken", &server.uri()).unwrap();
+        let out = overview(
+            &client,
+            &["exec-d".to_string(), "le-vilain-petit-dev".to_string()],
+        )
+        .await;
+
+        let find = |login: &str| out.iter().find(|o| o.login == login).unwrap();
+        assert_eq!(out.len(), 2, "a refused budgets read must not drop the org");
+        assert_eq!(find("exec-d").budgets.as_ref().map(Vec::len), Some(1));
+        assert!(find("le-vilain-petit-dev").budgets.is_none());
+        // Each org's plan is its own: the pairing inside the `join!` holds.
+        assert_eq!(find("exec-d").plan.as_deref(), Some("team"));
+        assert_eq!(find("le-vilain-petit-dev").plan.as_deref(), Some("free"));
     }
 
     /// Debt 4 of the v0.4 final review: all seven family listings degrade
