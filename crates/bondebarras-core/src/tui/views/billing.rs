@@ -5,7 +5,7 @@
 //! them.
 
 use crate::billing::{
-    self, BillingReport, MinuteLine, StorageLine, StorageQuota, included_minutes_for,
+    self, BillingReport, Budget, MinuteLine, StorageLine, StorageQuota, included_minutes_for,
     sku_multiplier,
 };
 use crate::model::OrgSummary;
@@ -182,6 +182,88 @@ fn cost_line(gross: f64, covered: f64, billed: f64) -> String {
     )
 }
 
+/// The organization's Actions budget and what it does past the allowance —
+/// or why nothing can be said. "No budget" and "unreadable" never share a
+/// line: the first means overage is billed, the second that nobody knows.
+fn budget_lines(budgets: Option<&[Budget]>) -> Vec<Line<'static>> {
+    let Some(budgets) = budgets else {
+        return vec![
+            Line::from(Span::styled("Budget Actions : illisible", theme::muted())),
+            Line::from(Span::styled(
+                "  (réservé aux admins et gestionnaires de facturation)",
+                theme::muted(),
+            )),
+        ];
+    };
+    let mut lines = match billing::actions_budget(budgets) {
+        Some(b) if b.blocking => vec![Line::from(Span::styled(
+            format!("Budget Actions : {} · bloquant", usd(b.amount as f64)),
+            theme::text_style(),
+        ))],
+        Some(b) => vec![Line::from(Span::styled(
+            format!(
+                "Budget Actions : {} · alerte seule, sans blocage",
+                usd(b.amount as f64)
+            ),
+            theme::text_style(),
+        ))],
+        None => vec![
+            Line::from(Span::styled(
+                "Budget Actions : aucun, dépassement facturé sans plafond",
+                theme::text_style(),
+            )),
+            Line::from(Span::styled(
+                "  (si un moyen de paiement est enregistré)",
+                theme::muted(),
+            )),
+        ],
+    };
+    // Never observed, so named rather than interpreted.
+    for b in billing::actions_sku_budgets(budgets) {
+        let mode = if b.blocking {
+            "bloquant"
+        } else {
+            "alerte seule"
+        };
+        lines.push(Line::from(Span::styled(
+            format!("Budget SKU {} : {} · {mode}", b.sku, usd(b.amount as f64)),
+            theme::muted(),
+        )));
+        lines.push(Line::from(Span::styled(
+            "  signalé, non pris en compte par les avertissements",
+            theme::muted(),
+        )));
+    }
+    lines
+}
+
+/// Under a gauge at `billing::BUDGET_WARNING_PERCENT` or more with a
+/// blocking Actions budget: what GitHub will do once the allowance runs out.
+/// Takes the percentage the gauge displays, so the two never disagree.
+fn budget_warning_lines(quota: &str, percent: u64, budget: Option<&Budget>) -> Vec<Line<'static>> {
+    let Some(b) = budget.filter(|_| billing::nears_blocking_budget(percent, budget)) else {
+        return Vec::new();
+    };
+    let consequence = if b.amount == 0 {
+        "  GitHub bloquera l'usage Actions au quota atteint.".to_string()
+    } else {
+        format!(
+            "  facturé jusqu'à {}, puis usage Actions bloqué.",
+            usd(b.amount as f64)
+        )
+    };
+    vec![
+        Line::from(Span::styled(
+            format!(
+                "⚠ {percent} % du quota de {quota}, budget {} bloquant :",
+                usd(b.amount as f64)
+            ),
+            theme::status_warn(),
+        )),
+        Line::from(Span::styled(consequence, theme::status_warn())),
+    ]
+}
+
 /// `exec-d · formule team`, or `formule inconnue` when the plan was not read.
 fn header_line(login: &str, plan: Option<&str>) -> Line<'static> {
     let plan = plan.unwrap_or("inconnue");
@@ -273,7 +355,8 @@ fn breakdown<T>(rows: &[T], row: impl Fn(&T) -> Line<'static>, rest: &str) -> Ve
     lines
 }
 
-/// The minutes gauge and the per-repository breakdown behind it.
+/// The minutes gauge, the budget warning it may carry, and the
+/// per-repository breakdown behind it.
 ///
 /// The breakdown is the tab's reason to exist: minutes cannot be reclaimed
 /// once burnt, so the actionable part is *which repository* burnt them.
@@ -282,20 +365,26 @@ fn minutes_block(
     month: &str,
     private: &HashSet<String>,
     plan: Option<&str>,
+    budget: Option<&Budget>,
 ) -> Vec<Line<'static>> {
+    let used = report.included_minutes(month, private);
+    let allowance = included_minutes_for(plan);
     let mut lines = vec![
         Line::from(Span::styled(
             "Minutes équivalent-inclus",
             theme::text_style(),
         )),
         Line::from(Span::styled(
-            gauge_line(
-                report.included_minutes(month, private),
-                included_minutes_for(plan),
-            ),
+            gauge_line(used, allowance),
             theme::text_style(),
         )),
     ];
+    // No allowance, no percentage — and so nothing to warn against either:
+    // the budget would have no ratio to be near.
+    if let Some(allowance) = allowance {
+        let percent = gauges::percent(used, allowance);
+        lines.extend(budget_warning_lines("minutes", percent, budget));
+    }
     // Counted in rows, not repositories: one repo can contribute several rows
     // (one per SKU).
     lines.extend(breakdown(
@@ -306,18 +395,24 @@ fn minutes_block(
     lines
 }
 
-/// The storage gauge, the repositories holding the storage, and what
-/// deleting can and cannot do about it. No request of its own: the usage
-/// report stage 1 loaded already carries every line.
-fn storage_block(report: &BillingReport, month: &str, plan: Option<&str>) -> Vec<Line<'static>> {
+/// The storage gauge, the budget warning it may carry, the repositories
+/// holding the storage, and what deleting can and cannot do about it. No
+/// request of its own: the usage report stage 1 loaded carries every line.
+fn storage_block(
+    report: &BillingReport,
+    month: &str,
+    plan: Option<&str>,
+    budget: Option<&Budget>,
+) -> Vec<Line<'static>> {
     let used = report.storage_gbh(month);
+    let quota = billing::storage_quota(plan, month);
     // An empty month is a report with no usage: the quota is missing for
     // want of an hour count, whatever the plan, so `formule inconnue` would
     // give the wrong reason.
     let gauge = if month.is_empty() {
         format!("{used:.2} GB-h   {NO_USAGE}")
     } else {
-        storage_gauge_line(used, billing::storage_quota(plan, month))
+        storage_gauge_line(used, quota)
     };
     let mut lines = vec![
         Line::from(Span::styled(
@@ -326,6 +421,11 @@ fn storage_block(report: &BillingReport, month: &str, plan: Option<&str>) -> Vec
         )),
         Line::from(Span::styled(gauge, theme::text_style())),
     ];
+    // Same rule as the minutes: no quota, no percentage, no warning.
+    if let Some(quota) = quota {
+        let percent = storage_percent(used, quota);
+        lines.extend(budget_warning_lines("stockage", percent, budget));
+    }
     lines.extend(breakdown(
         &report.storage_lines(month),
         storage_line_row,
@@ -364,25 +464,35 @@ fn cost_block(report: &BillingReport, month: &str) -> Vec<Line<'static>> {
 /// and so each block can be asserted on through the real render.
 fn tab_lines(org: &OrgSummary, month_cursor: usize) -> Vec<Line<'static>> {
     let plan = org.plan.as_deref();
+    let budgets = org.budgets.as_deref();
     let mut lines = vec![header_line(&org.login, plan)];
 
     let Some(report) = &org.billing else {
         lines.push(unreadable_line());
+        lines.extend(budget_lines(budgets));
         return lines;
     };
 
     let month = displayed_month(report, month_cursor);
     let private = private_repos(org);
+    // The warning is in the future tense — GitHub *will* block once the
+    // allowance runs out — so it belongs to the month still running. Paged
+    // back to a closed month, the budget carries no warning: that month's
+    // outcome is already settled, whatever its gauges read.
+    let budget = budgets
+        .and_then(billing::actions_budget)
+        .filter(|_| report.months().last() == Some(&month));
     // A readable report with no usage at all has no month: its line would be
     // a bare ` · quota documenté…`.
     if !month.is_empty() {
         lines.push(month_line(&month));
     }
     lines.extend(enterprise_lines(plan));
+    lines.extend(budget_lines(budgets));
     lines.push(Line::from(""));
-    lines.extend(minutes_block(report, &month, &private, plan));
+    lines.extend(minutes_block(report, &month, &private, plan, budget));
     lines.push(Line::from(""));
-    lines.extend(storage_block(report, &month, plan));
+    lines.extend(storage_block(report, &month, plan, budget));
     lines.push(Line::from(""));
     lines.extend(cost_block(report, &month));
     lines
@@ -411,7 +521,7 @@ pub fn render(app: &mut App, f: &mut Frame, area: Rect) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::billing::UsageItem;
+    use crate::billing::{Budget, UsageItem};
     use crate::model::RepoSummary;
     use crate::tui::app::View;
 
@@ -1016,5 +1126,228 @@ mod tests {
         });
         let mut app = billing_app(org);
         assert_shown_at_every_size(&mut app, "ptitjardinier-app-m… 12345.67 GB-h");
+    }
+
+    /// `org` with the budgets stage 1 read: `None` when the listing itself
+    /// could not be read, `Some(vec![])` when the org simply has none.
+    fn with_budgets(mut org: OrgSummary, budgets: Option<Vec<Budget>>) -> App {
+        org.budgets = budgets;
+        billing_app(org)
+    }
+
+    /// The organization-wide Actions budget, `amount` whole US dollars.
+    fn actions(amount: u64, blocking: bool) -> Budget {
+        Budget {
+            budget_type: "ProductPricing".into(),
+            sku: "actions".into(),
+            scope: "organization".into(),
+            amount,
+            blocking,
+        }
+    }
+
+    /// 2 850 of Team's 3 000 minutes: 95 %. An illustrative figure — #14
+    /// gives budgets, not a 95 % month.
+    fn team_at_95_percent() -> OrgSummary {
+        let mut org = exec_d_september();
+        org.plan = Some("team".into());
+        org.billing = Some(BillingReport {
+            items: vec![usage(
+                "2026-09",
+                "Actions Linux",
+                "Minutes",
+                2_850.0,
+                17.1,
+                "disconnected",
+            )],
+        });
+        org
+    }
+
+    #[test]
+    fn budget_line_reads_zero_dollars_blocking() {
+        let mut app = with_budgets(exec_d_september(), Some(vec![actions(0, true)]));
+        assert_shown_at_every_size(&mut app, "Budget Actions : 0.00 $ · bloquant");
+    }
+
+    #[test]
+    fn budget_line_reads_five_dollars_blocking() {
+        let mut org = exec_d_september();
+        org.login = "cloudalpes".into();
+        let mut app = with_budgets(org, Some(vec![actions(5, true)]));
+        assert_shown_at_every_size(&mut app, "Budget Actions : 5.00 $ · bloquant");
+    }
+
+    #[test]
+    fn budget_line_reads_no_budget_as_billed_overage() {
+        let mut org = exec_d_september();
+        org.login = "SecondBrain-io".into();
+        let mut app = with_budgets(org, Some(vec![]));
+        assert_shown_at_every_size(
+            &mut app,
+            "Budget Actions : aucun, dépassement facturé sans plafond",
+        );
+        assert_shown_at_every_size(&mut app, "(si un moyen de paiement est enregistré)");
+        // Scoped: Task 14's retention line may say `illisible` on its own.
+        assert_absent_at_every_width(&mut app, "Budget Actions : illisible");
+    }
+
+    #[test]
+    fn budget_line_reads_unreadable_budgets() {
+        let mut org = exec_d_september();
+        org.login = "le-vilain-petit-dev".into();
+        let mut app = with_budgets(org, None);
+        assert_shown_at_every_size(&mut app, "Budget Actions : illisible");
+        assert_shown_at_every_size(
+            &mut app,
+            "(réservé aux admins et gestionnaires de facturation)",
+        );
+        assert_absent_at_every_width(&mut app, "aucun, dépassement");
+    }
+
+    /// A budget on one Actions SKU has never been observed on the author's
+    /// organizations, so the tab names it and says it means nothing to the
+    /// warnings, rather than folding it into the product budget.
+    #[test]
+    fn a_sku_budget_line_is_signalled_not_interpreted() {
+        let sku = Budget {
+            budget_type: "SkuPricing".into(),
+            sku: "actions_linux".into(),
+            scope: "organization".into(),
+            amount: 5,
+            blocking: true,
+        };
+        let mut app = with_budgets(exec_d_september(), Some(vec![actions(0, true), sku]));
+        assert_shown_at_every_size(&mut app, "Budget SKU actions_linux : 5.00 $ · bloquant");
+        assert_shown_at_every_size(
+            &mut app,
+            "signalé, non pris en compte par les avertissements",
+        );
+    }
+
+    #[test]
+    fn a_blocking_budget_at_95_percent_warns_under_the_gauge() {
+        let mut app = with_budgets(team_at_95_percent(), Some(vec![actions(0, true)]));
+        assert_shown_at_every_size(
+            &mut app,
+            "⚠ 95 % du quota de minutes, budget 0.00 $ bloquant :",
+        );
+        assert_shown_at_every_size(
+            &mut app,
+            "GitHub bloquera l'usage Actions au quota atteint.",
+        );
+
+        // *Under the gauge*: the warning is the row right after the figures
+        // it comments on, not merely somewhere on the tab.
+        let s = screen(&mut app, 100, 50);
+        let row_of = |needle: &str| {
+            s.lines()
+                .position(|l| l.contains(needle))
+                .unwrap_or_else(|| panic!("{needle:?} missing:\n{s}"))
+        };
+        assert_eq!(
+            row_of("⚠ 95 % du quota de minutes"),
+            row_of("2 850 / 3 000") + 1,
+            "the warning belongs directly under the gauge:\n{s}"
+        );
+    }
+
+    #[test]
+    fn a_five_dollar_blocking_budget_warns_it_bills_then_blocks() {
+        let mut app = with_budgets(team_at_95_percent(), Some(vec![actions(5, true)]));
+        assert_shown_at_every_size(
+            &mut app,
+            "⚠ 95 % du quota de minutes, budget 5.00 $ bloquant :",
+        );
+        assert_shown_at_every_size(
+            &mut app,
+            "facturé jusqu'à 5.00 $, puis usage Actions bloqué.",
+        );
+    }
+
+    /// exec-d's real September storage, on Free, with its real 0 $ blocking
+    /// Actions budget: 103 % of 360 GB-h — the storage gauge warns too.
+    #[test]
+    fn the_storage_gauge_warns_on_a_blocking_budget_too() {
+        let mut org = exec_d_september();
+        org.plan = Some("free".into());
+        let mut app = with_budgets(org, Some(vec![actions(0, true)]));
+        assert_shown_at_every_size(
+            &mut app,
+            "⚠ 103 % du quota de stockage, budget 0.00 $ bloquant :",
+        );
+        // 1 004 of Free's 2 000 minutes is 50 %: no minutes warning.
+        assert_absent_at_every_width(&mut app, "du quota de minutes");
+    }
+
+    /// The same 95 % month must stay quiet when nothing will be blocked, or
+    /// when nobody can say: no budget, an alert-only budget, unreadable.
+    #[test]
+    fn no_budget_warning_without_a_blocking_budget() {
+        for budgets in [Some(vec![]), Some(vec![actions(5, false)]), None] {
+            let mut app = with_budgets(team_at_95_percent(), budgets);
+            // The 95 % gauge is on screen, so the absence below is not vacuous.
+            assert_shown_at_every_size(&mut app, "2 850 / 3 000");
+            assert_absent_at_every_width(&mut app, "du quota de");
+        }
+    }
+
+    /// Two months at 95 %, so only the month decides: the newest is the one
+    /// still running, and the only one GitHub can still block.
+    fn two_months_at_95_percent() -> OrgSummary {
+        let mut org = team_at_95_percent();
+        org.billing = Some(BillingReport {
+            items: vec![
+                usage(
+                    "2026-08",
+                    "Actions Linux",
+                    "Minutes",
+                    2_850.0,
+                    17.1,
+                    "disconnected",
+                ),
+                usage(
+                    "2026-09",
+                    "Actions Linux",
+                    "Minutes",
+                    2_850.0,
+                    17.1,
+                    "disconnected",
+                ),
+            ],
+        });
+        org
+    }
+
+    /// Pre-flight 5.1: the warning is in the future tense — GitHub *will*
+    /// block — so it belongs to the month still running. Paged back with `←`,
+    /// the same 95 % against the same blocking budget says nothing: that
+    /// month's outcome is already settled.
+    #[test]
+    fn an_older_month_never_warns_about_a_blocking_budget() {
+        let mut app = with_budgets(two_months_at_95_percent(), Some(vec![actions(0, true)]));
+        assert_shown_at_every_size(&mut app, "2026-09 ·");
+        assert_shown_at_every_size(&mut app, "⚠ 95 % du quota de minutes");
+
+        app.month_cursor = 1;
+        assert_shown_at_every_size(&mut app, "2026-08 ·");
+        assert_shown_at_every_size(&mut app, "2 850 / 3 000");
+        assert_absent_at_every_width(&mut app, "du quota de");
+    }
+
+    /// The usage report and the budgets are two endpoints, refused
+    /// separately: an organization whose report is unreadable can still have
+    /// a budget worth knowing about, and the tab says the one it read rather
+    /// than falling silent on both.
+    #[test]
+    fn an_unreadable_report_still_shows_the_budget() {
+        let mut org = exec_d_september();
+        org.billing = None;
+        let mut app = with_budgets(org, Some(vec![actions(0, true)]));
+        // Cut short: the whole sentence is wider than a 60-column frame.
+        assert_shown_at_every_size(&mut app, "⚠ facturation illisible");
+        assert_shown_at_every_size(&mut app, "Budget Actions : 0.00 $ · bloquant");
+        // No report, no month, no gauge — so nothing to warn under.
+        assert_absent_at_every_width(&mut app, "du quota de");
     }
 }

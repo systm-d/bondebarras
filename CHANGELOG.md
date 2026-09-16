@@ -52,6 +52,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   displayed). (#13)
 - `scan --json`: `billing_month`, `storage_gbh` and `storage_allowance_gbh`
   per organization, `storage_gbh` per repository. (#13)
+- Billing tab: the organization's Actions budget — its amount and whether it
+  blocks — read at stage 1, and what it means past the allowance: Actions
+  stopped at the allowance (0 $, as on exec-d), billed up to the budget then
+  stopped (5 $, as on cloudalpes), or billed without a ceiling (no budget, as
+  on SecondBrain-io). A gauge at 90 % or more with a blocking budget carries a
+  warning, on the month still running. A per-SKU Actions budget is named, not
+  interpreted. Budgets that cannot be read — a 400 on organizations the
+  account does not own — read `illisible`, never "no budget". Read-only,
+  permanently. (#14)
+- `scan --json`: `budgets_readable`, `actions_budget` and
+  `actions_sku_budgets`. (#14)
 
 ### Changed
 

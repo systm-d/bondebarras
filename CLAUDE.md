@@ -123,6 +123,9 @@ shim).
   same `repo`-scoped endpoint, gated by the token's admin rights on that one
   repository rather than a scope to grant. Repository *deletion* is
   permanently out of scope, so `delete_repo` is never needed.
+  Reading budgets (the Billing tab's budget line) is a role, not a scope:
+  organization admin or billing manager — anyone else reads `illisible`, and
+  a budget is never written.
 - User-facing strings (CLI/TUI output) may be in **French** (e.g.
   `Erreur : …`); code identifiers and documentation stay in English.
 

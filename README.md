@@ -141,8 +141,16 @@ again by anything.
   month the resources column's minutes gauge reads, named on the line — and
   marks with ⚠ a repository whose caches are past the included 10 GiB
   (10.7 Go as displayed), past which GitHub evicts, or bills the excess at
-  its hourly peak if the repository's cache limit was
-  raised.
+  its hourly peak if the repository's cache limit was raised.
+  The tab also says what happens once an allowance runs out, from the
+  organization's **Actions budget**: `0.00 $ · bloquant` (GitHub stops
+  Actions at the allowance), `5.00 $ · bloquant` (billed up to 5 $, then
+  stopped), or no budget at all (overage billed with no ceiling, if a payment
+  method is on file). A gauge at 90 % or more with a blocking budget carries a
+  warning under it, on the month still running — the only one GitHub can
+  still block. A budget on a single Actions SKU is named as such, never
+  interpreted. Budgets are read, never changed: changing one commits money,
+  and that is permanently out of scope.
 - **Headless CLI** — `bondebarras scan --json` for a machine-readable
   overview, and `bondebarras clean` for non-interactive cleanup, e.g. from a
   cron job.
@@ -375,6 +383,9 @@ minutes, or `null` — never a default). `billing_month` names the current
 month (`YYYY-MM`, in UTC), for which `storage_gbh` and
 `storage_allowance_gbh` are given per organization and `storage_gbh` per
 repository — `null` when billing or the plan cannot be read, never zero.
+`budgets_readable`, `actions_budget` (`{"amount", "blocking"}`, or `null` when
+the organization has no Actions budget) and `actions_sku_budgets` (`null`, not
+`[]`, when budgets cannot be read) keep "no budget" and "unreadable" apart.
 
 **Without `--yes`, `clean` prints the plan and deletes nothing** — the same
 dry-run-by-default rule as the TUI's confirmation modal, just without a
@@ -425,6 +436,13 @@ Repository archiving needs no new scope either: it goes through the same
 repository itself — a right the token either has or doesn't, not a scope to
 grant. Repository *deletion* is explicitly and permanently out of scope for
 this tool, so `delete_repo` is never required.
+
+Reading **budgets** is not a scope question: GitHub reserves the budgets
+endpoint for organization admins and billing managers. Anyone else is refused
+— observed as a 400, not the 403 the documentation announces — and the
+Billing tab reads `Budget Actions : illisible` instead of guessing, while
+`scan --json` reports `budgets_readable: false`. The rest of the tab, and the
+organization itself, are unaffected.
 
 ---
 
