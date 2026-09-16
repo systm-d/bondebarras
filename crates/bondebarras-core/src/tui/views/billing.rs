@@ -493,6 +493,21 @@ fn retention_notes() -> Vec<Line<'static>> {
         .collect()
 }
 
+/// The retention setting and the two notes that qualify it, as one block.
+///
+/// Review I1: the notes used to close the tab, which is a `Paragraph` with no
+/// scroll — so on a 24-row terminal they were the first thing cut, and #15's
+/// second point vanished entirely. They describe the setting, not the tab, so
+/// they belong directly under it, where the tab's height cannot silence them.
+fn retention_block(
+    retention: Option<ArtifactRetention>,
+    storage_gbh: Option<f64>,
+) -> Vec<Line<'static>> {
+    let mut lines = retention_lines(retention, storage_gbh);
+    lines.extend(retention_notes());
+    lines
+}
+
 /// The month's costs, then any runner SKU `sku_multiplier` does not know.
 fn cost_block(report: &BillingReport, month: &str) -> Vec<Line<'static>> {
     let (gross, covered, billed) = report.cost(month);
@@ -531,9 +546,9 @@ fn tab_lines(org: &OrgSummary, month_cursor: usize) -> Vec<Line<'static>> {
         let month = displayed_month(report, month_cursor);
         let private = private_repos(org);
         // The warning is in the future tense — GitHub *will* block once the
-        // allowance runs out — so it belongs to the month still running. Paged
-        // back to a closed month, the budget carries no warning: that month's
-        // outcome is already settled, whatever its gauges read.
+        // allowance runs out — so it belongs to the report's most recent
+        // month. Paged back to an older one, the budget carries no warning:
+        // that month's outcome is already settled, whatever its gauges read.
         let budget = budgets
             .and_then(billing::actions_budget)
             .filter(|_| report.months().last() == Some(&month));
@@ -550,7 +565,7 @@ fn tab_lines(org: &OrgSummary, month_cursor: usize) -> Vec<Line<'static>> {
         lines.extend(storage_block(report, &month, plan, budget));
         // Beside the storage it governs, and weighed against that month's
         // own GB-hours.
-        lines.extend(retention_lines(
+        lines.extend(retention_block(
             org.retention,
             Some(report.storage_gbh(&month)),
         ));
@@ -561,12 +576,9 @@ fn tab_lines(org: &OrgSummary, month_cursor: usize) -> Vec<Line<'static>> {
         lines.extend(budget_block);
         // Storage unknown: the retention is shown, never highlighted —
         // nobody can say whether it counts.
-        lines.extend(retention_lines(org.retention, None));
+        lines.extend(retention_block(org.retention, None));
     }
 
-    // #15's two notes close the tab, whatever it could read.
-    lines.push(Line::from(""));
-    lines.extend(retention_notes());
     lines
 }
 
@@ -594,7 +606,7 @@ pub fn render(app: &mut App, f: &mut Frame, area: Rect) {
 mod tests {
     use super::*;
     use crate::billing::{Budget, UsageItem};
-    use crate::model::{ArtifactRetention, RepoSummary};
+    use crate::model::RepoSummary;
     use crate::tui::app::View;
 
     /// One usage-report line with its unit spelled out: minutes and storage
@@ -1379,8 +1391,8 @@ mod tests {
         }
     }
 
-    /// Two months at 95 %, so only the month decides: the newest is the one
-    /// still running, and the only one GitHub can still block.
+    /// Two months at 95 %, so only the month decides: the report's most
+    /// recent is the only one GitHub can still block.
     fn two_months_at_95_percent() -> OrgSummary {
         let mut org = team_at_95_percent();
         org.billing = Some(BillingReport {
@@ -1407,9 +1419,9 @@ mod tests {
     }
 
     /// Pre-flight 5.1: the warning is in the future tense — GitHub *will*
-    /// block — so it belongs to the month still running. Paged back with `←`,
-    /// the same 95 % against the same blocking budget says nothing: that
-    /// month's outcome is already settled.
+    /// block — so it belongs to the report's most recent month. Paged back
+    /// with `←`, the same 95 % against the same blocking budget says nothing:
+    /// that month's outcome is already settled.
     #[test]
     fn an_older_month_never_warns_about_a_blocking_budget() {
         let mut app = with_budgets(two_months_at_95_percent(), Some(vec![actions(0, true)]));
@@ -1497,6 +1509,47 @@ mod tests {
             "Rétention artefacts et journaux : 90 j (max. 400 j)",
         );
         assert_absent_at_every_width(&mut app, "⚠ Rétention");
+    }
+
+    /// GitHub does not always report a ceiling. Without one the line carries
+    /// the days alone — never a ` (max.  j)` with a hole where the figure
+    /// should be. `with_retention` always sets one, so this path needs its
+    /// own fixture.
+    #[test]
+    fn retention_line_without_a_maximum_shows_only_the_days() {
+        let mut org = exec_d_september();
+        org.retention = Some(ArtifactRetention {
+            days: 7,
+            maximum_allowed_days: None,
+        });
+        let mut app = billing_app(org);
+        assert_shown_at_every_size(&mut app, "Rétention artefacts et journaux : 7 j");
+        assert_absent_at_every_width(&mut app, "max.");
+    }
+
+    /// Review I1: the tab is a `Paragraph` with no scroll, so its last lines
+    /// are simply cut on a short terminal — and #15's two notes closed it, so
+    /// on the 80×24 every terminal still has, the whole second point was
+    /// invisible. They qualify the setting, not the tab, so they sit directly
+    /// under it. The height floor `assert_shown_at_every_size` derives from a
+    /// needle's own row cannot catch this, so the size is named outright.
+    #[test]
+    fn the_retention_notes_fit_an_eighty_by_twenty_four_terminal() {
+        let mut app = with_retention(exec_d_september(), Some(7));
+        let s = screen(&mut app, 80, 24);
+        // Positive anchors: the readable tab, and the line the notes qualify.
+        assert!(s.contains("exec-d ·"), "no tab at 80x24:\n{s}");
+        assert!(
+            s.contains("Rétention artefacts et journaux : 7 j (max. 400 j)"),
+            "the retention line is missing at 80x24:\n{s}"
+        );
+        for note in RETENTION_NOTES {
+            assert!(
+                s.contains(note.trim_start()),
+                "{:?} missing at 80x24:\n{s}",
+                note.trim_start()
+            );
+        }
     }
 
     #[test]

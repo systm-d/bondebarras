@@ -436,11 +436,11 @@ interactive TUI) is the only way in.
 
 `repo`, `read:org`, `read:packages`, and `delete:packages` are enough for
 everything bondebarras does but one optional display (see `admin:org`
-below) — reading and deleting caches, artifacts,
-workflow runs, and container package versions; listing the organizations and
-repositories a token can see; and reading the Billing tab's usage report (a
-403 there just means the token's owner isn't an org owner — the org stays
-otherwise navigable). Branches, tags, and release assets need no scope
+below) — reading and deleting caches, artifacts, workflow runs, and
+container package versions; listing the organizations and repositories a
+token can see; and reading the Billing tab's usage report (a 403 there just
+means the token's owner isn't an org owner — the org stays otherwise
+navigable). Branches, tags, and release assets need no scope
 beyond `repo`, already in that list — nothing new to grant for them.
 Repository archiving needs no new scope either: it goes through the same
 `repo`-scoped endpoint as everything else, and requires admin rights on the
