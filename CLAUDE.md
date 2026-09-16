@@ -148,6 +148,7 @@ shim).
 | Billing usage-report fetch (403 degrades to `None`, not an error) | `crates/bondebarras-core/src/api/billing.rs` |
 | Organization plan name (`GET /orgs/{org}`; refused or absent → `None`, never a default) | `crates/bondebarras-core/src/api/orgs.rs` |
 | Organization budgets (read-only; paginated; any failure, malformed entry or truncation → unreadable, never "no budget") | `crates/bondebarras-core/src/api/budgets.rs` |
+| Artifact and log retention setting (read-only; refused → `None`; the `PUT` is never called) | `crates/bondebarras-core/src/api/retention.rs` |
 | Package version endpoints (list, delete) | `crates/bondebarras-core/src/api/packages.rs` |
 | Package version classification: untagged, orphaned attestation, tagged (pure) | `crates/bondebarras-core/src/packages.rs` |
 | Branch/tag endpoints (list, delete), default-branch lookup | `crates/bondebarras-core/src/api/refs.rs` |

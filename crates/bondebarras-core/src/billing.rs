@@ -195,6 +195,25 @@ pub fn nears_blocking_budget(percent: u64, budget: Option<&Budget>) -> bool {
     percent >= BUDGET_WARNING_PERCENT && budget.is_some_and(|b| b.blocking)
 }
 
+/// Retention, in days, from which the setting is worth pointing out.
+/// GitHub's default is 90, and `maximum_allowed_days` goes up to 400 — longer
+/// accumulates more, hence "at least".
+pub const RETENTION_FLAG_DAYS: u32 = 90;
+
+/// GB-hours in a month from which an org's Actions storage is not
+/// negligible: 10 % of the smallest plan's included storage (0.5 GB × 720 h
+/// = 360 GB-h). Fixed, independent of the org's plan, so the highlight still
+/// works when the plan cannot be read.
+pub const NOTABLE_STORAGE_GBH: f64 = 36.0;
+
+/// Whether the retention setting deserves to stand out: at least
+/// `RETENTION_FLAG_DAYS`, on an org whose storage this month is at least
+/// `NOTABLE_STORAGE_GBH`. Unknown storage (billing unreadable) never
+/// highlights: nobody knows whether it counts.
+pub fn retention_worth_flagging(days: u32, storage_gbh: Option<f64>) -> bool {
+    days >= RETENTION_FLAG_DAYS && storage_gbh.is_some_and(|gbh| gbh >= NOTABLE_STORAGE_GBH)
+}
+
 /// How many Linux-equivalent minutes one minute of this runner costs.
 ///
 /// `None` means the SKU is unknown — a new runner family GitHub added. The
@@ -891,5 +910,21 @@ mod tests {
         assert!(!nears_blocking_budget(89, Some(&blocking)));
         assert!(!nears_blocking_budget(95, Some(&alert_only)));
         assert!(!nears_blocking_budget(95, None));
+    }
+
+    #[test]
+    fn retention_worth_flagging_needs_ninety_days_and_notable_storage() {
+        // exec-d before its change: 90 days, 371.85 GB-h in September.
+        assert!(retention_worth_flagging(90, Some(371.85)));
+        // The maximum accumulates even more.
+        assert!(retention_worth_flagging(400, Some(371.85)));
+        // exec-d after its change: 7 days.
+        assert!(!retention_worth_flagging(7, Some(371.85)));
+        // 90 days on an org holding about what systm-d/josephine alone holds.
+        assert!(!retention_worth_flagging(90, Some(12.9)));
+        // At the threshold itself.
+        assert!(retention_worth_flagging(90, Some(36.0)));
+        // Billing unreadable: nobody knows whether storage counts.
+        assert!(!retention_worth_flagging(90, None));
     }
 }

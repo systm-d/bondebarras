@@ -209,6 +209,19 @@ pub struct RepoSummary {
     pub class: crate::repos::RepoClass,
 }
 
+/// An organization's artifact and log retention setting, read-only.
+///
+/// It is the tap: every artifact a workflow uploads is kept this long unless
+/// the workflow's own `retention-days` asks for less. A change only applies
+/// to new artifacts and logs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ArtifactRetention {
+    /// Days a new artifact or log is kept by default.
+    pub days: u32,
+    /// The ceiling `days` may be raised to, when GitHub says.
+    pub maximum_allowed_days: Option<u32>,
+}
+
 /// Stage-1 view of one organization.
 ///
 /// `Default` exists for test fixtures (`..Default::default()`) only. The one
@@ -233,6 +246,10 @@ pub struct OrgSummary {
     /// reserves them to admins and billing managers. `Some(vec![])` is a
     /// readable org with no budget at all; the two must never be confused.
     pub budgets: Option<Vec<crate::billing::Budget>>,
+    /// The org's artifact and log retention, or `None` when it cannot be
+    /// read — GitHub requires `admin:org` (or the fine-grained "Actions
+    /// policies" permission), which this tool treats as optional.
+    pub retention: Option<ArtifactRetention>,
 }
 
 #[cfg(test)]

@@ -38,6 +38,8 @@ pub async fn run(client: &Client, orgs: &[String], json: bool) -> Result<()> {
 /// A figure the API did not give is `null`, never a default:
 /// `minutes_allowance` is `null` for an unreadable or unknown plan, not the
 /// Free plan's 2 000, and storage is `null` when billing is unreadable, not 0.
+/// `actions_sku_budgets` is `[]` for a readable organization with no budget
+/// and `null` when the budgets are unreadable.
 /// `month` is the month storage is read for; `run` passes the current UTC
 /// month, and the document names it (`billing_month`).
 pub fn overview_json(summaries: &[OrgSummary], month: &str) -> serde_json::Value {
@@ -66,6 +68,7 @@ fn org_json(o: &OrgSummary, month: &str) -> serde_json::Value {
             .into_iter()
             .map(|b| serde_json::json!({ "sku": b.sku, "amount": b.amount, "blocking": b.blocking }))
             .collect::<Vec<_>>()),
+        "artifact_retention_days": o.retention.map(|r| r.days),
         "repos": o.repos.iter().map(|r| serde_json::json!({
             "name": r.name,
             "cache_bytes": r.cache_bytes,
@@ -190,28 +193,47 @@ mod tests {
         assert!(v[1]["repos"][0]["storage_gbh"].is_null(), "got: {}", v[1]);
     }
 
-    fn budget(budget_type: &str, sku: &str, amount: u64) -> crate::billing::Budget {
+    /// `blocking` is a parameter, never a constant: every fixture used to
+    /// hardcode `true`, so `org_json` emitting a literal `true` instead of
+    /// `b.blocking` survived the whole suite — and blocking versus
+    /// alert-only is the distinction the budget keys exist for.
+    fn budget(budget_type: &str, sku: &str, amount: u64, blocking: bool) -> crate::billing::Budget {
         crate::billing::Budget {
             budget_type: budget_type.into(),
             sku: sku.into(),
             scope: "organization".into(),
             amount,
-            blocking: true,
+            blocking,
         }
     }
 
     /// "No budget" and "budgets unreadable" must never produce the same
     /// object: the first means overage is billed without a ceiling, the
-    /// second means nobody knows.
+    /// second means nobody knows. A budget that only alerts is the third
+    /// case, and no less distinct: GitHub bills its overage instead of
+    /// stopping the usage, so `blocking` is read from each budget rather
+    /// than assumed.
     #[test]
     fn scan_json_tells_no_budget_from_unreadable_budgets() {
         let blocked = OrgSummary {
             login: "exec-d".into(),
             budgets: Some(vec![
-                budget("ProductPricing", "codespaces", 0),
-                budget("ProductPricing", "actions", 0),
-                budget("SkuPricing", "actions_linux", 5),
+                budget("ProductPricing", "codespaces", 0, true),
+                budget("ProductPricing", "actions", 0, true),
+                budget("SkuPricing", "actions_linux", 5, true),
+                // Alert-only, and the only SKU budget that is: without it
+                // every `blocking` in the document would be `true`, and a
+                // hardcoded one would read the same.
+                budget("SkuPricing", "actions_macos", 7, false),
             ]),
+            ..Default::default()
+        };
+        let alerting = OrgSummary {
+            login: "systm-d".into(),
+            // An Actions budget that only warns: GitHub bills the overage
+            // rather than stopping it, which the document must not report as
+            // blocking.
+            budgets: Some(vec![budget("ProductPricing", "actions", 50, false)]),
             ..Default::default()
         };
         let no_budget = OrgSummary {
@@ -224,7 +246,7 @@ mod tests {
             ..Default::default()
         };
 
-        let v = overview_json(&[blocked, no_budget, unreadable], "2026-09");
+        let v = overview_json(&[blocked, alerting, no_budget, unreadable], "2026-09");
 
         assert_eq!(v[0]["budgets_readable"], true);
         assert_eq!(
@@ -233,15 +255,38 @@ mod tests {
         );
         assert_eq!(
             v[0]["actions_sku_budgets"],
-            serde_json::json!([{ "sku": "actions_linux", "amount": 5, "blocking": true }])
+            serde_json::json!([
+                { "sku": "actions_linux", "amount": 5, "blocking": true },
+                { "sku": "actions_macos", "amount": 7, "blocking": false }
+            ])
         );
 
-        assert_eq!(v[1]["budgets_readable"], true);
-        assert!(v[1]["actions_budget"].is_null(), "got: {}", v[1]);
-        assert_eq!(v[1]["actions_sku_budgets"], serde_json::json!([]));
+        assert_eq!(
+            v[1]["actions_budget"],
+            serde_json::json!({ "amount": 50, "blocking": false })
+        );
 
-        assert_eq!(v[2]["budgets_readable"], false);
+        assert_eq!(v[2]["budgets_readable"], true);
         assert!(v[2]["actions_budget"].is_null(), "got: {}", v[2]);
-        assert!(v[2]["actions_sku_budgets"].is_null(), "got: {}", v[2]);
+        assert_eq!(v[2]["actions_sku_budgets"], serde_json::json!([]));
+
+        assert_eq!(v[3]["budgets_readable"], false);
+        assert!(v[3]["actions_budget"].is_null(), "got: {}", v[3]);
+        assert!(v[3]["actions_sku_budgets"].is_null(), "got: {}", v[3]);
+    }
+
+    #[test]
+    fn scan_json_carries_artifact_retention_days() {
+        let exec_d = OrgSummary {
+            login: "exec-d".into(),
+            retention: Some(crate::model::ArtifactRetention {
+                days: 7,
+                maximum_allowed_days: None,
+            }),
+            ..Default::default()
+        };
+        let v = overview_json(&[exec_d, org("systm-d", None)], "2026-09");
+        assert_eq!(v[0]["artifact_retention_days"], 7);
+        assert!(v[1]["artifact_retention_days"].is_null(), "got: {}", v[1]);
     }
 }

@@ -61,12 +61,13 @@ pub async fn overview(client: &Client, orgs: &[String]) -> Vec<OrgSummary> {
         repos_out.sort_by_key(|r| std::cmp::Reverse(r.cache_bytes));
 
         // The degradable stage-1 reads, joined: none depends on another, and
-        // none is `?`-propagated — an org whose billing, plan or budgets are
-        // refused is still worth showing.
-        let (billing, plan, budgets) = futures::join!(
+        // none is `?`-propagated — an org whose billing, plan, budgets or
+        // retention is refused is still worth showing.
+        let (billing, plan, budgets, retention) = futures::join!(
             crate::api::billing::fetch(client, org),
             crate::api::orgs::plan(client, org),
             crate::api::budgets::fetch(client, org),
+            crate::api::retention::fetch(client, org),
         );
 
         Some(OrgSummary {
@@ -77,6 +78,7 @@ pub async fn overview(client: &Client, orgs: &[String]) -> Vec<OrgSummary> {
             billing,
             plan,
             budgets,
+            retention,
         })
     });
 
@@ -2154,6 +2156,58 @@ mod tests {
         // Each org's plan is its own: the pairing inside the `join!` holds.
         assert_eq!(find("exec-d").plan.as_deref(), Some("team"));
         assert_eq!(find("le-vilain-petit-dev").plan.as_deref(), Some("free"));
+    }
+
+    /// #15: retention rides along at stage 1; a token without `admin:org`
+    /// costs the retention only.
+    #[tokio::test]
+    async fn overview_carries_retention() {
+        let server = MockServer::start().await;
+        for org in ["exec-d", "systm-d"] {
+            Mock::given(method("GET"))
+                .and(path(format!(
+                    "/orgs/{org}/actions/cache/usage-by-repository"
+                )))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .set_body_json(serde_json::json!({ "repository_cache_usages": [] })),
+                )
+                .mount(&server)
+                .await;
+            Mock::given(method("GET"))
+                .and(path(format!("/orgs/{org}/repos")))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+                .mount(&server)
+                .await;
+        }
+        Mock::given(method("GET"))
+            .and(path(
+                "/orgs/exec-d/actions/permissions/artifact-and-log-retention",
+            ))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({ "days": 7 })),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(
+                "/orgs/systm-d/actions/permissions/artifact-and-log-retention",
+            ))
+            .respond_with(ResponseTemplate::new(403))
+            .mount(&server)
+            .await;
+
+        let client = Client::with_base("t0ken", &server.uri()).unwrap();
+        let out = overview(&client, &["exec-d".to_string(), "systm-d".to_string()]).await;
+
+        let find = |login: &str| out.iter().find(|o| o.login == login).unwrap();
+        assert_eq!(
+            out.len(),
+            2,
+            "a refused retention read must not drop the org"
+        );
+        assert_eq!(find("exec-d").retention.map(|r| r.days), Some(7));
+        assert!(find("systm-d").retention.is_none());
     }
 
     /// Debt 4 of the v0.4 final review: all seven family listings degrade

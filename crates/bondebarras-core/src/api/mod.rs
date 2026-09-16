@@ -15,6 +15,7 @@ pub mod prs;
 pub mod refs;
 pub mod releases;
 pub mod repos;
+pub mod retention;
 pub mod runs;
 
 use crate::auth::Scopes;
