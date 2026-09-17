@@ -41,11 +41,12 @@ dead weight: on the author's own account, GitHub Actions caches alone add up
 to **51.4 GB**, with a single repository holding **69 caches for 11.1 GB** —
 almost all of it CI caches pinned to pull requests that were closed months
 ago. And 10 GB is only the *default included* cache threshold per repository
-— an administrator can raise the real limit, usage past it may be billed,
-and GitHub evicts only once a repository reaches its **configured** limit —
-so this kind of junk just sits there, crowding out the caches that still
-matter and slowing down every CI run that has to rebuild what should have
-stayed cached.
+— an administrator can raise the real limit, and storage past it is billed.
+GitHub evicts *to make room* only once a repository reaches its
+**configured** limit; separately from any limit, it removes every cache
+entry that has not been accessed in over 7 days. Either way this kind of
+junk just sits there, crowding out the caches that still matter and slowing
+down every CI run that has to rebuild what should have stayed cached.
 
 bondebarras' headline feature is exactly that: **flagging Actions caches
 pinned to a closed pull request** — the safest, highest-volume cleanup
@@ -109,16 +110,21 @@ again by anything.
   `[A]` selects every ⛑ row, `[V]` adds every • row, and neither ever takes
   a protected one.
 - **Two per-repository gauges** at the head of the resources column: Actions
-  cache usage against GitHub's **default included 10 GiB per-repository
-  threshold** — *not* a ceiling, and the gauge says so (`seuil inclus par
-  défaut ; limite réelle non exposée par l'API`): the limit can be raised by
-  an administrator, usage above it may be billed, and eviction starts only
-  at the repository's **configured** limit, which no endpoint exposes. Past
-  100 % the gauge warns that GitHub is billing the excess *or* evicting
-  least-recently-read caches, without claiming which. Beside it, Actions
-  minutes against the allowance of the organization's plan (`formule
-  inconnue`, with no percentage, when the plan cannot be read). Neither is
-  ever clamped at 100 %: a number past the threshold is real, not an error.
+  cache usage against GitHub's **default included 10 GB per-repository
+  threshold** — *not* a ceiling, and the gauge says so (`seuil inclus ;
+  limite réelle non exposée par l'API`): the limit can be raised by an
+  administrator, and storage above it is billed. Eviction *to make room*
+  starts only at the repository's **configured** limit, which no endpoint
+  exposes; separately from any limit, GitHub removes every cache entry not
+  accessed in over 7 days. Past 100 % the gauge states both facts apart —
+  the excess is billed, and eviction waits on that configured limit —
+  rather than guessing between them. The threshold is the decimal 10 GB
+  GitHub bills on, not 10 GiB, so a repository at 10.5 GB is flagged
+  instead of reading 98 %. Beside it, Actions minutes against the allowance
+  of the organization's plan (`formule inconnue`, with no percentage, when
+  the plan cannot be read). Neither is ever clamped at 100 %: a number past
+  the threshold is real, not an error. Source: GitHub's
+  [usage limits and eviction policy][gh-cache].
 - **A progress row** appears between the status line and the footer while a
   purge, an archive, or a repository load is running, with a real, counted
   done/total — never an estimate.
@@ -163,10 +169,10 @@ again by anything.
   hours already counted. The repositories column shows, under a repository's
   row, its GB-hours for the most recent month of the usage report — the
   month the resources column's minutes gauge reads, named on the line — and
-  marks with ⚠ a repository whose caches are past the included 10 GiB
-  (10.7 Go as displayed) — past which GitHub bills the excess at its hourly
-  peak, evicts least-recently-read caches, or both, depending on the
-  configured limit it does not publish.
+  marks with ⚠ a repository whose caches are past the included 10 GB
+  (10.0 Go as displayed) — past which GitHub bills the excess at its hourly
+  peak, and evicts least-recently-read entries once the repository reaches
+  the configured limit it does not publish.
   The tab also says what happens once an allowance runs out, from the
   organization's **Actions budget**: `0.00 $ · bloquant` (GitHub stops
   Actions at the allowance), `5.00 $ · bloquant` (billed up to 5 $, then
@@ -284,12 +290,13 @@ makepkg -si
 
 ### After the first stable release
 
-None of these three is published, so none of their commands works today. The
-release workflow skips all of them for a pre-release tag — one carrying a
-`-`, like `v1.0.0-rc.1` — on purpose: a release candidate is not what `brew
-install bondebarras` should hand out. Each will be documented here as
-available only once its package has actually been published through that
-channel.
+None of these three is published, so none of their commands works today. For
+Homebrew and winget, the release workflow skips the step on a pre-release
+tag — one carrying a `-`, like `v1.0.0-rc.1` — on purpose: a release
+candidate is not what `brew install bondebarras` should hand out. For the
+AUR there is nothing to skip — no AUR job exists at all, and no package has
+ever been submitted. Each will be documented here as available only once its
+package has actually been published through that channel.
 
 | Channel          | Status        | Why not yet                                                                                                   |
 | ---------------- | ------------- | ------------------------------------------------------------------------------------------------------------- |
@@ -298,6 +305,7 @@ channel.
 | winget (Windows) | Not published | The manifest has not been accepted into `winget-pkgs` yet (see [`packaging/winget`](packaging/winget/README.md)) |
 
 [rc]: https://github.com/systm-d/bondebarras/releases/tag/v1.0.0-rc.1
+[gh-cache]: https://docs.github.com/en/actions/reference/workflows-and-actions/dependency-caching#usage-limits-and-eviction-policy
 
 ---
 
@@ -324,8 +332,8 @@ focused column alone, `←`/`→` change which one).
 ```
  ORGS                 DÉPÔTS                                 RESSOURCES
  ──────────────────── ─────────────────────────────────────  ──────────────────────────────
- systm-d      36.4 Go  josephine          5 j        12.4 Go  Cache   ████████████▓ 115 %
- SecondBrain… 14.9 Go  claudine          12 j        11.8 Go  Minutes ▓▓▓▓▓▓▓▓▓▓▓▓▓   0 %
+ systm-d      36.4 Go  josephine          5 j       ⚠12.4 Go  Cache   ████████████▓ 124 %
+ SecondBrain… 14.9 Go  claudine          12 j       ⚠11.8 Go  Minutes ▓▓▓▓▓▓▓▓▓▓▓▓▓   0 %
  delfour-co    161 Mo  alertU     déjà archivé         8.0 Go ────────────────────────────
  exec-d         71 Mo  anonymous          3 j          4.3 Go [ ]⛑ cache v0-rust-cover…  467Mo PR#54 ⚑
                                                                 [ ]• artif github-pages    1.1Mo 40j

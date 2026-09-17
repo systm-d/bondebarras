@@ -10,23 +10,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **The Actions cache threshold is no longer presented as a fixed ceiling.**
-  10 GiB is GitHub's *default included* threshold per repository: an
-  authorized administrator can raise the real limit, usage above it may be
-  billed, and eviction starts only once a repository reaches its
-  **configured** limit — a figure no endpoint exposes. The cache gauge's
-  caveat now reads `(seuil inclus par défaut ; limite réelle non exposée par
-  l'API)` in place of `(plafond GitHub, non exposé par l'API)`, and a gauge
-  past 100 % warns `⚠ dépasse le seuil inclus : au-delà, GitHub facture le
-  stockage ou évince les caches les moins récemment lus, selon la limite
-  configurée du dépôt` instead of asserting that eviction was already under
-  way. `gauges::CACHE_CEILING_BYTES` and `gauges::cache_over_ceiling` became
+  10 GB is GitHub's *default included* threshold per repository: an
+  authorized administrator can raise the real limit, and storage above it is
+  billed. Eviction *to make room* starts only once a repository reaches its
+  **configured** limit — a figure no endpoint exposes — and, independently of
+  any limit, GitHub removes every cache entry that has not been accessed in
+  over 7 days. The cache gauge's caveat now reads `(seuil inclus ; limite
+  réelle non exposée par l'API)` in place of `(plafond GitHub, non exposé par
+  l'API)`, and a gauge past 100 % warns `⚠ dépasse le seuil inclus : le
+  stockage en excès est facturé ; l'éviction, elle, attend la limite
+  configurée du dépôt` — billing and eviction as two separate facts, since
+  billing does not depend on the configured limit and eviction does — instead
+  of asserting that eviction was already under way.
+  `gauges::CACHE_CEILING_BYTES` and `gauges::cache_over_ceiling` became
   `CACHE_INCLUDED_BYTES` and `cache_over_included`, so the mistake cannot be
-  read back out of the code; the README and both landing pages say the same.
+  read back out of the code; the README and both landing pages say the same,
+  and link GitHub's own [usage limits and eviction policy](https://docs.github.com/en/actions/reference/workflows-and-actions/dependency-caching#usage-limits-and-eviction-policy).
+- **The cache gauge measures against the decimal 10 GB GitHub bills on**
+  (`10_000_000_000`), not 10 GiB (`10_737_418_240`). The binary basis
+  flattered a repository GitHub was already charging: one holding 10.5 GB
+  read 98 % and went unflagged. Percentages move with it — the sample
+  repository at 12.36 Go reads **124 %**, not 115 % — and the figures now
+  read `12.4 Go / 10 Go` rather than `/ 10 Gio`, matching `model::human_size`,
+  which has always formatted in decimal units because GitHub's own billing UI
+  does. The repositories column's ⚠ moves with it too, marking from 10.0 Go
+  instead of 10.7.
 - **Only install channels that actually exist are advertised.** The README
   and both landing pages showed `yay -S bondebarras`, `brew install
   bondebarras` and `winget install bondebarras` as runnable commands. None
-  of the three is published: the release workflow skips all of them for a
-  pre-release tag, on purpose. Installation is now given in two levels —
+  of the three is published: for Homebrew and winget the release workflow
+  skips the step on a pre-release tag, on purpose; for the AUR there is no
+  job at all, and no package was ever submitted. `bondebarras update` no
+  longer points at them either — on Arch it names the release's `PKGBUILD`
+  and `makepkg -si`, and on macOS the release page, instead of printing
+  `yay -S bondebarras` and `brew upgrade bondebarras`, neither of which could
+  succeed. Installation is now given in two levels —
   what works today (the release's binaries and packages, and `cargo install
   --git`) and what comes after the first stable release, each marked *not
   published*. The `.deb` and `.rpm` instructions now say where the file
@@ -105,13 +123,14 @@ bondebarras as it stands, not a step away from anything earlier.
   deletion wording, since claiming a reversible action is permanent would be
   as much a lie as the reverse.
 - **Two per-repository gauges** at the head of the resources column: Actions
-  cache usage against GitHub's **default included** 10 GiB per-repository
+  cache usage against GitHub's **default included** 10 GB per-repository
   threshold — not a ceiling, and the gauge says so: the real limit can be
-  raised, usage above it may be billed, and eviction starts only at the
-  repository's configured limit, which no endpoint exposes — and Actions
-  minutes against the allowance of the organization's plan — `formule
-  inconnue`, with no percentage, when the plan cannot be read. Neither is
-  clamped past 100 %, since GitHub does not clamp there either.
+  raised, storage above it is billed, and eviction to make room starts only
+  at the repository's configured limit, which no endpoint exposes (any entry
+  unread for over 7 days goes regardless) — and Actions minutes against the
+  allowance of the organization's plan — `formule inconnue`, with no
+  percentage, when the plan cannot be read. Neither is clamped past 100 %,
+  since GitHub does not clamp there either.
 - **Load-after-pause with a per-session cache**: a repository's resources
   load once the cursor rests on it for 300 ms, are kept for the rest of the
   session, and `Entrée` forces an immediate reload, bypassing both the pause
@@ -175,7 +194,7 @@ bondebarras as it stands, not a step away from anything earlier.
     note is shown whole or not at all, never cut after its first line.
 - **The repositories column** carries a repository's GB-hours for the most
   recent month of the usage report, with that month, on a detail line under
-  its row, and a ⚠ before a cache footprint past the included 10 GiB (10.7 Go
+  its row, and a ⚠ before a cache footprint past the included 10 GB (10.0 Go
   as displayed).
 - **`bondebarras scan --json`** — one object per organization on stdout,
   progress and diagnostics on stderr: `org`, `cache_bytes`, `cache_count`,

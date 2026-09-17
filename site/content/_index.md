@@ -31,7 +31,7 @@ status_note = "No stable release yet: feature-complete and safe to run — nothi
 <div class="why-grid">
 <div class="why-text">
 <p>Fifteen organizations is enough to lose track of what CI is doing. On the author's own account, GitHub Actions caches alone add up to <strong>51.4 GB</strong> — and a single repository was holding <strong>69 caches for 11.1 GB</strong> by itself, almost all of it pinned to pull requests that had been closed for months.</p>
-<p>10 GB is the default <em>included</em> cache threshold per repository, not a fixed ceiling: an administrator can raise the real limit, usage above 10 GB may be billed, and GitHub evicts only once a repository reaches its configured limit — a figure its API does not expose. Either way, dead caches from long-closed PRs sit there, crowding out the caches that still matter — the ones CI actually reuses — and every eviction they cause makes the next build slower.</p>
+<p>10 GB is the default <em>included</em> cache threshold per repository, not a fixed ceiling: an administrator can raise the real limit, and storage above 10 GB is billed. GitHub evicts <em>to make room</em> only once a repository reaches its configured limit — a figure its API does not expose — and, separately from any limit, removes every cache entry not accessed in over 7 days (<a href="https://docs.github.com/en/actions/reference/workflows-and-actions/dependency-caching#usage-limits-and-eviction-policy">GitHub's usage limits and eviction policy</a>). Either way, dead caches from long-closed PRs sit there, crowding out the caches that still matter — the ones CI actually reuses — and every eviction they cause makes the next build slower.</p>
 <p>The alternative is fifteen browser tabs, each on <em>Settings → Actions → Caches</em>, clicking through repositories one at a time with no way to tell which caches are still alive. bondebarras reads the whole picture in one scan and lets you clear it from the keyboard.</p>
 </div>
 <div class="term-window why-tree">
@@ -64,7 +64,7 @@ status_note = "No stable release yet: feature-complete and safe to run — nothi
 <li>Every organization the token can see, one pass</li>
 <li>Three columns at once — orgs, repositories, resources — folding from the left as the terminal narrows, so the column you delete from is never the one dropped</li>
 <li>A repository loads once the cursor rests on it for 300 ms, then stays for the session: coming back costs no request</li>
-<li>Two gauges above the resources — caches against GitHub's default included 10 GiB per-repository threshold, minutes against the plan's allowance — neither ever clamped at 100 %, and the cache gauge says plainly that the repository's real limit is not exposed by the API</li>
+<li>Two gauges above the resources — caches against GitHub's default included 10 GB per-repository threshold (the decimal 10 GB it bills on, not 10 GiB), minutes against the plan's allowance — neither ever clamped at 100 %, and the cache gauge says plainly that the repository's real limit is not exposed by the API</li>
 </ul>
 </div>
 
@@ -155,8 +155,8 @@ status_note = "No stable release yet: feature-complete and safe to run — nothi
 <div class="tui-head"><span class="tui-brand">bondebarras</span><span class="tui-home">15 orgs</span></div>
 <div class="tui-panels">
 <div class="tui-col"><div class="col-title">Orgs</div><div class="row sel">systm-d      37.2 Go</div><div class="row dim">SecondBrain  13.9 Go</div></div>
-<div class="tui-col"><div class="col-title">Dépôts</div><div class="row">another-repo  9.8 Go</div><div class="row sel">ci-heavy     11.1 Go</div></div>
-<div class="tui-col grow"><div class="col-title">Ressources · 69 éléments · cochés 522.0 Mo</div><div class="row dim">Cache   ████████████   103 %   11.1 Go / 10 Gio</div><div class="row dim">Minutes ████            33 %   1 004 / 3 000</div><div class="row sel">[x]⛑ cache  coverage-linux-x64               261Mo  <span class="stale">PR#32 ⚑</span></div><div class="row">[x]⛑ cache  coverage-linux-x64               261Mo  <span class="stale">PR#25 ⚑</span></div><div class="row">[ ]  cache  ubuntu-22.04-test                257Mo  12j</div><div class="row">[ ]• artif  build-output                     1.1Mo  45j</div></div>
+<div class="tui-col"><div class="col-title">Dépôts</div><div class="row">another-repo  9.8 Go</div><div class="row sel">ci-heavy    ⚠11.1 Go</div></div>
+<div class="tui-col grow"><div class="col-title">Ressources · 69 éléments · cochés 522.0 Mo</div><div class="row dim">Cache   ████████████   111 %   11.1 Go / 10 Go</div><div class="row dim">  (seuil inclus ; limite réelle non exposée par l'API)</div><div class="row">  ⚠ dépasse le seuil inclus : le stockage en excès est facturé ; l'éviction, elle, attend la limite configurée du dépôt</div><div class="row dim">Minutes ████            33 %   1 004 / 3 000</div><div class="row sel">[x]⛑ cache  coverage-linux-x64               261Mo  <span class="stale">PR#32 ⚑</span></div><div class="row">[x]⛑ cache  coverage-linux-x64               261Mo  <span class="stale">PR#25 ⚑</span></div><div class="row">[ ]  cache  ubuntu-22.04-test                257Mo  12j</div><div class="row">[ ]• artif  build-output                     1.1Mo  45j</div></div>
 </div>
 <div class="tui-foot"><span class="key">←/→</span> col.<span class="key">↑/↓</span> ligne<span class="key">espace</span> cocher<span class="key">A</span> sûrs<span class="key">V</span> +à vérifier<span class="key">d</span> supprimer<span class="key">f</span> filtrer<span class="key">s</span> trier<span class="key">b</span> billing<span class="key">q</span> quitter</div>
 </div>
@@ -221,7 +221,7 @@ status_note = "No stable release yet: feature-complete and safe to run — nothi
 </div>
 </div>
 <h3>After the first stable release</h3>
-<p>Homebrew, the AUR and winget are <strong>not published yet</strong>, so none of their commands works today: the release workflow skips all three for a pre-release tag, on purpose. Each will be listed here only once its package has actually been published through that channel.</p>
+<p>Homebrew, the AUR and winget are <strong>not published yet</strong>, so none of their commands works today. For Homebrew and winget the release workflow skips the step on a pre-release tag, on purpose; for the AUR there is nothing to skip — no AUR job exists at all, and no package has ever been submitted. Each will be listed here only once its package has actually been published through that channel.</p>
 <ul>
 <li><strong>Homebrew</strong> (macOS) — not published: the tap serves stable releases only</li>
 <li><strong>AUR</strong> (Arch Linux) — not published: no AUR page exists yet, and the <code>PKGBUILD</code> attached to each release is the supported path meanwhile</li>
