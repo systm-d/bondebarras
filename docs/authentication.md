@@ -155,14 +155,14 @@ the failed call did; they no longer do.
 
 Family by family:
 
-- **Caches / artifacts / workflow runs / branches / tags / release assets** —
+- **The seven resource families** — caches, artifacts, workflow runs, package
+  versions, branches, tags and release assets. All seven degrade identically:
   the refused family's rows are absent, and the interface says which families
   were refused, so an empty list never quietly reads as "this repository holds
-  nothing".
-- **Package versions** — the same. Note that most repositories publish no image
-  at all, so a 404 here is the *normal* case and yields an empty list, not an
-  error.
-- **The closed-pull-request listing** — not one of the six families, and its
+  nothing". One nuance for package versions: most repositories publish no image
+  at all, so a 404 there is the *normal* case and yields an empty list rather
+  than an error.
+- **The closed-pull-request listing** — not one of the seven families, and its
   failure is subtler: the `⚑` flag disappears and every branch reads as
   "not known to be dead". Nothing is hidden and nothing is wrongly offered; the
   view is simply less useful.

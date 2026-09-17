@@ -36,7 +36,8 @@ The headline family, and the highest-volume cleanup available.
   `⛑` and carries the `⚑` flag. So is a cache on a branch a merged PR came
   from, and one on a ref that no longer exists — the latter only when the
   branch listing came back whole and the default branch is known. A cache on
-  the default branch is unmarked; anything else is `•`.
+  the default branch is unmarked, as is one whose ref GitHub did not report at
+  all; any cache whose ref is known and matches none of the rules above is `•`.
 - **Age is not a criterion here.** It is available as the `--older-than`
   filter, which applies to every family, but it plays no part in a cache's
   classification.

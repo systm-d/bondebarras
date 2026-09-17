@@ -62,7 +62,9 @@ the `⚑` flag's own signal). A cache on a branch a merged PR came from is `⛑`
 A cache on a ref that no longer exists is `⛑` — but only when the branch
 listing came back whole *and* the default branch is known, because otherwise
 absence of data would pass for proof of absence. A cache on the default branch
-is unmarked. Anything else is `•`. Age plays **no part** in a cache's level.
+is unmarked, and so is one whose ref GitHub did not report at all. Any cache
+whose ref is known and falls under none of the rules above is `•`. Age plays
+**no part** in a cache's level.
 Tests: `a_cache_pinned_to_a_closed_pr_is_safe_via_stale_pr`,
 `a_cache_on_a_merged_branchs_ref_is_safe`, `a_cache_on_a_vanished_branch_is_safe`,
 `an_unknown_branch_set_never_makes_a_cache_safe_by_absence`,

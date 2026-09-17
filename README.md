@@ -198,7 +198,7 @@ column beside its checkbox:
 | Marker | Meaning | Bulk selection |
 | --- | --- | --- |
 | ⛑ | Safe according to bondebarras' documented rules | Yes, with `[A]` |
-| • | Worth checking before deciding | Yes, with `[V]` |
+| • | Worth checking before deciding | Yes, with `[V]` — unless protected |
 | *(none)* | Keep by default | No |
 
 Four guarantees hold everywhere, TUI and headless alike:
