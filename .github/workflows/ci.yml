@@ -9,6 +9,10 @@ on:
   # poussé ne doivent pas obliger à fabriquer un commit pour rien.
   workflow_dispatch:
 
+# La CI ne fait que lire le dépôt : rien d'autre ne lui est accordé.
+permissions:
+  contents: read
+
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
