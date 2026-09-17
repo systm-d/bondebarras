@@ -208,7 +208,7 @@ status_note = "No stable release yet: feature-complete and safe to run — nothi
 <h2>Install</h2>
 <p class="section-lede">Reads and writes only the GitHub API — no account of its own, no telemetry, no cloud storage.</p>
 <h3>Available now — v1.0.0-rc.2</h3>
-<p>Binaries and packages for Windows x86-64, macOS Apple Silicon, Linux x86-64, Debian/Ubuntu AMD64 and Fedora/RHEL x86-64 are attached to <a href="https://github.com/systm-d/bondebarras/releases/tag/v1.0.0-rc.2">the v1.0.0-rc.1 release</a>. Download the one for your platform first: the package commands below install a file you already have, they do not fetch one.</p>
+<p>Binaries and packages for Windows x86-64, macOS Apple Silicon, Linux x86-64, Debian/Ubuntu AMD64 and Fedora/RHEL x86-64 are attached to <a href="https://github.com/systm-d/bondebarras/releases/tag/v1.0.0-rc.2">the v1.0.0-rc.2 release</a>. Download the one for your platform first: the package commands below install a file you already have, they do not fetch one.</p>
 <div class="term-window">
 <div class="term-bar"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span><span class="term-title">install</span></div>
 <div class="term-body cmds">
