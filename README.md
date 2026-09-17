@@ -15,7 +15,7 @@ minutes against the allowance of your plan, Actions storage in GB-hours, the
 Actions budget that decides what happens once that allowance runs out, and
 the artifact and log retention feeding all of it.
 
-[![Pre-release](https://img.shields.io/badge/release-v1.0.0--rc.1%20%E2%80%94%20pre--release-d97757)](https://github.com/systm-d/bondebarras/releases/tag/v1.0.0-rc.1)
+[![Pre-release](https://img.shields.io/badge/release-v1.0.0--rc.2%20%E2%80%94%20pre--release-d97757)](https://github.com/systm-d/bondebarras/releases/tag/v1.0.0-rc.2)
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)](#license)
 [![CI](https://github.com/systm-d/bondebarras/actions/workflows/ci.yml/badge.svg)](https://github.com/systm-d/bondebarras/actions/workflows/ci.yml)
 [![Pages](https://github.com/systm-d/bondebarras/actions/workflows/pages.yml/badge.svg)](https://github.com/systm-d/bondebarras/actions/workflows/pages.yml)
@@ -23,7 +23,7 @@ the artifact and log retention feeding all of it.
 
 **Site:** <https://systm-d.github.io/bondebarras>
 
-> **Status: `v1.0.0-rc.1` — pre-release.** There is no stable release yet.
+> **Status: `v1.0.0-rc.2` — pre-release.** There is no stable release yet.
 > What that means for you: the tool is feature-complete and safe to run —
 > every deletion goes through a confirmation, and nothing is ever deleted
 > without one — but the CLI flags and the `scan --json` schema may still
@@ -226,12 +226,12 @@ measured in and which flag selects it is in
 
 ## Installation
 
-bondebarras currently ships as a **pre-release**, [`v1.0.0-rc.1`][rc] —
+bondebarras currently ships as a **pre-release**, [`v1.0.0-rc.2`][rc] —
 there is no stable version yet. Two channels work today; the package
 managers further down are **not published yet**, and are listed so you know
 what is coming, not as commands to run.
 
-### Available now — [`v1.0.0-rc.1`][rc]
+### Available now — [`v1.0.0-rc.2`][rc]
 
 Download the file for your platform from [the release page][rc]:
 
@@ -275,7 +275,7 @@ makepkg -si
 
 None of these three is published, so none of their commands works today. For
 Homebrew and winget, the release workflow skips the step on a pre-release
-tag — one carrying a `-`, like `v1.0.0-rc.1` — on purpose: a release
+tag — one carrying a `-`, like `v1.0.0-rc.2` — on purpose: a release
 candidate is not what `brew install bondebarras` should hand out. For the
 AUR there is nothing to skip — no AUR job exists at all, and no package has
 ever been submitted. Each will be documented here as available only once its
@@ -287,7 +287,7 @@ package has actually been published through that channel.
 | AUR (Arch Linux) | Not published | No AUR page exists yet — the `PKGBUILD` above is the supported path meanwhile                                   |
 | winget (Windows) | Not published | The manifest has not been accepted into `winget-pkgs` yet (see [`packaging/winget`](packaging/winget/README.md)) |
 
-[rc]: https://github.com/systm-d/bondebarras/releases/tag/v1.0.0-rc.1
+[rc]: https://github.com/systm-d/bondebarras/releases/tag/v1.0.0-rc.2
 [gh-cache]: https://docs.github.com/en/actions/reference/workflows-and-actions/dependency-caching#usage-limits-and-eviction-policy
 
 ---
