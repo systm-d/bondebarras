@@ -4,6 +4,9 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Relançable à la main : une manche supprimée ou un doute sur un `main` déjà
+  # poussé ne doivent pas obliger à fabriquer un commit pour rien.
+  workflow_dispatch:
     branches: [main]
 
 concurrency:
