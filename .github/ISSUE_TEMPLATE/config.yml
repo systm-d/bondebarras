@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Question or idea
+    url: https://github.com/systm-d/bondebarras/discussions
+    about: Ask anything about using bondebarras, or float an idea before it becomes a feature request.
+  - name: Documentation
+    url: https://systm-d.github.io/bondebarras
+    about: Features, installation, keyboard shortcuts and the headless CLI.
+  - name: Security vulnerability
+    url: https://github.com/systm-d/bondebarras/security/advisories/new
+    about: Report a security problem privately — never in a public issue.

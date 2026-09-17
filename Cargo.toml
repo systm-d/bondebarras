@@ -7,9 +7,13 @@ edition = "2024"
 rust-version = "1.88"
 version = "1.0.0-rc.1"
 license = "MIT OR Apache-2.0"
-description = "TUI Rust pour auditer et nettoyer les ressources des organisations GitHub."
+description = "TUI and CLI to audit and clean up GitHub organization resources: Actions caches, artifacts, workflow runs, packages, branches, tags and release assets."
 repository = "https://github.com/systm-d/bondebarras"
-homepage = "https://github.com/systm-d/bondebarras"
+homepage = "https://systm-d.github.io/bondebarras"
+documentation = "https://systm-d.github.io/bondebarras"
+readme = "README.md"
+keywords = ["github", "actions", "cleanup", "tui", "devops"]
+categories = ["command-line-utilities", "development-tools"]
 authors = ["systm-d <k@levilainpetit.dev>"]
 
 [workspace.dependencies]
