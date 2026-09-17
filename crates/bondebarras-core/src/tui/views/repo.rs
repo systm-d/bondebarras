@@ -1498,7 +1498,7 @@ mod tests {
     /// layouts.
     ///
     /// The fixture is built so a wrong implementation cannot pass by
-    /// accident: capping the cache percentage at 100 would drop "115" and
+    /// accident: capping the cache percentage at 100 would drop "124" and
     /// the eviction warning; a percent helper that divides by a genuinely
     /// zero basis would show `u64::MAX` instead of "50"; never wiring the
     /// gauges into `render` at all would show neither "Cache" nor "Minutes".
@@ -1526,12 +1526,12 @@ mod tests {
                 "minutes gauge missing at width {width}:\n{rendered}"
             );
             assert!(
-                rendered.contains("115"),
+                rendered.contains("124"),
                 "cache overshoot percent clipped at width {width}:\n{rendered}"
             );
             assert!(
-                rendered.contains("évince"),
-                "cache eviction warning clipped at width {width}:\n{rendered}"
+                rendered.contains("dépasse le seuil inclus"),
+                "cache over-threshold warning clipped at width {width}:\n{rendered}"
             );
             assert!(
                 rendered.contains("50"),
@@ -1556,10 +1556,9 @@ mod tests {
     /// What the gauges say, word for word as the user reads them — typed out
     /// here rather than read from the production strings, so a change to
     /// what the screen says cannot pass unnoticed.
-    const CACHE_CAVEAT: &str = "(seuil inclus par défaut ; limite réelle non exposée par l'API)";
-    const OVER_INCLUDED: &str = "⚠ dépasse le seuil inclus : au-delà, GitHub facture le stockage \
-                                 ou évince les caches les moins récemment lus, selon la limite \
-                                 configurée du dépôt";
+    const CACHE_CAVEAT: &str = "(seuil inclus ; limite réelle non exposée par l'API)";
+    const OVER_INCLUDED: &str = "⚠ dépasse le seuil inclus : le stockage en excès est facturé ; \
+                                 l'éviction, elle, attend la limite configurée du dépôt";
     const PUBLIC_REASON: &str =
         "0 % (dépôt public : minutes Actions gratuites et illimitées, hors plafond)";
     // Grouped like the Billing tab's own gauges (review FR-tui-3): the same
@@ -1602,9 +1601,9 @@ mod tests {
             let (_, column) =
                 views::testing::focused_column(&mut public, Focus::Resources, width, 40);
             let prose = views::testing::unwrapped(&column);
-            let cache = row_holding(&column, "115 %");
+            let cache = row_holding(&column, "124 %");
             assert!(
-                cache.contains("12.4 Go / 10 Gio"),
+                cache.contains("12.4 Go / 10 Go"),
                 "the cache figures are cut at width {width}: {cache:?}\n{column}"
             );
             for phrase in [CACHE_CAVEAT, OVER_INCLUDED, PUBLIC_REASON] {
@@ -1617,9 +1616,9 @@ mod tests {
             let (_, column) =
                 views::testing::focused_column(&mut private, Focus::Resources, width, 40);
             let prose = views::testing::unwrapped(&column);
-            let cache = row_holding(&column, "37 %");
+            let cache = row_holding(&column, "40 %");
             assert!(
-                cache.contains("4.0 Go / 10 Gio"),
+                cache.contains("4.0 Go / 10 Go"),
                 "the cache figures are cut at width {width}: {cache:?}\n{column}"
             );
             let minutes = row_holding(&column, "50 %");
@@ -1632,7 +1631,7 @@ mod tests {
                 "the included-threshold caveat is not whole at width {width}:\n{column}"
             );
             assert!(
-                !column.contains("dépasse le seuil inclus") && !column.contains("évince"),
+                !column.contains("dépasse le seuil inclus") && !column.contains("éviction"),
                 "a cache under the included threshold warns anyway at width {width}:\n{column}"
             );
 
@@ -1701,7 +1700,7 @@ mod tests {
                 if cache_shown {
                     let cache = row_holding(&column, "Cache");
                     assert!(
-                        cache.contains("115 %") && cache.contains("12.4 Go / 10 Gio"),
+                        cache.contains("124 %") && cache.contains("12.4 Go / 10 Go"),
                         "the cache gauge's figures are cut {at}"
                     );
                     assert!(
@@ -1710,7 +1709,7 @@ mod tests {
                     );
                 } else {
                     assert!(
-                        !column.contains("seuil inclus") && !column.contains("évince"),
+                        !column.contains("seuil inclus") && !column.contains("éviction"),
                         "a cache gauge's explanation shows without its gauge {at}"
                     );
                 }

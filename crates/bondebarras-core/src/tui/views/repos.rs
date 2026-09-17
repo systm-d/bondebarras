@@ -66,7 +66,7 @@ const REPO_NAME_WIDTH: usize = 10;
 ///   a tool whose whole point is showing where the volume is, the repos
 ///   column is exactly where a single repo's own share of it belongs on
 ///   screen. One cell before it, `over_included_mark`: `⚠` past the included
-///   10 GiB, a space otherwise (#13).
+///   10 GB, a space otherwise (#13).
 pub fn repo_row_spans(repo: &RepoSummary, checked: bool) -> Vec<Span<'static>> {
     let checkbox = match repo.class {
         RepoClass::Archivable if checked => "[x] ",
@@ -105,7 +105,7 @@ pub fn repo_row_spans(repo: &RepoSummary, checked: bool) -> Vec<Span<'static>> {
     ]
 }
 
-/// `⚠` before the cache figure of a repository past the included 10 GiB
+/// `⚠` before the cache figure of a repository past the included 10 GB
 /// (`gauges::cache_over_included`), a space otherwise, so figures stay
 /// aligned. The row has no room to say why; column 3's cache gauge does, the
 /// moment the repository is opened.
@@ -687,12 +687,12 @@ mod tests {
     }
 
     /// #13: find the repository holding the storage without opening it, and
-    /// see a cache past 10 GiB marked — in the real layout, read off the
+    /// see a cache past 10 GB marked — in the real layout, read off the
     /// repos column's own rect (`testing::focused_column`), at every width
     /// from 60 to 200 (one, two and three columns, focus on the repos so
     /// the column is on screen in each) and at every height from 8. The
     /// one-byte-under twin proves the ⚠ comes from the mark and nowhere
-    /// else: both caches display as `10.7 Go`, and only the one past 10 GiB
+    /// else: both caches display as `10.0 Go`, and only the one past 10 GB
     /// is marked.
     #[test]
     fn the_repos_column_shows_storage_and_the_over_included_mark_at_every_width() {
@@ -712,14 +712,14 @@ mod tests {
                 "a detail line for nothing, or for an older month, at {width}x{height}:\n{column}"
             );
             assert!(
-                column.contains("⚠ 10.7 Go"),
+                column.contains("⚠ 10.0 Go"),
                 "threshold mark or its figure missing at {width}x{height}:\n{column}"
             );
 
             let (_, column) = testing::focused_column(&mut at, Focus::Repos, width, height);
             assert!(
-                !column.contains('⚠') && column.contains("10.7 Go"),
-                "a cache at exactly 10 GiB is marked, or its figure is gone, at \
+                !column.contains('⚠') && column.contains("10.0 Go"),
+                "a cache at exactly 10 GB is marked, or its figure is gone, at \
                  {width}x{height}:\n{column}"
             );
         }

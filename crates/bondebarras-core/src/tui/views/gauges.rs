@@ -14,28 +14,42 @@ use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
 /// GitHub's default *included* per-repository Actions cache threshold:
-/// 10 GiB.
+/// 10 GB, decimal — 10_000_000_000 bytes, not 10 GiB.
 ///
 /// **Not a ceiling.** An authorized administrator can raise a repository's
-/// cache limit above it; usage past 10 GiB may simply be billed; and GitHub
-/// evicts only once the repository reaches its *configured* limit, which can
-/// therefore sit well above this figure.
+/// cache limit above it, and storage past it is billed rather than refused.
+/// Eviction *to make room* starts only once the repository reaches its
+/// *configured* limit, which can therefore sit well above this figure. And
+/// independently of any limit, GitHub removes every cache entry that has
+/// not been accessed in over 7 days — that rule never waits for a threshold.
 ///
-/// That configured limit is exposed by no endpoint this crate can reach —
+/// The configured limit is exposed by no endpoint this crate can reach —
 /// `actions/cache/usage` only ever returns the org-wide total — so the
 /// included threshold is hardcoded here rather than read from a response,
 /// and every line gauged against it says it is a cost threshold, not the
 /// repository's known capacity.
-pub const CACHE_INCLUDED_BYTES: u64 = 10 * 1024 * 1024 * 1024;
+///
+/// **Decimal, deliberately.** This was `10 * 1024 * 1024 * 1024` until #19,
+/// under a 2026-09-11 ruling that fixed it at 10 GiB. The controller lifted
+/// that ruling with #19: it had been taken while the figure was a visual
+/// marker carrying no claim about money. Now that every sentence the product
+/// prints about billing hangs off this constant, the binary value
+/// contradicted them — GitHub bills a repository holding 10.5 GB while
+/// `cache_over_included` still answered `false` and the gauge read 98 %.
+/// `model::human_size` already formats in decimal units for exactly this
+/// reason (it matches GitHub's own billing UI), so the gauge now compares
+/// like with like. Do not restore the binary value without answering that.
+pub const CACHE_INCLUDED_BYTES: u64 = 10_000_000_000;
 
-/// Whether a repository's caches are past the included 10 GiB.
+/// Whether a repository's caches are past the included 10 GB.
 ///
 /// Strictly above: exactly `CACHE_INCLUDED_BYTES` is still inside it. Past
-/// it, GitHub bills the excess at its hourly peak, evicts the least recently
-/// read caches, or both — which of the two, and from what point, depends on
-/// the repository's configured cache limit, which this crate cannot read.
-/// Being past the included threshold is therefore worth a ⚠ and nothing
-/// stronger: it is never proof that eviction has already begun.
+/// it the excess storage is billed at its hourly peak — unconditionally,
+/// not as one branch of an alternative — and, *separately*, GitHub evicts
+/// least-recently-read entries once the repository reaches its configured
+/// limit, which this crate cannot read. Both can apply at once. Being past
+/// the included threshold is therefore worth a ⚠ and nothing stronger: it
+/// is never proof that eviction has already begun.
 pub fn cache_over_included(cache_bytes: u64) -> bool {
     cache_bytes > CACHE_INCLUDED_BYTES
 }
@@ -75,18 +89,25 @@ const BAR_CELLS: usize = 20;
 /// How far in an explanation starts on a row of its own.
 const INDENT: &str = "  ";
 
-/// The cache gauge's caveat: 10 Gio is GitHub's *default included*
-/// threshold, not the repository's real limit — which no endpoint exposes,
-/// so the gauge is a cost marker rather than a capacity one.
-const CACHE_CAVEAT: &str = "(seuil inclus par défaut ; limite réelle non exposée par l'API)";
+/// The cache gauge's caveat: 10 Go is GitHub's *default included* threshold,
+/// not the repository's real limit — which no endpoint exposes, so the gauge
+/// is a cost marker rather than a capacity one.
+///
+/// 52 cells, and the length is load-bearing: this line sits on the banner at
+/// every usage, so every cell it gains costs a row on every repository once
+/// it stops fitting. `the_cache_banner_stays_within_its_line_budget` pins
+/// the rows it buys.
+const CACHE_CAVEAT: &str = "(seuil inclus ; limite réelle non exposée par l'API)";
 
-/// What a cache gauge past 100 % adds. Past the included threshold GitHub
-/// bills the excess, evicts the least recently read caches, or both,
-/// depending on the repository's configured limit — never, as this line used
-/// to claim, proof that eviction is already under way.
-const OVER_INCLUDED: &str = "⚠ dépasse le seuil inclus : au-delà, GitHub facture le stockage ou \
-                             évince les caches les moins récemment lus, selon la limite \
-                             configurée du dépôt";
+/// What a cache gauge past 100 % adds.
+///
+/// Billing is *not* conditional on the repository's configured limit — the
+/// excess is billed either way — while eviction is. Stated as two separate
+/// facts rather than as an alternative, because presenting them with "or …
+/// depending on the configured limit" made the billing half conditional on
+/// something it does not depend on.
+const OVER_INCLUDED: &str = "⚠ dépasse le seuil inclus : le stockage en excès est facturé ; \
+                             l'éviction, elle, attend la limite configurée du dépôt";
 
 /// Why a public repository's minutes gauge reads 0 %.
 ///
@@ -161,27 +182,27 @@ fn explained(figures: String, style: Style, explanation: &str, width: u16) -> Ve
     lines
 }
 
-/// Cache usage against GitHub's hardcoded 10 GiB default included
+/// Cache usage against GitHub's hardcoded 10 GB default included
 /// per-repository threshold, in a column `width` cells wide.
 ///
 /// Never clamped at 100 %: past the included threshold the repository is
-/// being billed for the excess, or having its least-recently-read caches
-/// evicted, or both — which one depends on a configured limit the API never
-/// exposes. Clamping the number would hide exactly the fact this gauge
-/// exists to show, and the warning under it names both outcomes rather than
-/// asserting the one it cannot check.
+/// being billed for the excess, and is *additionally* having its
+/// least-recently-read entries evicted once it reaches a configured limit
+/// the API never exposes. Clamping the number would hide exactly the fact
+/// this gauge exists to show, and the warning under it keeps the two apart
+/// rather than asserting the one it cannot check.
 ///
 /// Nothing is clipped at any width the column is drawn at (final review
-/// I4): the percentage and the `used / 10 Gio` figures stay whole on the
+/// I4): the percentage and the `used / 10 Go` figures stay whole on the
 /// gauge's row, the bar shrinking to leave them room — cut, `12.4 Go / 10`
-/// read as 124 % — and the caveat and the eviction warning go on rows of
-/// their own when the row cannot hold them.
+/// read as 124 % — and the caveat and the over-threshold warning go on rows
+/// of their own when the row cannot hold them.
 pub fn cache_gauge_line(used: u64, width: u16) -> Vec<Line<'static>> {
     let pct = percent(used, CACHE_INCLUDED_BYTES);
     let figures = figures_row(
         "Cache   ",
         pct,
-        &format!("{} / 10 Gio", human_size(used)),
+        &format!("{} / 10 Go", human_size(used)),
         width,
     );
     let mut lines = explained(figures, theme::text_style(), CACHE_CAVEAT, width);
@@ -253,33 +274,81 @@ mod tests {
             .collect()
     }
 
+    /// `text`, with every run of whitespace collapsed to a single space.
+    ///
+    /// An explanation pushed onto rows of its own is concatenated by `text`
+    /// with no separator between rows, and each row carries `INDENT`, so a
+    /// phrase straddling a wrap boundary reads as `…est  facturé…` and a
+    /// plain `contains` for the sentence never matches — which is exactly
+    /// how a correct string would look like a regression. Collapsing
+    /// restores the sentence as the constant spells it, at any width.
+    fn prose(lines: &[Line<'static>]) -> String {
+        text(lines).split_whitespace().collect::<Vec<_>>().join(" ")
+    }
+
     #[test]
     fn the_cache_gauge_reports_overshoot_rather_than_capping() {
-        // josephine sits at 11.5 Gio against the 10 GiB included threshold
-        // (`CACHE_INCLUDED_BYTES`): 12_360_000_000 / 10_737_418_240 = 115 %,
-        // not 123 % — 123 % would assume a decimal 10_000_000_000 basis,
-        // contrary to the binary constant this module actually uses.
-        // Clamping to 100 % would hide the one fact the gauge exists to
-        // show: this repository is past what its plan includes, and is
-        // paying for it in dollars, in evictions, or in both.
-        let line = text(&cache_gauge_line(12_360_000_000, 60));
-        assert!(line.contains("115"), "got: {line}");
+        // josephine sits at 12.36 Go against the 10 GB included threshold
+        // (`CACHE_INCLUDED_BYTES`): 12_360_000_000 / 10_000_000_000 = 124 %.
+        // It read 115 % until #19, when the constant was still 10 GiB — a
+        // basis GitHub does not bill on, so the gauge flattered a repository
+        // that was already over. Clamping to 100 % would hide the one fact
+        // the gauge exists to show: this repository is past what its plan
+        // includes, and is paying for it.
+        let line = prose(&cache_gauge_line(12_360_000_000, 60));
+        assert!(line.contains("124"), "got: {line}");
         assert!(line.contains("dépasse le seuil inclus"), "got: {line}");
         // #19: the warning names billing *and* eviction, and pins them to
         // the configured limit. Asserting "évince" alone would have passed
         // just as well on the old line, which claimed eviction outright.
-        assert!(line.contains("facture"), "got: {line}");
+        assert!(line.contains("facturé"), "got: {line}");
         assert!(line.contains("limite configurée"), "got: {line}");
+        // Review I3: billing must not read as conditional on the configured
+        // limit. The clause that is conditional is the eviction one, and it
+        // is the only one the sentence hangs on `limite configurée`.
+        assert!(
+            line.contains("le stockage en excès est facturé"),
+            "billing is stated unconditionally: {line}"
+        );
+    }
+
+    /// Review I5: the caveat rides on the banner at *every* usage, so a
+    /// longer one costs a row on every repository, not only on the ones past
+    /// the threshold. #19's first wording (63 cells) pushed the quiet banner
+    /// from two rows to three at every inner width from 40 to 64, and the
+    /// warned banner up by two at 47-51. Pinned here so the next rewording
+    /// cannot grow it in silence.
+    ///
+    /// 58 is the resources column's inner width at a 60-column terminal (one
+    /// column, less the block's two borders); 38 is `repo::MIN_WIDTH` less
+    /// its borders — the narrowest the column is ever drawn at.
+    #[test]
+    fn the_cache_banner_stays_within_its_line_budget() {
+        for (used, width, rows, case) in [
+            (4_000_000_000u64, 58u16, 2usize, "quiet, inner 58"),
+            (12_360_000_000, 58, 5, "warned, inner 58"),
+            (4_000_000_000, 38, 3, "quiet, inner 38"),
+            (12_360_000_000, 38, 7, "warned, inner 38"),
+        ] {
+            assert_eq!(
+                cache_gauge_line(used, width).len(),
+                rows,
+                "{case}: {:?}",
+                cache_gauge_line(used, width)
+            );
+        }
     }
 
     #[test]
     fn the_cache_gauge_stays_quiet_below_the_included_threshold() {
-        let line = text(&cache_gauge_line(4_000_000_000, 60));
+        let line = prose(&cache_gauge_line(4_000_000_000, 60));
         assert!(!line.contains("dépasse le seuil inclus"), "got: {line}");
-        assert!(!line.contains("évince"), "got: {line}");
+        // `éviction`, not `évince`: since #19 no production string says
+        // "évince" at all, so the old needle could no longer fail here.
+        assert!(!line.contains("éviction"), "got: {line}");
         // #19: the caveat is there at every usage, and it never calls the
-        // 10 Gio a plafond — the word the product used to print.
-        assert!(line.contains("seuil inclus par défaut"), "got: {line}");
+        // 10 Go a plafond — the word the product used to print.
+        assert!(line.contains("seuil inclus"), "got: {line}");
         assert!(!line.contains("plafond"), "got: {line}");
     }
 
@@ -377,10 +446,10 @@ mod tests {
         assert_eq!(percent(100, 0), 0);
     }
 
-    /// #13: exactly 10 GiB is still inside the included cache storage; one
+    /// #13: exactly 10 GB is still inside the included cache storage; one
     /// byte more is not.
     #[test]
-    fn cache_over_included_is_strictly_above_ten_gibibytes() {
+    fn cache_over_included_is_strictly_above_ten_gigabytes() {
         assert!(!cache_over_included(CACHE_INCLUDED_BYTES));
         assert!(cache_over_included(CACHE_INCLUDED_BYTES + 1));
         assert!(!cache_over_included(0));
