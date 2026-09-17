@@ -1,5 +1,5 @@
 base_url = "https://systm-d.github.io/bondebarras"
-title = "bondebarras"
+title = "Bon Débarras"
 description = "Audit and clean up your GitHub organizations from one terminal interface — dead caches, stale artifacts, forgotten workflow runs."
 default_language = "en"
 compile_sass = true
@@ -11,7 +11,7 @@ highlight_code = false
 
 # French served under /fr/ (English is at the root).
 [languages.fr]
-title = "bondebarras"
+title = "Bon Débarras"
 description = "Auditez et nettoyez vos organisations GitHub depuis une seule interface terminal — caches morts, artifacts périmés, workflow runs oubliés."
 
 [extra]
