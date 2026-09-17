@@ -1,5 +1,6 @@
 +++
 [extra]
+name = "bondebarras"
 tagline = "Good riddance."
 lede = "GitHub Actions quietly fills every organization you own with dead caches, expired artifacts, and workflow runs nobody will ever look at again. bondebarras is the terminal tool that shows you exactly how much, and clears it out — safely, one confirmation at a time."
 cta = "View on GitHub"
@@ -47,7 +48,7 @@ cta2 = "Install"
 </section>
 
 <section class="missions">
-<h2>Five things it does for you</h2>
+<h2>Six things it does for you</h2>
 <p class="section-lede">Not a rules engine, not a config file — a fast way to see the mess and clear it, on purpose, every time.</p>
 <div class="grid">
 
@@ -56,9 +57,11 @@ cta2 = "Install"
 <h3>Scan</h3>
 <p class="mission-line">See every org's footprint in seconds.</p>
 <ul>
-<li>Two-stage scan: org aggregates first, repo detail on demand</li>
+<li>Two-stage scan: org aggregates first, repository detail on demand</li>
 <li>Every organization the token can see, one pass</li>
-<li>Repository detail loads only when you drill in</li>
+<li>Three columns at once — orgs, repositories, resources — folding from the left as the terminal narrows, so the column you delete from is never the one dropped</li>
+<li>A repository loads once the cursor rests on it for 300 ms, then stays for the session: coming back costs no request</li>
+<li>Two gauges above the resources — caches against GitHub's 10 GiB per-repository ceiling, minutes against the plan's allowance — neither ever clamped at 100 %</li>
 </ul>
 </div>
 
@@ -69,11 +72,12 @@ cta2 = "Install"
 <ul>
 <li>Caches cross-checked against closed pull requests</li>
 <li>A closed or merged PR's cache can never be read again</li>
+<li>Three levels on every row: ⛑ safe, • worth checking, unmarked keep</li>
 <li>Package versions checked for missing tags and orphaned attestations</li>
 <li>Branches offered dead the moment a pull request merges them — zero extra requests, a PR closed without merging leaves its branch alone</li>
 <li>Release assets measured in bytes: <strong>7.3 GB</strong> across four orgs, the release itself never deleted, only its binaries</li>
 <li>Stale repositories surfaced by push age — a dozen with no push in 500–775 days across five orgs — but never auto-selected: age alone is never proof a repository is dead</li>
-<li>One keystroke selects every flagged row, repositories excluded on purpose</li>
+<li><span class="kbd">A</span> takes every ⛑ row, <span class="kbd">V</span> adds every • row — neither ever takes a protected one, and the status line says how many it left; repositories are excluded from both, on purpose</li>
 </ul>
 </div>
 
@@ -84,6 +88,7 @@ cta2 = "Install"
 <ul>
 <li>Sort by size, age, or name</li>
 <li>Incremental filter on the resource label</li>
+<li>A protected row — a tagged package version, the default or a protected branch, a live unmerged one, any tag — is never taken in bulk, but stays yours to tick one row at a time</li>
 <li>No rules engine, no saved config: you decide, every time</li>
 </ul>
 </div>
@@ -93,11 +98,26 @@ cta2 = "Install"
 <h3>Purge, safely</h3>
 <p class="mission-line">Delete with a confirmation and a result.</p>
 <ul>
-<li>Tiered confirmation: a bare [y/N] for regenerable caches, artifacts and workflow runs; an itemised recap for package versions, which don't come back</li>
+<li>Tiered confirmation: a bare [y/N] for the regenerable caches, artifacts and workflow runs; an itemised recap and an explicit warning for package versions, merged branches, tags and release assets, none of which come back</li>
 <li>Runs in the background, TUI stays responsive</li>
+<li>A progress row with a real, counted done/total — never an estimate</li>
 <li>Spaced out and retried on GitHub's rate limit</li>
-<li>Every item reports <span class="kbd">✓</span> or <span class="kbd">✗</span> when it's done</li>
-<li>Repository archiving is the one exception to "never comes back" — reversible, frees no bytes, just turns off the Actions that keep refilling everything above</li>
+<li>Every item reports <span class="kbd">✓</span> or <span class="kbd">✗</span> when it's done, and a run that ends with failures says so instead of hiding it</li>
+<li>No trash, no undo: nothing GitHub lets us delete comes back, and the tool never pretends otherwise</li>
+</ul>
+</div>
+
+<div class="mission">
+<div class="mission-glyph" aria-hidden="true">▣</div>
+<h3>Archive</h3>
+<p class="mission-line">Close the tap instead of mopping forever.</p>
+<ul>
+<li>A repository is ticked from the repositories column, one row at a time, and archived through the same confirmation flow as a deletion</li>
+<li>Archiving frees no bytes, and the tool says so plainly: an archived repository has its Actions disabled, so it stops <em>producing</em> the caches, artifacts and workflow runs everything else here cleans up</li>
+<li>The one reversible thing this tool does — un-archiving restores it — so its confirmation says that, in different words from a deletion's</li>
+<li>Never preselected, never headless: no <span class="kbd">A</span>, no <code>--archive</code> flag, and none planned — a push date alone is no proof a repository is dead</li>
+<li>Already archived, or a repository this token can't administer: shown, never tickable at all</li>
+<li>Deleting a repository is permanently out of scope — un-archiving already covers it, more safely</li>
 </ul>
 </div>
 
@@ -106,12 +126,15 @@ cta2 = "Install"
 <h3>Track billing</h3>
 <p class="mission-line">See which repository is burning the allowance.</p>
 <ul>
-<li>Actions-minutes usage against the allowance of the organization's plan, month by month</li>
-<li>Per-repository breakdown, heaviest allowance consumer first</li>
-<li>Actions storage in GB-hours against the plan's included storage, with the repositories holding it</li>
-<li>The organization's Actions budget, and what it does once the allowance runs out</li>
-<li>Artifact and log retention, read-only — the setting that decides how long all of it is kept</li>
-<li>Strictly diagnostic — minutes can't be reclaimed after the fact</li>
+<li>Actions minutes against the documented allowance of the organization's current plan — <strong>free 2,000</strong>, <strong>team 3,000</strong>, <strong>enterprise 50,000</strong> a month — month by month</li>
+<li>The plan comes from an owner-only endpoint: when it can't be read, or names a plan with no documented figure, the tab shows the total and says <em>formule inconnue</em> — never a percentage against a guessed plan</li>
+<li>Private repositories only: a public repository's Actions minutes are free and unlimited, whatever the volume</li>
+<li>On <code>enterprise</code> the allowance belongs to the whole account and is shared across its organizations, so the percentage is a minimum — and the tab says so</li>
+<li>Per-repository breakdown, heaviest first: one repository burnt <strong>24,632</strong> private Linux-equivalent minutes in a single month — exactly what the tab exists to surface</li>
+<li>Actions storage billed in GB-hours — every hour a gigabyte of artifacts exists — against the plan's included storage (0.5 / 2 / 50 GB) times the displayed month's hours, with the repositories holding it named; public repositories count here, unlike their minutes</li>
+<li>The organization's Actions budget, and what it does once the allowance runs out: blocking at 0 $, billed up to a ceiling, or no ceiling at all — read, never changed, because changing one commits money</li>
+<li>Artifact and log retention, read-only (GitHub's default is 90 days) — the tap that decides how long every uploaded artifact is kept</li>
+<li>Strictly diagnostic — minutes can't be reclaimed after the fact, and deleting artifacts stops the accumulation without refunding hours already counted</li>
 </ul>
 </div>
 
@@ -130,7 +153,7 @@ cta2 = "Install"
 <div class="tui-panels">
 <div class="tui-col"><div class="col-title">Orgs</div><div class="row sel">systm-d      37.2 Go</div><div class="row dim">SecondBrain  13.9 Go</div></div>
 <div class="tui-col"><div class="col-title">Dépôts</div><div class="row">another-repo  9.8 Go</div><div class="row sel">ci-heavy     11.1 Go</div></div>
-<div class="tui-col grow"><div class="col-title">69 éléments · cochés 522.0 Mo</div><div class="row sel">[x]⛑ cache  coverage-linux-x64               261Mo  <span class="stale">PR#32 ⚑</span></div><div class="row">[x]⛑ cache  coverage-linux-x64               261Mo  <span class="stale">PR#25 ⚑</span></div><div class="row">[ ]  cache  ubuntu-22.04-test                257Mo  12j</div><div class="row">[ ]• artif  build-output                     1.1Mo  45j</div></div>
+<div class="tui-col grow"><div class="col-title">Ressources · 69 éléments · cochés 522.0 Mo</div><div class="row dim">Cache   ████████████   103 %   11.1 Go / 10 Gio</div><div class="row dim">Minutes ████            33 %   1 004 / 3 000</div><div class="row sel">[x]⛑ cache  coverage-linux-x64               261Mo  <span class="stale">PR#32 ⚑</span></div><div class="row">[x]⛑ cache  coverage-linux-x64               261Mo  <span class="stale">PR#25 ⚑</span></div><div class="row">[ ]  cache  ubuntu-22.04-test                257Mo  12j</div><div class="row">[ ]• artif  build-output                     1.1Mo  45j</div></div>
 </div>
 <div class="tui-foot"><span class="key">←/→</span> col.<span class="key">↑/↓</span> ligne<span class="key">espace</span> cocher<span class="key">A</span> sûrs<span class="key">V</span> +à vérifier<span class="key">d</span> supprimer<span class="key">f</span> filtrer<span class="key">s</span> trier<span class="key">b</span> billing<span class="key">q</span> quitter</div>
 </div>
@@ -149,7 +172,7 @@ cta2 = "Install"
 <div class="line">Supprimer ?   [y/N]</div>
 </div>
 </div>
-<figcaption>Tier-1 confirmation — the only friction v0.1's regenerable resources need.</figcaption>
+<figcaption>Tier-1 confirmation — the only friction a regenerable resource needs. A package version, a merged branch, a tag or a release asset gets an itemised recap and a warning instead; archiving a repository gets wording of its own, since it is the one thing here that can be undone.</figcaption>
 </figure>
 </section>
 

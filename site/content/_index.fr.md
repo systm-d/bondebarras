@@ -1,5 +1,6 @@
 +++
 [extra]
+name = "bondebarras"
 tagline = "Bon débarras."
 lede = "GitHub Actions remplit sans bruit chaque organisation que tu possèdes de caches morts, d'artifacts expirés et de workflow runs que personne ne regardera jamais plus. bondebarras est l'outil terminal qui te montre exactement combien, et qui fait le ménage — en sûreté, une confirmation à la fois."
 cta = "Voir sur GitHub"
@@ -47,7 +48,7 @@ cta2 = "Installer"
 </section>
 
 <section class="missions">
-<h2>Cinq choses qu'il fait pour toi</h2>
+<h2>Six choses qu'il fait pour toi</h2>
 <p class="section-lede">Pas un moteur de règles, pas un fichier de config — un moyen rapide de voir le bazar et de le nettoyer, exprès, à chaque fois.</p>
 <div class="grid">
 
@@ -56,9 +57,11 @@ cta2 = "Installer"
 <h3>Scanner</h3>
 <p class="mission-line">Voir l'empreinte de chaque org en quelques secondes.</p>
 <ul>
-<li>Scan en deux étages : agrégats d'org d'abord, détail du repo à la demande</li>
+<li>Scan en deux étages : agrégats d'org d'abord, détail du dépôt à la demande</li>
 <li>Toutes les organisations accessibles au jeton, en une passe</li>
-<li>Le détail du dépôt ne se charge qu'au drill-down</li>
+<li>Trois colonnes à la fois — orgs, dépôts, ressources — qui se replient par la gauche quand le terminal rétrécit : celle où l'on supprime n'est jamais la première sacrifiée</li>
+<li>Un dépôt se charge quand le curseur s'y pose 300 ms, puis reste en mémoire pour la session : y revenir ne coûte aucune requête</li>
+<li>Deux jauges au-dessus des ressources — les caches face au plafond de 10 Gio par dépôt, les minutes face au quota de la formule — jamais bornées à 100 %</li>
 </ul>
 </div>
 
@@ -69,11 +72,12 @@ cta2 = "Installer"
 <ul>
 <li>Caches croisés avec les pull requests fermées</li>
 <li>Le cache d'une PR fermée ou mergée ne sera plus jamais relu</li>
+<li>Trois niveaux sur chaque ligne : ⛑ sûr, • à vérifier, non marqué on garde</li>
 <li>Versions de packages vérifiées : sans tag, ou attestation orpheline</li>
 <li>Branches proposées mortes dès qu'une pull request les merge — zéro requête en plus, une PR fermée sans merge laisse sa branche tranquille</li>
 <li>Assets de releases mesurés en octets : <strong>7,3 Go</strong> sur quatre orgs, la release elle-même jamais supprimée, seulement ses binaires</li>
 <li>Dépôts dormants repérés par l'âge du dernier push — une douzaine sans push depuis 500 à 775 jours sur cinq orgs — mais jamais présélectionnés : l'âge seul ne prouve jamais qu'un dépôt est mort</li>
-<li>Une touche sélectionne toutes les lignes marquées, dépôts exclus exprès</li>
+<li><span class="kbd">A</span> coche toutes les lignes ⛑, <span class="kbd">V</span> y ajoute les • — ni l'une ni l'autre ne prend une ligne protégée, et la ligne d'état dit combien elle en a laissées ; les dépôts sont exclus des deux, exprès</li>
 </ul>
 </div>
 
@@ -84,6 +88,7 @@ cta2 = "Installer"
 <ul>
 <li>Tri par taille, âge ou nom</li>
 <li>Filtre incrémental sur le libellé de la ressource</li>
+<li>Une ligne protégée — version de package taguée, branche par défaut ou protégée, branche vivante sans merge, n'importe quel tag — n'est jamais prise en masse, mais reste cochable à la main, une ligne à la fois</li>
 <li>Pas de moteur de règles, pas de config enregistrée : tu décides, à chaque fois</li>
 </ul>
 </div>
@@ -93,11 +98,26 @@ cta2 = "Installer"
 <h3>Nettoyer, en sûreté</h3>
 <p class="mission-line">Supprimer avec une confirmation et un résultat.</p>
 <ul>
-<li>Confirmation par palier : un simple [y/N] pour les caches, artifacts et workflow runs régénérables ; un récapitulatif chiffré pour les versions de packages, qui ne reviennent pas</li>
+<li>Confirmation par palier : un simple [y/N] pour les caches, artifacts et workflow runs régénérables ; un récapitulatif chiffré et un avertissement explicite pour les versions de packages, les branches mergées, les tags et les assets de releases, dont aucun ne revient</li>
 <li>S'exécute en tâche de fond, le TUI reste réactif</li>
+<li>Une ligne de progression au compte réel, fait/total — jamais une estimation</li>
 <li>Espacé et retenté face à la limite de débit de GitHub</li>
-<li>Chaque élément annonce <span class="kbd">✓</span> ou <span class="kbd">✗</span> une fois terminé</li>
-<li>L'archivage d'un dépôt est la seule exception à « ne revient jamais » — réversible, ne libère aucun octet, coupe juste les Actions qui remplissent tout le reste</li>
+<li>Chaque élément annonce <span class="kbd">✓</span> ou <span class="kbd">✗</span> une fois terminé, et une passe qui finit sur des échecs le dit au lieu de le cacher</li>
+<li>Pas de corbeille, pas d'annulation : rien de ce que GitHub laisse supprimer ne revient, et l'outil ne fait jamais semblant du contraire</li>
+</ul>
+</div>
+
+<div class="mission">
+<div class="mission-glyph" aria-hidden="true">▣</div>
+<h3>Archiver</h3>
+<p class="mission-line">Couper le robinet plutôt qu'éponger sans fin.</p>
+<ul>
+<li>Un dépôt se coche depuis la colonne des dépôts, une ligne à la fois, et s'archive par la même confirmation qu'une suppression</li>
+<li>L'archivage ne libère aucun octet, et l'outil le dit sans détour : un dépôt archivé a ses Actions désactivées, donc il cesse de <em>produire</em> les caches, artifacts et workflow runs que tout le reste ici nettoie</li>
+<li>C'est la seule chose réversible que fait cet outil — désarchiver le restaure — alors sa confirmation le dit, avec d'autres mots que ceux d'une suppression</li>
+<li>Jamais présélectionné, jamais en headless : pas de <span class="kbd">A</span>, pas de drapeau <code>--archive</code>, et aucun de prévu — une date de push ne prouve pas qu'un dépôt est mort</li>
+<li>Déjà archivé, ou dépôt que ce jeton n'administre pas : affiché, jamais cochable</li>
+<li>Supprimer un dépôt est hors périmètre pour de bon — désarchiver couvre déjà le besoin, plus sûrement</li>
 </ul>
 </div>
 
@@ -106,12 +126,15 @@ cta2 = "Installer"
 <h3>Suivre la facturation</h3>
 <p class="mission-line">Voir quel dépôt brûle l'allocation.</p>
 <ul>
-<li>Usage des minutes Actions face au quota de la formule de l'organisation, mois par mois</li>
-<li>Répartition par dépôt, le plus gros consommateur d'allocation d'abord</li>
-<li>Stockage Actions en GB-heures face au quota de stockage de la formule, avec les dépôts qui le portent</li>
-<li>Le budget Actions de l'organisation, et ce qu'il fait une fois le quota atteint</li>
-<li>Rétention des artefacts et des journaux, en lecture seule — le réglage qui décide de leur durée</li>
-<li>Strictement diagnostique — les minutes ne se récupèrent pas après coup</li>
+<li>Minutes Actions face au quota documenté de la formule actuelle de l'organisation — <strong>free 2 000</strong>, <strong>team 3 000</strong>, <strong>enterprise 50 000</strong> par mois — mois par mois</li>
+<li>La formule vient d'un endpoint réservé aux propriétaires : illisible, ou sans quota documenté, l'onglet affiche le total et dit <em>formule inconnue</em> — jamais un pourcentage contre une formule devinée</li>
+<li>Dépôts privés uniquement : les minutes Actions d'un dépôt public sont gratuites et illimitées, quel qu'en soit le volume</li>
+<li>En <code>enterprise</code>, le quota appartient au compte entreprise et se partage entre ses organisations : le pourcentage est un minimum, et l'onglet le dit</li>
+<li>Répartition par dépôt, le plus gourmand d'abord : un seul dépôt a brûlé <strong>24 632</strong> minutes privées équivalent-Linux en un mois — exactement ce que cet onglet existe pour montrer</li>
+<li>Stockage Actions facturé en GB-heures — chaque heure passée par un gigaoctet d'artefacts — face au stockage inclus de la formule (0,5 / 2 / 50 Go) multiplié par les heures du mois affiché, avec les dépôts qui le portent, nommés ; les dépôts publics comptent ici, contrairement à leurs minutes</li>
+<li>Le budget Actions de l'organisation, et ce qu'il fait une fois le quota atteint : bloquant à 0 $, facturé jusqu'à un plafond, ou sans plafond du tout — lu, jamais modifié : changer un budget engage de l'argent</li>
+<li>Rétention des artefacts et des journaux, en lecture seule (90 jours par défaut chez GitHub) — le robinet qui décide combien de temps chaque artefact uploadé reste là</li>
+<li>Strictement diagnostique — les minutes ne se récupèrent pas après coup, et supprimer des artefacts arrête l'accumulation sans rendre les heures déjà comptées</li>
 </ul>
 </div>
 
@@ -130,7 +153,7 @@ cta2 = "Installer"
 <div class="tui-panels">
 <div class="tui-col"><div class="col-title">Orgs</div><div class="row sel">systm-d      37.2 Go</div><div class="row dim">SecondBrain  13.9 Go</div></div>
 <div class="tui-col"><div class="col-title">Dépôts</div><div class="row">another-repo  9.8 Go</div><div class="row sel">ci-heavy     11.1 Go</div></div>
-<div class="tui-col grow"><div class="col-title">69 éléments · cochés 522.0 Mo</div><div class="row sel">[x]⛑ cache  coverage-linux-x64               261Mo  <span class="stale">PR#32 ⚑</span></div><div class="row">[x]⛑ cache  coverage-linux-x64               261Mo  <span class="stale">PR#25 ⚑</span></div><div class="row">[ ]  cache  ubuntu-22.04-test                257Mo  12j</div><div class="row">[ ]• artif  build-output                     1.1Mo  45j</div></div>
+<div class="tui-col grow"><div class="col-title">Ressources · 69 éléments · cochés 522.0 Mo</div><div class="row dim">Cache   ████████████   103 %   11.1 Go / 10 Gio</div><div class="row dim">Minutes ████            33 %   1 004 / 3 000</div><div class="row sel">[x]⛑ cache  coverage-linux-x64               261Mo  <span class="stale">PR#32 ⚑</span></div><div class="row">[x]⛑ cache  coverage-linux-x64               261Mo  <span class="stale">PR#25 ⚑</span></div><div class="row">[ ]  cache  ubuntu-22.04-test                257Mo  12j</div><div class="row">[ ]• artif  build-output                     1.1Mo  45j</div></div>
 </div>
 <div class="tui-foot"><span class="key">←/→</span> col.<span class="key">↑/↓</span> ligne<span class="key">espace</span> cocher<span class="key">A</span> sûrs<span class="key">V</span> +à vérifier<span class="key">d</span> supprimer<span class="key">f</span> filtrer<span class="key">s</span> trier<span class="key">b</span> billing<span class="key">q</span> quitter</div>
 </div>
@@ -149,7 +172,7 @@ cta2 = "Installer"
 <div class="line">Supprimer ?   [y/N]</div>
 </div>
 </div>
-<figcaption>Confirmation palier 1 — la seule friction dont les ressources régénérables de la v0.1 ont besoin.</figcaption>
+<figcaption>Confirmation palier 1 — la seule friction dont une ressource régénérable a besoin. Une version de package, une branche mergée, un tag ou un asset de release ont droit à un récapitulatif chiffré et à un avertissement ; l'archivage d'un dépôt, lui, a ses propres mots : c'est la seule chose ici qui se défait.</figcaption>
 </figure>
 </section>
 

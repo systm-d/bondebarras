@@ -2,13 +2,13 @@
 {% block content %}
 <header class="hero">
   <div class="topbar">
-    <span class="wordmark">bondebarras</span>
     <nav class="langswitch" aria-label="Language">
       <a href="{{ get_url(path='fr/') }}"{% if lang == 'fr' %} class="on" aria-current="true"{% endif %}>FR</a>
       <a href="{{ get_url(path='/') }}"{% if lang == 'en' %} class="on" aria-current="true"{% endif %}>EN</a>
     </nav>
   </div>
-  <h1>{{ section.extra.tagline }}</h1>
+  <h1>{{ section.extra.name }}</h1>
+  <p class="tagline">{{ section.extra.tagline }}</p>
   <p class="lede">{{ section.extra.lede }}</p>
   <div class="cta">
     <a class="btn btn-primary" href="#install">{{ section.extra.cta2 }}</a>

@@ -34,8 +34,7 @@ a { color: var(--brand); }
   padding: 4.5rem 1.25rem 2.5rem;
   text-align: center;
 }
-.topbar { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin-bottom: 1.5rem; }
-.wordmark { font-weight: 700; letter-spacing: .04em; font-size: .95rem; text-transform: uppercase; color: var(--muted); }
+.topbar { display: flex; align-items: center; justify-content: flex-end; gap: 1rem; margin-bottom: 1.5rem; }
 .langswitch { display: flex; gap: .25rem; font: .78rem/1 var(--mono); }
 .langswitch a {
   color: var(--muted); text-decoration: none; padding: .12rem .45rem; border-radius: .3rem;
@@ -44,11 +43,19 @@ a { color: var(--brand); }
 .langswitch a:hover { color: var(--fg); }
 .langswitch a.on { color: var(--brand); border-color: var(--line); }
 .hero h1 {
-  font-size: clamp(1.9rem, 4.5vw, 3rem);
+  font-family: var(--mono);
+  font-size: clamp(2.1rem, 6vw, 3.4rem);
   line-height: 1.1;
-  letter-spacing: -0.01em;
-  margin: .5rem auto;
+  letter-spacing: -0.03em;
+  margin: .5rem auto 0;
   max-width: 22ch;
+}
+.tagline {
+  color: var(--brand);
+  font-size: clamp(1.15rem, 2.8vw, 1.65rem);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  margin: .4rem auto 0;
 }
 .lede { color: var(--muted); max-width: 42rem; margin: 1rem auto 2rem; font-size: 1.08rem; }
 .cta { display: flex; gap: .75rem; justify-content: center; flex-wrap: wrap; }
