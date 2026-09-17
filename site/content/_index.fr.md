@@ -1,7 +1,7 @@
 +++
 [extra]
-name = "BonDébarras"
-tagline = "Bon débarras."
+name = "Bon Débarras"
+tagline = "Good riddance."
 lede = "GitHub Actions remplit sans bruit chaque organisation que tu possèdes de caches morts, d'artifacts expirés et de workflow runs que personne ne regardera jamais plus. bondebarras est l'outil terminal qui te montre exactement combien, et qui fait le ménage — en sûreté, une confirmation à la fois."
 cta = "Voir sur GitHub"
 cta2 = "Installer"
