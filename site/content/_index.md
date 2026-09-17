@@ -5,6 +5,9 @@ tagline = "Good riddance."
 lede = "GitHub Actions quietly fills every organization you own with dead caches, expired artifacts, and workflow runs nobody will ever look at again. bondebarras is the terminal tool that shows you exactly how much, and clears it out — safely, one confirmation at a time."
 cta = "View on GitHub"
 cta2 = "Install"
+status = "v1.0.0-rc.1 — pre-release"
+status_url = "https://github.com/systm-d/bondebarras/releases/tag/v1.0.0-rc.1"
+status_note = "No stable release yet: feature-complete and safe to run — nothing is ever deleted without a confirmation — but the CLI flags and the JSON schema may still change before v1.0.0, and Homebrew, the AUR and winget are not published."
 +++
 
 <section class="flow-section">

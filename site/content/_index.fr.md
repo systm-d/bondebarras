@@ -5,6 +5,9 @@ tagline = "Good riddance."
 lede = "GitHub Actions remplit sans bruit chaque organisation que tu possèdes de caches morts, d'artifacts expirés et de workflow runs que personne ne regardera jamais plus. bondebarras est l'outil terminal qui te montre exactement combien, et qui fait le ménage — en sûreté, une confirmation à la fois."
 cta = "Voir sur GitHub"
 cta2 = "Installer"
+status = "v1.0.0-rc.1 — préversion"
+status_url = "https://github.com/systm-d/bondebarras/releases/tag/v1.0.0-rc.1"
+status_note = "Pas encore de version stable : complet et sûr à l'usage — rien n'est jamais supprimé sans confirmation — mais les drapeaux de la CLI et le schéma JSON peuvent encore changer avant la v1.0.0, et Homebrew, l'AUR et winget ne sont pas publiés."
 +++
 
 <section class="flow-section">

@@ -13,6 +13,10 @@
   </h1>
   <p class="tagline">{{ section.extra.tagline }}</p>
   <p class="lede">{{ section.extra.lede }}</p>
+  <p class="status">
+    <a class="status-pill" href="{{ section.extra.status_url }}">{{ section.extra.status }}</a>
+    <span class="status-note">{{ section.extra.status_note }}</span>
+  </p>
   <div class="cta">
     <a class="btn btn-primary" href="#install">{{ section.extra.cta2 }}</a>
     <a class="btn" href="{{ config.extra.repo_url }}">{{ section.extra.cta }}</a>

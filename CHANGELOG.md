@@ -37,6 +37,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   publishes, so it looked installable and was not. The workflow regenerates
   it on a stable tag from [`packaging/homebrew/bondebarras.rb`](packaging/homebrew/bondebarras.rb),
   which is unchanged, so nothing is lost by deleting it now.
+- **The pre-release status is stated where people actually look.** The
+  README opens on a `v1.0.0-rc.1 — pre-release` badge and a note saying what
+  that means — feature-complete and safe to run, but the CLI flags and the
+  `scan --json` schema may still change before `v1.0.0` — and the
+  Installation section says it again. The site hero carries the same version
+  and note, in both languages. Nothing now implies a stable release exists.
 
 ## [1.0.0-rc.1] - 2026-09-17
 

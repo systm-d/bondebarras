@@ -15,12 +15,22 @@ minutes against the allowance of your plan, Actions storage in GB-hours, the
 Actions budget that decides what happens once that allowance runs out, and
 the artifact and log retention feeding all of it.
 
+[![Pre-release](https://img.shields.io/badge/release-v1.0.0--rc.1%20%E2%80%94%20pre--release-d97757)](https://github.com/systm-d/bondebarras/releases/tag/v1.0.0-rc.1)
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)](#license)
 [![CI](https://github.com/systm-d/bondebarras/actions/workflows/ci.yml/badge.svg)](https://github.com/systm-d/bondebarras/actions/workflows/ci.yml)
 [![Pages](https://github.com/systm-d/bondebarras/actions/workflows/pages.yml/badge.svg)](https://github.com/systm-d/bondebarras/actions/workflows/pages.yml)
 [![Release](https://github.com/systm-d/bondebarras/actions/workflows/release.yml/badge.svg)](https://github.com/systm-d/bondebarras/actions/workflows/release.yml)
 
 **Site:** <https://systm-d.github.io/bondebarras>
+
+> **Status: `v1.0.0-rc.1` — pre-release.** There is no stable release yet.
+> What that means for you: the tool is feature-complete and safe to run —
+> every deletion goes through a confirmation, and nothing is ever deleted
+> without one — but the CLI flags and the `scan --json` schema may still
+> change before `v1.0.0`, so pin the version if you script against them.
+> Homebrew, the AUR and winget are
+> [not published yet](#after-the-first-stable-release); install from the
+> [release binaries][rc] or from source.
 
 ---
 
@@ -227,9 +237,10 @@ stays available one row at a time regardless of level.
 
 ## Installation
 
-Two channels work today. The package managers further down are **not
-published yet** — they are listed so you know what is coming, not as
-commands to run.
+bondebarras currently ships as a **pre-release**, [`v1.0.0-rc.1`][rc] —
+there is no stable version yet. Two channels work today; the package
+managers further down are **not published yet**, and are listed so you know
+what is coming, not as commands to run.
 
 ### Available now — [`v1.0.0-rc.1`][rc]
 
