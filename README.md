@@ -274,7 +274,10 @@ curl -LO https://github.com/systm-d/bondebarras/releases/latest/download/PKGBUIL
 makepkg -si
 ```
 
-**macOS — Homebrew:**
+**macOS — Homebrew:** the tap serves *stable* releases only, and there is none
+yet — `Formula/bondebarras.rb` is refreshed by the release workflow on a stable
+tag, which a release candidate deliberately skips. Until 1.0.0 ships, install
+from source or from the release binaries above.
 
 ```sh
 brew tap systm-d/bondebarras https://github.com/systm-d/bondebarras
