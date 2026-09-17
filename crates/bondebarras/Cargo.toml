@@ -46,7 +46,7 @@ assets = [
 ]
 
 [dependencies]
-bondebarras-core = { path = "../bondebarras-core", version = "0.5.0" }
+bondebarras-core = { path = "../bondebarras-core", version = "1.0.0-rc.1" }
 
 [dev-dependencies]
 assert_cmd.workspace = true

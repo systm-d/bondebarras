@@ -203,6 +203,9 @@ jobs:
             echo "packaging/aur/PKGBUILD absent — PKGBUILD AUR ignoré pour cette release."
           fi
 
+      # Un tag de préversion — celui qui porte un `-`, ex. `v1.0.0-rc.1` — est
+      # publié comme tel : GitHub l'affiche « Pre-release » et ne le propose
+      # pas en « Latest ». Un tag stable ne change pas de comportement.
       - name: Publier la release
         uses: softprops/action-gh-release@v3
         with:
@@ -211,6 +214,7 @@ jobs:
             bondebarras.rb
             PKGBUILD
           generate_release_notes: true
+          prerelease: ${{ contains(github.ref_name, '-') }}
 
   # ---------------------------------------------------------------------------
   # Homebrew (macOS) : rend Formula/bondebarras.rb sur la branche par défaut à
@@ -224,7 +228,10 @@ jobs:
     name: Mettre à jour la formule Homebrew
     needs: release
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v')
+    # Jamais sur une préversion (même critère que la release : un `-` dans le
+    # tag) : commiter une release candidate dans Formula/ la servirait comme
+    # version stable à tout `brew install bondebarras`.
+    if: startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-')
     permissions:
       contents: write
     steps:
@@ -266,7 +273,9 @@ jobs:
     name: Générer les manifestes winget
     needs: release
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v')
+    # Même critère que Homebrew : une préversion ne devient pas le paquet
+    # stable proposé par winget.
+    if: startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-')
     permissions:
       contents: write
     steps:
