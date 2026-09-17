@@ -15,12 +15,22 @@ minutes against the allowance of your plan, Actions storage in GB-hours, the
 Actions budget that decides what happens once that allowance runs out, and
 the artifact and log retention feeding all of it.
 
+[![Pre-release](https://img.shields.io/badge/release-v1.0.0--rc.1%20%E2%80%94%20pre--release-d97757)](https://github.com/systm-d/bondebarras/releases/tag/v1.0.0-rc.1)
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)](#license)
 [![CI](https://github.com/systm-d/bondebarras/actions/workflows/ci.yml/badge.svg)](https://github.com/systm-d/bondebarras/actions/workflows/ci.yml)
 [![Pages](https://github.com/systm-d/bondebarras/actions/workflows/pages.yml/badge.svg)](https://github.com/systm-d/bondebarras/actions/workflows/pages.yml)
 [![Release](https://github.com/systm-d/bondebarras/actions/workflows/release.yml/badge.svg)](https://github.com/systm-d/bondebarras/actions/workflows/release.yml)
 
 **Site:** <https://systm-d.github.io/bondebarras>
+
+> **Status: `v1.0.0-rc.1` — pre-release.** There is no stable release yet.
+> What that means for you: the tool is feature-complete and safe to run —
+> every deletion goes through a confirmation, and nothing is ever deleted
+> without one — but the CLI flags and the `scan --json` schema may still
+> change before `v1.0.0`, so pin the version if you script against them.
+> Homebrew, the AUR and winget are
+> [not published yet](#after-the-first-stable-release); install from the
+> [release binaries][rc] or from source.
 
 ---
 
@@ -30,10 +40,13 @@ An account with fifteen organizations can accumulate a surprising amount of
 dead weight: on the author's own account, GitHub Actions caches alone add up
 to **51.4 GB**, with a single repository holding **69 caches for 11.1 GB** —
 almost all of it CI caches pinned to pull requests that were closed months
-ago. GitHub only evicts a repo's caches once it crosses 10 GB or after seven
-days of no reads, so this kind of junk just sits there, crowding out the
-caches that still matter and slowing down every CI run that has to rebuild
-what should have stayed cached.
+ago. And 10 GB is only the *default included* cache threshold per repository
+— an administrator can raise the real limit, and storage past it is billed.
+GitHub evicts *to make room* only once a repository reaches its
+**configured** limit; separately from any limit, it removes every cache
+entry that has not been accessed in over 7 days. Either way this kind of
+junk just sits there, crowding out the caches that still matter and slowing
+down every CI run that has to rebuild what should have stayed cached.
 
 bondebarras' headline feature is exactly that: **flagging Actions caches
 pinned to a closed pull request** — the safest, highest-volume cleanup
@@ -97,12 +110,21 @@ again by anything.
   `[A]` selects every ⛑ row, `[V]` adds every • row, and neither ever takes
   a protected one.
 - **Two per-repository gauges** at the head of the resources column: Actions
-  cache usage against GitHub's documented (but API-unexposed) 10 GiB
-  per-repository ceiling — past 100 % it warns that GitHub is already
-  evicting least-recently-read caches to make room — and Actions minutes
-  against the allowance of the organization's plan (`formule inconnue`, with
-  no percentage, when the plan cannot be read). Neither is ever clamped at
-  100 %: a number past the ceiling is real, not an error.
+  cache usage against GitHub's **default included 10 GB per-repository
+  threshold** — *not* a ceiling, and the gauge says so (`seuil inclus ;
+  limite réelle non exposée par l'API`): the limit can be raised by an
+  administrator, and storage above it is billed. Eviction *to make room*
+  starts only at the repository's **configured** limit, which no endpoint
+  exposes; separately from any limit, GitHub removes every cache entry not
+  accessed in over 7 days. Past 100 % the gauge states both facts apart —
+  the excess is billed, and eviction waits on that configured limit —
+  rather than guessing between them. The threshold is the decimal 10 GB
+  GitHub bills on, not 10 GiB, so a repository at 10.5 GB is flagged
+  instead of reading 98 %. Beside it, Actions minutes against the allowance
+  of the organization's plan (`formule inconnue`, with no percentage, when
+  the plan cannot be read). Neither is ever clamped at 100 %: a number past
+  the threshold is real, not an error. Source: GitHub's
+  [usage limits and eviction policy][gh-cache].
 - **A progress row** appears between the status line and the footer while a
   purge, an archive, or a repository load is running, with a real, counted
   done/total — never an estimate.
@@ -147,9 +169,10 @@ again by anything.
   hours already counted. The repositories column shows, under a repository's
   row, its GB-hours for the most recent month of the usage report — the
   month the resources column's minutes gauge reads, named on the line — and
-  marks with ⚠ a repository whose caches are past the included 10 GiB
-  (10.7 Go as displayed), past which GitHub evicts, or bills the excess at
-  its hourly peak if the repository's cache limit was raised.
+  marks with ⚠ a repository whose caches are past the included 10 GB
+  (10.0 Go as displayed) — past which GitHub bills the excess at its hourly
+  peak, and evicts least-recently-read entries once the repository reaches
+  the configured limit it does not publish.
   The tab also says what happens once an allowance runs out, from the
   organization's **Actions budget**: `0.00 $ · bloquant` (GitHub stops
   Actions at the allowance), `5.00 $ · bloquant` (billed up to 5 $, then
@@ -220,82 +243,69 @@ stays available one row at a time regardless of level.
 
 ## Installation
 
-### From source
+bondebarras currently ships as a **pre-release**, [`v1.0.0-rc.1`][rc] —
+there is no stable version yet. Two channels work today; the package
+managers further down are **not published yet**, and are listed so you know
+what is coming, not as commands to run.
 
-Rust ≥ 1.88 and a C compiler (gcc, clang, or MSVC's) required — the
-`aws-lc-rs` crypto backend builds a C library.
+### Available now — [`v1.0.0-rc.1`][rc]
 
-```sh
-git clone https://github.com/systm-d/bondebarras
-cd bondebarras
-cargo install --path crates/bondebarras
-```
+Download the file for your platform from [the release page][rc]:
 
-### Precompiled packages
+| Platform            | File on the release page                    |
+| ------------------- | ------------------------------------------- |
+| Windows x86-64      | `bondebarras-windows-x86_64.exe` (+ `.zip`) |
+| macOS Apple Silicon | `bondebarras-macos-aarch64.tar.gz`          |
+| Linux x86-64        | `bondebarras-linux-x86_64.tar.gz`           |
+| Debian / Ubuntu     | `bondebarras_<version>_amd64.deb`           |
+| Fedora / RHEL       | `bondebarras-<version>.x86_64.rpm`          |
 
-Every tag `v*` triggers the [Release](.github/workflows/release.yml) workflow,
-which publishes artifacts for the most common platforms:
-
-| Platform            | Artifact                                          |
-| -------------------- | ------------------------------------------------- |
-| Windows (Microsoft)  | `bondebarras-windows-x86_64.exe` (+ `.zip`)        |
-| macOS Apple Silicon  | `bondebarras-macos-aarch64.tar.gz`                 |
-| Linux (generic)      | `bondebarras-linux-x86_64.tar.gz`                  |
-| Debian / Ubuntu      | `bondebarras_<version>_amd64.deb`                  |
-| Fedora / RHEL        | `bondebarras-<version>.x86_64.rpm`                 |
-| Arch Linux           | AUR (source) — `yay -S bondebarras`                |
-
-> Intel Macs are covered by Homebrew, which builds from source (no
-> precompiled Intel binary).
-
-> A pre-release tag — one carrying a `-`, like `v1.0.0-rc.1` — publishes the
-> same artifacts and is marked *Pre-release* on GitHub, but deliberately
-> updates neither the Homebrew formula nor the winget manifests: a release
-> candidate is not what `brew install bondebarras` should hand out.
+The `.deb` and `.rpm` commands below install a file you have **already
+downloaded** from that page — neither fetches anything:
 
 ```sh
-# Debian / Ubuntu
-sudo dpkg -i bondebarras_*.deb
+# Debian / Ubuntu, from the directory you downloaded it into
+sudo dpkg -i bondebarras_*_amd64.deb
 # Fedora / RHEL
-sudo rpm -i bondebarras-*.rpm
+sudo rpm -i bondebarras-*.x86_64.rpm
 ```
 
-#### Package managers
+On Windows, put `bondebarras-windows-x86_64.exe` in a folder on your `PATH`.
 
-**Arch Linux — AUR:**
+**Or build from source** — every platform, Intel Macs included. Rust ≥ 1.88
+and a C compiler (gcc, clang, or MSVC's) are required: the `aws-lc-rs` crypto
+backend builds a C library.
 
 ```sh
-yay -S bondebarras   # or: paru -S bondebarras
+cargo install --git https://github.com/systm-d/bondebarras bondebarras
 ```
 
-Every release also publishes a ready-to-use `PKGBUILD`
-([`packaging/aur/PKGBUILD`](packaging/aur/PKGBUILD)) for a manual install
-from source:
+On Arch, the `PKGBUILD` published with every release
+([`packaging/aur/PKGBUILD`](packaging/aur/PKGBUILD)) builds the same thing:
 
 ```sh
 curl -LO https://github.com/systm-d/bondebarras/releases/latest/download/PKGBUILD
 makepkg -si
 ```
 
-**macOS — Homebrew:** the tap serves *stable* releases only, and there is none
-yet — `Formula/bondebarras.rb` is refreshed by the release workflow on a stable
-tag, which a release candidate deliberately skips. Until 1.0.0 ships, install
-from source or from the release binaries above.
+### After the first stable release
 
-```sh
-brew tap systm-d/bondebarras https://github.com/systm-d/bondebarras
-brew install bondebarras
-```
+None of these three is published, so none of their commands works today. For
+Homebrew and winget, the release workflow skips the step on a pre-release
+tag — one carrying a `-`, like `v1.0.0-rc.1` — on purpose: a release
+candidate is not what `brew install bondebarras` should hand out. For the
+AUR there is nothing to skip — no AUR job exists at all, and no package has
+ever been submitted. Each will be documented here as available only once its
+package has actually been published through that channel.
 
-**Windows — winget** (once the package is published to `winget-pkgs`, see
-[`packaging/winget`](packaging/winget/README.md)):
+| Channel          | Status        | Why not yet                                                                                                   |
+| ---------------- | ------------- | ------------------------------------------------------------------------------------------------------------- |
+| Homebrew (macOS) | Not published | The tap serves stable releases only; the workflow renders the formula from [`packaging/homebrew/bondebarras.rb`](packaging/homebrew/bondebarras.rb) on a stable tag |
+| AUR (Arch Linux) | Not published | No AUR page exists yet — the `PKGBUILD` above is the supported path meanwhile                                   |
+| winget (Windows) | Not published | The manifest has not been accepted into `winget-pkgs` yet (see [`packaging/winget`](packaging/winget/README.md)) |
 
-```powershell
-winget install bondebarras
-```
-
-Otherwise, download `bondebarras-windows-x86_64.exe` from the release and
-place it in a folder on your `PATH`.
+[rc]: https://github.com/systm-d/bondebarras/releases/tag/v1.0.0-rc.1
+[gh-cache]: https://docs.github.com/en/actions/reference/workflows-and-actions/dependency-caching#usage-limits-and-eviction-policy
 
 ---
 
@@ -322,8 +332,8 @@ focused column alone, `←`/`→` change which one).
 ```
  ORGS                 DÉPÔTS                                 RESSOURCES
  ──────────────────── ─────────────────────────────────────  ──────────────────────────────
- systm-d      36.4 Go  josephine          5 j        12.4 Go  Cache   ████████████▓ 115 %
- SecondBrain… 14.9 Go  claudine          12 j        11.8 Go  Minutes ▓▓▓▓▓▓▓▓▓▓▓▓▓   0 %
+ systm-d      36.4 Go  josephine          5 j       ⚠12.4 Go  Cache   ████████████▓ 124 %
+ SecondBrain… 14.9 Go  claudine          12 j       ⚠11.8 Go  Minutes ▓▓▓▓▓▓▓▓▓▓▓▓▓   0 %
  delfour-co    161 Mo  alertU     déjà archivé         8.0 Go ────────────────────────────
  exec-d         71 Mo  anonymous          3 j          4.3 Go [ ]⛑ cache v0-rust-cover…  467Mo PR#54 ⚑
                                                                 [ ]• artif github-pages    1.1Mo 40j

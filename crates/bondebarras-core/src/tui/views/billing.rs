@@ -414,8 +414,8 @@ fn header_line(login: &str, plan: Option<&str>) -> Line<'static> {
 /// `plan.name` is the only plan GitHub reports, and a mid-month change
 /// (exec-d moved from Free to Team on 2026-09-10) is invisible to it. The
 /// allowance is GitHub's documented figure for that plan, not one read from
-/// a response, and the line says so — as the cache gauge says its ceiling
-/// is.
+/// a response, and the line says so — as the cache gauge says the same of
+/// its own included threshold.
 fn month_line(month: &str) -> Line<'static> {
     Line::from(Span::styled(
         format!("{month} · quota documenté de la formule actuelle"),

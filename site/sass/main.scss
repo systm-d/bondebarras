@@ -59,7 +59,18 @@ a { color: var(--brand); }
 }
 .hero-title { margin: .5rem auto; line-height: 0; }
 .hero-logo { width: min(24rem, 78vw); height: auto; }
-.lede { color: var(--muted); max-width: 42rem; margin: 1rem auto 2rem; font-size: 1.08rem; }
+.lede { color: var(--muted); max-width: 42rem; margin: 1rem auto 1.25rem; font-size: 1.08rem; }
+.status {
+  display: flex; gap: .6rem; align-items: center; justify-content: center;
+  flex-wrap: wrap; max-width: 44rem; margin: 0 auto 1.75rem;
+}
+.status-pill {
+  font: .76rem/1 var(--mono); color: var(--brand); text-decoration: none;
+  border: 1px solid var(--brand); border-radius: 999px; padding: .32rem .7rem;
+  background: var(--brand-soft); white-space: nowrap;
+}
+.status-pill:hover { color: var(--fg); }
+.status-note { color: var(--muted); font-size: .88rem; }
 .cta { display: flex; gap: .75rem; justify-content: center; flex-wrap: wrap; }
 .btn {
   display: inline-block; padding: .65rem 1.25rem; border-radius: .5rem;

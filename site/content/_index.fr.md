@@ -5,6 +5,9 @@ tagline = "Good riddance."
 lede = "GitHub Actions remplit sans bruit chaque organisation que tu possèdes de caches morts, d'artifacts expirés et de workflow runs que personne ne regardera jamais plus. bondebarras est l'outil terminal qui te montre exactement combien, et qui fait le ménage — en sûreté, une confirmation à la fois."
 cta = "Voir sur GitHub"
 cta2 = "Installer"
+status = "v1.0.0-rc.1 — préversion"
+status_url = "https://github.com/systm-d/bondebarras/releases/tag/v1.0.0-rc.1"
+status_note = "Pas encore de version stable : complet et sûr à l'usage — rien n'est jamais supprimé sans confirmation — mais les drapeaux de la CLI et le schéma JSON peuvent encore changer avant la v1.0.0, et Homebrew, l'AUR et winget ne sont pas publiés."
 +++
 
 <section class="flow-section">
@@ -28,7 +31,7 @@ cta2 = "Installer"
 <div class="why-grid">
 <div class="why-text">
 <p>Quinze organisations, c'est suffisant pour perdre le fil de ce que fait la CI. Sur le compte de l'auteur, les caches Actions à eux seuls atteignent <strong>51,4 Go</strong> — et un seul dépôt en détenait <strong>69 caches pour 11,1 Go</strong> à lui tout seul, presque tous rattachés à des pull requests fermées depuis des mois.</p>
-<p>GitHub n'évince les caches d'un dépôt qu'au-delà de 10 Go, ou après sept jours sans lecture. En attendant, les caches morts de PR fermées depuis longtemps restent là, prennent la place de ceux qui comptent encore — ceux que la CI réutilise vraiment — et chaque éviction qu'ils provoquent ralentit le build suivant.</p>
+<p>10 Go est le seuil <em>inclus</em> par défaut par dépôt, pas un plafond fixe : un administrateur peut relever la limite réelle, et le stockage au-delà de 10 Go est facturé. GitHub n'évince <em>pour faire de la place</em> qu'une fois la limite configurée du dépôt atteinte — un chiffre que son API n'expose pas — et, indépendamment de cela, toute entrée non lue depuis plus de 7 jours est supprimée (<a href="https://docs.github.com/en/actions/reference/workflows-and-actions/dependency-caching#usage-limits-and-eviction-policy">limites d'usage et politique d'éviction de GitHub</a>). Dans tous les cas, les caches morts de PR fermées depuis longtemps restent là, prennent la place de ceux qui comptent encore — ceux que la CI réutilise vraiment — et chaque éviction qu'ils provoquent ralentit le build suivant.</p>
 <p>L'alternative, c'est quinze onglets de navigateur, chacun sur <em>Settings → Actions → Caches</em>, à cliquer dépôt par dépôt sans aucun moyen de savoir lesquels sont encore utiles. bondebarras lit tout ça en un scan et laisse nettoyer au clavier.</p>
 </div>
 <div class="term-window why-tree">
@@ -61,7 +64,7 @@ cta2 = "Installer"
 <li>Toutes les organisations accessibles au jeton, en une passe</li>
 <li>Trois colonnes à la fois — orgs, dépôts, ressources — qui se replient par la gauche quand le terminal rétrécit : celle où l'on supprime n'est jamais la première sacrifiée</li>
 <li>Un dépôt se charge quand le curseur s'y pose 300 ms, puis reste en mémoire pour la session : y revenir ne coûte aucune requête</li>
-<li>Deux jauges au-dessus des ressources — les caches face au plafond de 10 Gio par dépôt, les minutes face au quota de la formule — jamais bornées à 100 %</li>
+<li>Deux jauges au-dessus des ressources — les caches face au seuil inclus par défaut de 10 Go par dépôt (les 10 Go décimaux sur lesquels GitHub facture, pas 10 Gio), les minutes face au quota de la formule — jamais bornées à 100 %, et la jauge de cache dit sans détour que la limite réelle du dépôt n'est pas exposée par l'API</li>
 </ul>
 </div>
 
@@ -152,8 +155,8 @@ cta2 = "Installer"
 <div class="tui-head"><span class="tui-brand">bondebarras</span><span class="tui-home">15 orgs</span></div>
 <div class="tui-panels">
 <div class="tui-col"><div class="col-title">Orgs</div><div class="row sel">systm-d      37.2 Go</div><div class="row dim">SecondBrain  13.9 Go</div></div>
-<div class="tui-col"><div class="col-title">Dépôts</div><div class="row">another-repo  9.8 Go</div><div class="row sel">ci-heavy     11.1 Go</div></div>
-<div class="tui-col grow"><div class="col-title">Ressources · 69 éléments · cochés 522.0 Mo</div><div class="row dim">Cache   ████████████   103 %   11.1 Go / 10 Gio</div><div class="row dim">Minutes ████            33 %   1 004 / 3 000</div><div class="row sel">[x]⛑ cache  coverage-linux-x64               261Mo  <span class="stale">PR#32 ⚑</span></div><div class="row">[x]⛑ cache  coverage-linux-x64               261Mo  <span class="stale">PR#25 ⚑</span></div><div class="row">[ ]  cache  ubuntu-22.04-test                257Mo  12j</div><div class="row">[ ]• artif  build-output                     1.1Mo  45j</div></div>
+<div class="tui-col"><div class="col-title">Dépôts</div><div class="row">another-repo  9.8 Go</div><div class="row sel">ci-heavy    ⚠11.1 Go</div></div>
+<div class="tui-col grow"><div class="col-title">Ressources · 69 éléments · cochés 522.0 Mo</div><div class="row dim">Cache   ████████████   111 %   11.1 Go / 10 Go</div><div class="row dim">  (seuil inclus ; limite réelle non exposée par l'API)</div><div class="row">  ⚠ dépasse le seuil inclus : le stockage en excès est facturé ; l'éviction, elle, attend la limite configurée du dépôt</div><div class="row dim">Minutes ████            33 %   1 004 / 3 000</div><div class="row sel">[x]⛑ cache  coverage-linux-x64               261Mo  <span class="stale">PR#32 ⚑</span></div><div class="row">[x]⛑ cache  coverage-linux-x64               261Mo  <span class="stale">PR#25 ⚑</span></div><div class="row">[ ]  cache  ubuntu-22.04-test                257Mo  12j</div><div class="row">[ ]• artif  build-output                     1.1Mo  45j</div></div>
 </div>
 <div class="tui-foot"><span class="key">←/→</span> col.<span class="key">↑/↓</span> ligne<span class="key">espace</span> cocher<span class="key">A</span> sûrs<span class="key">V</span> +à vérifier<span class="key">d</span> supprimer<span class="key">f</span> filtrer<span class="key">s</span> trier<span class="key">b</span> billing<span class="key">q</span> quitter</div>
 </div>
@@ -204,20 +207,24 @@ cta2 = "Installer"
 <section id="install" class="install">
 <h2>Installation</h2>
 <p class="section-lede">Ne lit et n'écrit que l'API GitHub — pas de compte propre, pas de télémétrie, pas de stockage cloud.</p>
+<h3>Disponible maintenant — v1.0.0-rc.1</h3>
+<p>Les binaires et paquets pour Windows x86-64, macOS Apple Silicon, Linux x86-64, Debian/Ubuntu AMD64 et Fedora/RHEL x86-64 sont joints à <a href="https://github.com/systm-d/bondebarras/releases/tag/v1.0.0-rc.1">la release v1.0.0-rc.1</a>. Télécharge d'abord celui de ta plateforme : les commandes de paquet ci-dessous installent un fichier que tu as déjà, elles ne le récupèrent pas.</p>
 <div class="term-window">
 <div class="term-bar"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span><span class="term-title">install</span></div>
 <div class="term-body cmds">
-<div class="comment"># Depuis les sources — toutes plateformes</div>
+<div class="comment"># Depuis les sources — toutes plateformes, Mac Intel compris</div>
 <div class="line"><span class="prompt">$</span>cargo install <span class="flag">--git</span> https://github.com/systm-d/bondebarras bondebarras</div>
-<div class="comment"># Debian / Ubuntu</div>
+<div class="comment"># Debian / Ubuntu — après avoir téléchargé le .deb depuis la page de release</div>
 <div class="line"><span class="prompt">$</span>sudo dpkg -i bondebarras_*_amd64.deb</div>
-<div class="comment"># Fedora / RHEL</div>
-<div class="line"><span class="prompt">$</span>sudo rpm -i bondebarras-*.rpm</div>
-<div class="comment"># Arch — AUR</div>
-<div class="line"><span class="prompt">$</span>yay -S bondebarras</div>
-<div class="comment"># Homebrew</div>
-<div class="line"><span class="prompt">$</span>brew tap systm-d/bondebarras https://github.com/systm-d/bondebarras</div>
-<div class="line"><span class="prompt">$</span>brew install bondebarras</div>
+<div class="comment"># Fedora / RHEL — après avoir téléchargé le .rpm depuis la page de release</div>
+<div class="line"><span class="prompt">$</span>sudo rpm -i bondebarras-*.x86_64.rpm</div>
 </div>
 </div>
+<h3>À partir de la première version stable</h3>
+<p>Homebrew, l'AUR et winget ne sont <strong>pas encore publiés</strong> : aucune de leurs commandes ne fonctionne aujourd'hui. Pour Homebrew et winget, le workflow de release écarte volontairement l'étape sur un tag de préversion ; pour l'AUR, il n'y a rien à écarter — aucun job AUR n'existe, et aucun paquet n'a jamais été soumis. Chacun ne sera annoncé ici qu'une fois son paquet réellement publié sur son canal.</p>
+<ul>
+<li><strong>Homebrew</strong> (macOS) — pas publié : le tap ne sert que les versions stables</li>
+<li><strong>AUR</strong> (Arch Linux) — pas publié : aucune page AUR n'existe encore, et le <code>PKGBUILD</code> joint à chaque release est le chemin pris en charge en attendant</li>
+<li><strong>winget</strong> (Windows) — pas publié : le manifeste n'a pas encore été accepté dans <code>winget-pkgs</code></li>
+</ul>
 </section>

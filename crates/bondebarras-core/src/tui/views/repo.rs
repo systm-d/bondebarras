@@ -1443,7 +1443,7 @@ mod tests {
         }
     }
 
-    /// A private repository, over its cache ceiling, with a nonzero minutes
+    /// A private repository, over its included cache threshold, with a nonzero minutes
     /// figure — the fixture exercises every line either gauge can print (the
     /// base line, plus the cache overshoot warning) at once, so a width that
     /// clips any one of them shows up here rather than in only one of two
@@ -1498,9 +1498,9 @@ mod tests {
     /// layouts.
     ///
     /// The fixture is built so a wrong implementation cannot pass by
-    /// accident: capping the cache percentage at 100 would drop "115" and
+    /// accident: capping the cache percentage at 100 would drop "124" and
     /// the eviction warning; a percent helper that divides by a genuinely
-    /// zero ceiling would show `u64::MAX` instead of "50"; never wiring the
+    /// zero basis would show `u64::MAX` instead of "50"; never wiring the
     /// gauges into `render` at all would show neither "Cache" nor "Minutes".
     #[test]
     fn the_two_gauges_render_at_the_head_of_the_real_resource_pane_across_swept_widths() {
@@ -1526,12 +1526,12 @@ mod tests {
                 "minutes gauge missing at width {width}:\n{rendered}"
             );
             assert!(
-                rendered.contains("115"),
+                rendered.contains("124"),
                 "cache overshoot percent clipped at width {width}:\n{rendered}"
             );
             assert!(
-                rendered.contains("évince"),
-                "cache eviction warning clipped at width {width}:\n{rendered}"
+                rendered.contains("dépasse le seuil inclus"),
+                "cache over-threshold warning clipped at width {width}:\n{rendered}"
             );
             assert!(
                 rendered.contains("50"),
@@ -1556,9 +1556,9 @@ mod tests {
     /// What the gauges say, word for word as the user reads them — typed out
     /// here rather than read from the production strings, so a change to
     /// what the screen says cannot pass unnoticed.
-    const CACHE_CAVEAT: &str = "(plafond GitHub, non exposé par l'API)";
-    const EVICTION: &str = "⚠ évince : GitHub supprime déjà les caches les moins récemment lus, \
-                            y compris ceux de la branche par défaut, au profit des PR fermées";
+    const CACHE_CAVEAT: &str = "(seuil inclus ; limite réelle non exposée par l'API)";
+    const OVER_INCLUDED: &str = "⚠ dépasse le seuil inclus : le stockage en excès est facturé ; \
+                                 l'éviction, elle, attend la limite configurée du dépôt";
     const PUBLIC_REASON: &str =
         "0 % (dépôt public : minutes Actions gratuites et illimitées, hors plafond)";
     // Grouped like the Billing tab's own gauges (review FR-tui-3): the same
@@ -1574,7 +1574,7 @@ mod tests {
     const UNKNOWN_PLAN_FIGURES: &str = "1 000 min";
     const UNKNOWN_PLAN_REASON: &str = "formule inconnue, pas de quota";
 
-    /// Final review I4 and smoke S1: spec §5 wants the hardcoded ceiling
+    /// Final review I4 and smoke S1: spec §5 wants the hardcoded threshold
     /// said ("la jauge le dit") and a public repository's 0 % given with its
     /// reason; §7 wants nothing cut. Each gauge was one line, clipped at the
     /// column's border: at 80 columns `12.4 Go / 10` lost its unit — reading
@@ -1582,7 +1582,8 @@ mod tests {
     /// went mid-word.
     ///
     /// Swept over every terminal width from 60 to 200 on the resources
-    /// column's real rect, for a public repository over its ceiling, a
+    /// column's real rect, for a public repository over its included
+    /// threshold, a
     /// private one under it, and that private one in an org whose plan was
     /// not read (#11): each gauge's percentage and figures, with their
     /// units, stand whole on one row; the caveat, the eviction warning, the
@@ -1600,12 +1601,12 @@ mod tests {
             let (_, column) =
                 views::testing::focused_column(&mut public, Focus::Resources, width, 40);
             let prose = views::testing::unwrapped(&column);
-            let cache = row_holding(&column, "115 %");
+            let cache = row_holding(&column, "124 %");
             assert!(
-                cache.contains("12.4 Go / 10 Gio"),
+                cache.contains("12.4 Go / 10 Go"),
                 "the cache figures are cut at width {width}: {cache:?}\n{column}"
             );
-            for phrase in [CACHE_CAVEAT, EVICTION, PUBLIC_REASON] {
+            for phrase in [CACHE_CAVEAT, OVER_INCLUDED, PUBLIC_REASON] {
                 assert!(
                     prose.contains(phrase),
                     "{phrase:?} is not whole at width {width}:\n{column}"
@@ -1615,9 +1616,9 @@ mod tests {
             let (_, column) =
                 views::testing::focused_column(&mut private, Focus::Resources, width, 40);
             let prose = views::testing::unwrapped(&column);
-            let cache = row_holding(&column, "37 %");
+            let cache = row_holding(&column, "40 %");
             assert!(
-                cache.contains("4.0 Go / 10 Gio"),
+                cache.contains("4.0 Go / 10 Go"),
                 "the cache figures are cut at width {width}: {cache:?}\n{column}"
             );
             let minutes = row_holding(&column, "50 %");
@@ -1627,11 +1628,11 @@ mod tests {
             );
             assert!(
                 prose.contains(CACHE_CAVEAT),
-                "the ceiling caveat is not whole at width {width}:\n{column}"
+                "the included-threshold caveat is not whole at width {width}:\n{column}"
             );
             assert!(
-                !column.contains("évince"),
-                "a cache under its ceiling warns of eviction at width {width}:\n{column}"
+                !column.contains("dépasse le seuil inclus") && !column.contains("éviction"),
+                "a cache under the included threshold warns anyway at width {width}:\n{column}"
             );
 
             let (_, column) =
@@ -1655,7 +1656,7 @@ mod tests {
     /// with its figures and every line of its explanation, the size
     /// explanation in full (ruling B), or none of them. Swept over every
     /// height from 3 to 40 at widths across the three layouts, public
-    /// repository over its ceiling: whatever part of the head is on screen
+    /// repository over the included threshold: whatever part of the head is on screen
     /// reads whole, and no explanation stays on screen without its gauge.
     ///
     /// Task 5's review (T5-m3): the same sweep for a private repository in
@@ -1699,16 +1700,16 @@ mod tests {
                 if cache_shown {
                     let cache = row_holding(&column, "Cache");
                     assert!(
-                        cache.contains("115 %") && cache.contains("12.4 Go / 10 Gio"),
+                        cache.contains("124 %") && cache.contains("12.4 Go / 10 Go"),
                         "the cache gauge's figures are cut {at}"
                     );
                     assert!(
-                        prose.contains(CACHE_CAVEAT) && prose.contains(EVICTION),
+                        prose.contains(CACHE_CAVEAT) && prose.contains(OVER_INCLUDED),
                         "the cache gauge shows without all of its explanation {at}"
                     );
                 } else {
                     assert!(
-                        !column.contains("plafond") && !column.contains("évince"),
+                        !column.contains("seuil inclus") && !column.contains("éviction"),
                         "a cache gauge's explanation shows without its gauge {at}"
                     );
                 }
