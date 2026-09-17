@@ -3,9 +3,14 @@
 *Good riddance.*
 
 **bondebarras** is a Rust TUI/CLI to audit and clean up the resources piling
-up across your GitHub organizations: Actions caches, artifacts, workflow
-runs, and container package versions — the stuff CI leaves behind that
-nobody ever comes back to delete.
+up across your GitHub organizations: Actions caches, artifacts and workflow
+runs, container package versions, merged branches, tags and release assets —
+the stuff CI leaves behind that nobody ever comes back to delete — plus
+repository archiving, which turns off the tap producing them rather than
+mopping up after it forever. A Billing tab prices what is left: Actions
+minutes against the allowance of your plan, Actions storage in GB-hours, the
+Actions budget that decides what happens once that allowance runs out, and
+the artifact and log retention feeding all of it.
 
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)](#license)
 [![CI](https://github.com/systm-d/bondebarras/actions/workflows/ci.yml/badge.svg)](https://github.com/systm-d/bondebarras/actions/workflows/ci.yml)
@@ -240,6 +245,11 @@ which publishes artifacts for the most common platforms:
 > Intel Macs are covered by Homebrew, which builds from source (no
 > precompiled Intel binary).
 
+> A pre-release tag — one carrying a `-`, like `v1.0.0-rc.1` — publishes the
+> same artifacts and is marked *Pre-release* on GitHub, but deliberately
+> updates neither the Homebrew formula nor the winget manifests: a release
+> candidate is not what `brew install bondebarras` should hand out.
+
 ```sh
 # Debian / Ubuntu
 sudo dpkg -i bondebarras_*.deb
@@ -370,8 +380,9 @@ Everywhere:
 
 ### CLI subcommands
 
-With no subcommand, `bondebarras` opens the TUI. Two subcommands cover the
-same ground headlessly, for scripts and cron jobs:
+With no subcommand, `bondebarras` opens the TUI. `scan` and `clean` cover the
+same ground headlessly, for scripts and cron jobs; `update` — documented
+below — keeps the tool itself current:
 
 ```sh
 # Non-interactive overview, as JSON
@@ -446,6 +457,25 @@ Every other family above at least has *some* headless path, gated by
 a whole repository read-only, and that is not a decision a cron job gets to
 make on its own — the repositories column's own tick (`espace`, in the
 interactive TUI) is the only way in.
+
+### Keeping bondebarras up to date
+
+```sh
+bondebarras update           # update, or say how to
+bondebarras update --check   # only report whether a newer version exists
+```
+
+`update` asks GitHub Releases **on demand — never at startup** — and needs no
+token: the repository is public, and a version check must not require
+authentication. It then acts on the install channel it detects instead of
+replacing the binary blindly: for a `.deb` or `.rpm` it runs the package
+manager's own command, and for Homebrew, the AUR, Nix or `cargo install` it
+*prints* the command and installs nothing, since overwriting a file that
+manager owns would desynchronize its database. A downloaded asset is checked
+against the release's published `.sha256` and refused if that checksum is
+missing, unreadable, or disagrees — three distinct failures, not one
+"proceed anyway". A local build newer than every published release is
+reported as such, never as "up to date".
 
 ### Required token scopes
 
