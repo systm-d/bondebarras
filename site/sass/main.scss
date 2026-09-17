@@ -57,6 +57,8 @@ a { color: var(--brand); }
   letter-spacing: -0.01em;
   margin: .4rem auto 0;
 }
+.hero-title { margin: .5rem auto; line-height: 0; }
+.hero-logo { width: min(24rem, 78vw); height: auto; }
 .lede { color: var(--muted); max-width: 42rem; margin: 1rem auto 2rem; font-size: 1.08rem; }
 .cta { display: flex; gap: .75rem; justify-content: center; flex-wrap: wrap; }
 .btn {

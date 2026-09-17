@@ -7,7 +7,10 @@
       <a href="{{ get_url(path='/') }}"{% if lang == 'en' %} class="on" aria-current="true"{% endif %}>EN</a>
     </nav>
   </div>
-  <h1>{{ section.extra.name }}</h1>
+  <h1 class="hero-title">
+    <img class="hero-logo" src="{{ get_url(path='logo-h.png') }}"
+         alt="{{ section.extra.name }}" width="760" height="253">
+  </h1>
   <p class="tagline">{{ section.extra.tagline }}</p>
   <p class="lede">{{ section.extra.lede }}</p>
   <div class="cta">
