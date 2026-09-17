@@ -1,5 +1,6 @@
 <p align="center">
-  <img src="site/static/logo-h.png" alt="bondebarras" width="420">
+  <img src="https://raw.githubusercontent.com/systm-d/bondebarras/main/site/static/logo-h.png"
+       alt="bondebarras" width="420">
 </p>
 
 <p align="center"><em>Good riddance.</em></p>
