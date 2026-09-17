@@ -353,14 +353,21 @@ pub fn install_plan(channel: InstallChannel, package: &Path) -> InstallPlan {
             command: vec!["dnf".into(), "install".into(), pkg],
             sudo: true,
         },
-        InstallChannel::Pacman => InstallPlan::Manual(
-            "Sur Arch, la mise à jour passe par l'AUR : `yay -S bondebarras` \
-             (ou l'assistant AUR de votre choix)."
-                .to_string(),
-        ),
-        InstallChannel::Homebrew => {
-            InstallPlan::Manual("Via Homebrew : `brew upgrade bondebarras`.".to_string())
-        }
+        // No AUR package is published (#20), so pointing at an AUR helper
+        // would hand out a command that cannot resolve. The PKGBUILD shipped
+        // with each release is the path the README documents.
+        InstallChannel::Pacman => InstallPlan::Manual(format!(
+            "Aucun paquet AUR n'est publié pour l'instant. Récupérez le PKGBUILD de la \
+             dernière release sur https://github.com/{REPO}/releases/latest, puis \
+             `makepkg -si`."
+        )),
+        // Likewise, the Homebrew tap only ever serves stable releases and
+        // none has shipped yet: `brew upgrade` would find nothing.
+        InstallChannel::Homebrew => InstallPlan::Manual(format!(
+            "Aucune formule Homebrew n'est encore publiée. Récupérez la dernière version \
+             sur https://github.com/{REPO}/releases/latest, ou installez depuis les \
+             sources : `cargo install --git https://github.com/{REPO} bondebarras`."
+        )),
         // /nix/store is read-only: nothing to install in place. The update
         // comes from the user's own configuration.
         InstallChannel::Nix => InstallPlan::Manual(
