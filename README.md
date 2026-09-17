@@ -15,7 +15,7 @@ minutes against the allowance of your plan, Actions storage in GB-hours, the
 Actions budget that decides what happens once that allowance runs out, and
 the artifact and log retention feeding all of it.
 
-[![Pre-release](https://img.shields.io/badge/release-v1.0.0--rc.1%20%E2%80%94%20pre--release-d97757)](https://github.com/systm-d/bondebarras/releases/tag/v1.0.0-rc.1)
+[![Pre-release](https://img.shields.io/badge/release-v1.0.0--rc.2%20%E2%80%94%20pre--release-d97757)](https://github.com/systm-d/bondebarras/releases/tag/v1.0.0-rc.2)
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)](#license)
 [![CI](https://github.com/systm-d/bondebarras/actions/workflows/ci.yml/badge.svg)](https://github.com/systm-d/bondebarras/actions/workflows/ci.yml)
 [![Pages](https://github.com/systm-d/bondebarras/actions/workflows/pages.yml/badge.svg)](https://github.com/systm-d/bondebarras/actions/workflows/pages.yml)
@@ -23,7 +23,7 @@ the artifact and log retention feeding all of it.
 
 **Site:** <https://systm-d.github.io/bondebarras>
 
-> **Status: `v1.0.0-rc.1` — pre-release.** There is no stable release yet.
+> **Status: `v1.0.0-rc.2` — pre-release.** There is no stable release yet.
 > What that means for you: the tool is feature-complete and safe to run —
 > every deletion goes through a confirmation, and nothing is ever deleted
 > without one — but the CLI flags and the `scan --json` schema may still
@@ -67,48 +67,30 @@ again by anything.
   individually or as part of a bulk selection.
 - **Container package versions** (GHCR) — untagged layers and orphaned
   attestations, flagged the same way a cache attached to a closed PR is.
-  GitHub's API exposes **no size** for a package version, so this family is
-  never measured in bytes: it is a hygiene cleanup, not a volume one. On the
-  author's own account, the real footprint across fifteen organizations is
-  **7 packages, 45 versions, 23 of them untagged** — one organization alone
-  (`maxds-lyon`) carries 20 of its 28 versions with no tag at all.
+  GitHub exposes **no size** for a package version, so this family is a
+  hygiene cleanup, not a volume one.
 - **Merged branches, tags, and release assets** — a branch is offered dead
-  the moment a pull request merges it, at zero extra requests: the same
-  closed-PR listing the ⚑ flag already fetches carries `head.ref` and
-  `merged_at`. A closed-but-unmerged PR leaves its branch alone — the work
-  may still be resumed. The default branch and any GitHub-protected one are
-  shown but never bulk-selectable, and neither is a tag: it's what a
-  release, a `go get`, or a `Cargo.toml` points at by name. **Release assets
-  are the volume story of this family** — GitHub does expose their size,
-  unlike a package version — and the release itself is never deletable,
-  only its binaries: a release is a point in the repository's history, and
-  its weight is entirely in what's attached to it. Measured across four of
-  the author's organizations: **7.3 GB in release assets alone**, led by
-  `exec-d/terminus` (1,453 MB across 25 releases) and `delfour-co/githero`
-  (1,371 MB across 27).
-- **Repository archiving** — the repository itself, ticked one row at a time
-  from its own place in the repositories column (not the resources column)
-  and archived through the same confirmation flow as every deletion.
-  **Archiving frees no bytes** — a repository's size doesn't
-  change — but an archived repository has its Actions disabled, so it stops
+  the moment a pull request merges it, at zero extra requests; a
+  closed-but-unmerged PR leaves its branch alone. The default branch, a
+  protected one and every tag are shown but never bulk-selectable. A release
+  is never deletable, only its binaries — and those are the volume story of
+  this family, since GitHub does expose their size.
+- **Repository archiving** — ticked one row at a time from the repositories
+  column, never in bulk and never headlessly. **Archiving frees no bytes**,
+  but an archived repository has its Actions disabled, so it stops
   *producing* the caches, artifacts and workflow runs every other feature
   here cleans up: closing the tap instead of mopping the floor forever. It
-  is also **reversible** — un-archiving restores it — which is exactly why
-  repository *deletion* stays permanently out of scope: there is nothing a
-  delete could offer that un-archiving doesn't already cover more safely. An
-  already-archived repository, or one this token cannot administer, is shown
-  but never tickable at all, and `[A]`/headless `clean` refuse the whole
-  family unconditionally — no `--archive` flag exists. Measured across five
-  of the author's organizations: a dozen repositories with no push in 500 to
-  775 days (`maxds-lyon/.github` at 775, `maxds-lyon/lokiprint` at 685), and
-  exactly **one** already archived.
+  is also the one **reversible** operation here, which is exactly why
+  repository *deletion* stays permanently out of scope. Each family's size,
+  selection rules and criteria are in
+  [supported resources](docs/resources.md).
 - **⚑ Stale-PR flag** — every cache is checked against the repository's
   closed pull requests; a cache attached to a closed or merged PR is flagged
   ⚑ and marked ⛑ safe, so `[A]` takes it in one keystroke.
-- **Three-level safety marking**, on every visible resource — ⛑ *safe*, •
-  *worth checking*, or unmarked *keep* — see [Safety](#safety) below.
-  `[A]` selects every ⛑ row, `[V]` adds every • row, and neither ever takes
-  a protected one.
+- **Three-level safety marking** on every visible resource — ⛑ *safe*, •
+  *worth checking*, unmarked *keep*. `[A]` takes every ⛑ row, `[V]` adds
+  every • row, and neither ever takes a protected one — see
+  [Safety](#safety).
 - **Two per-repository gauges** at the head of the resources column: Actions
   cache usage against GitHub's **default included 10 GB per-repository
   threshold** — *not* a ceiling, and the gauge says so (`seuil inclus ;
@@ -132,12 +114,11 @@ again by anything.
   label, or select every safe (or safe-and-worth-checking) row at once.
   Nothing is persisted: no rules engine, no config file, you decide every
   time.
-- **Tiered confirmation** before any deletion — a bare `[y/N]` for the
-  regenerable Tier 1 (caches, artifacts, workflow runs), an itemised recap
-  plus an explicit irreversibility warning for Tier 2 (package versions,
-  merged branches, tags, and release assets — none of them come back once
-  deleted) — followed by a background purge with a per-item result. The TUI
-  stays responsive throughout.
+- **Tiered confirmation** before any mutation — a bare `[y/N]` for the
+  regenerable Tier 1, an itemised recap plus an explicit irreversibility
+  warning for Tier 2, and its own reversible wording for archiving — then a
+  background purge with a per-item result, the TUI responsive throughout.
+  See [the safety model](docs/safety.md).
 - **Billing tab** — per-organization Actions-minutes usage against the
   allowance of the organization's **current plan** (`free` 2,000, `team`
   3,000, `enterprise` 50,000 minutes a month), month by month, with a
@@ -214,41 +195,43 @@ again by anything.
 Every visible resource carries a three-level marker, shown in the resources
 column beside its checkbox:
 
-| Marker | Meaning | Example |
+| Marker | Meaning | Bulk selection |
 | --- | --- | --- |
-| ⛑ | Safe — nothing live references it | a cache on a closed/merged PR, an expired artifact, a release two behind, an untagged package version, a merged branch |
-| • | Worth checking before deciding | a live but unmerged branch, an artifact or workflow run past its age threshold, the release just before the latest |
-| *(none)* | Keep | the default/protected branch, a tagged package version, the latest release, a tag, or a repository (never marked, at any age) |
+| ⛑ | Safe according to bondebarras' documented rules | Yes, with `[A]` |
+| • | Worth checking before deciding | Yes, with `[V]` — unless protected |
+| *(none)* | Keep by default | No |
 
-`[A]` ticks every ⛑ row; `[V]` adds every • row too. Neither ever takes a
-resource GitHub itself protects — a tagged package version, the default or a
-protected branch, a live but unmerged one, every tag — and if either key
-leaves protected rows unticked, the status line says how many (a live
-branch left unticked is named as such). Individual selection (`espace`)
-stays available one row at a time regardless of level.
+Four guarantees hold everywhere, TUI and headless alike:
 
-- Nothing this tool deletes is reversible on GitHub's side, so it never
-  pretends otherwise: there is **no trash and no undo**. Repository
-  archiving is the one exception, and the confirmation modal says so
-  explicitly, in different words from a deletion's — it never claims
-  something reversible is permanent, any more than it would claim the
-  reverse.
-- Every deletion — and every archive — goes through a confirmation before
-  anything happens.
-- Deletions run in the background, spaced out and retried on GitHub's
-  secondary rate limit (`Retry-After` on 429 and 403), so a purge of a
-  hundred-plus caches doesn't get itself throttled or rejected.
-- Each deleted item reports its own outcome; a run that ends with failures
-  says so instead of hiding it.
+- **Every mutation is confirmed** before anything happens — a deletion as
+  much as an archive.
+- **There is no trash and no undo** for anything GitHub lets this tool
+  delete, so it never pretends otherwise. Repository archiving is the one
+  reversible operation, and it is worded as such rather than borrowing a
+  deletion's wording.
+- **A protected resource is excluded from every bulk selection** — a tagged
+  package version, a live branch, every tag — whether the selection comes
+  from a keystroke or from a cron. Individual selection (`espace`) stays
+  available one row at a time.
+- **A repository is only ever archived from the TUI**, one tick at a time,
+  and never headlessly: there is no `--archive` flag, and none is planned.
+
+Review the plan before confirming: ⛑ means safe according to the rules
+bondebarras documents, not proof that nothing outside GitHub's API still
+references the resource. The full model — every family's classification, the
+tiered confirmations, rate limits and retries, and the limits of the model
+itself — is in [the safety model](docs/safety.md); what each family is
+measured in and which flag selects it is in
+[supported resources](docs/resources.md).
 
 ## Installation
 
-bondebarras currently ships as a **pre-release**, [`v1.0.0-rc.1`][rc] —
+bondebarras currently ships as a **pre-release**, [`v1.0.0-rc.2`][rc] —
 there is no stable version yet. Two channels work today; the package
 managers further down are **not published yet**, and are listed so you know
 what is coming, not as commands to run.
 
-### Available now — [`v1.0.0-rc.1`][rc]
+### Available now — [`v1.0.0-rc.2`][rc]
 
 Download the file for your platform from [the release page][rc]:
 
@@ -292,7 +275,7 @@ makepkg -si
 
 None of these three is published, so none of their commands works today. For
 Homebrew and winget, the release workflow skips the step on a pre-release
-tag — one carrying a `-`, like `v1.0.0-rc.1` — on purpose: a release
+tag — one carrying a `-`, like `v1.0.0-rc.2` — on purpose: a release
 candidate is not what `brew install bondebarras` should hand out. For the
 AUR there is nothing to skip — no AUR job exists at all, and no package has
 ever been submitted. Each will be documented here as available only once its
@@ -304,7 +287,7 @@ package has actually been published through that channel.
 | AUR (Arch Linux) | Not published | No AUR page exists yet — the `PKGBUILD` above is the supported path meanwhile                                   |
 | winget (Windows) | Not published | The manifest has not been accepted into `winget-pkgs` yet (see [`packaging/winget`](packaging/winget/README.md)) |
 
-[rc]: https://github.com/systm-d/bondebarras/releases/tag/v1.0.0-rc.1
+[rc]: https://github.com/systm-d/bondebarras/releases/tag/v1.0.0-rc.2
 [gh-cache]: https://docs.github.com/en/actions/reference/workflows-and-actions/dependency-caching#usage-limits-and-eviction-policy
 
 ---
@@ -495,33 +478,44 @@ reported as such, never as "up to date".
 
 ### Required token scopes
 
-`repo`, `read:org`, `read:packages`, and `delete:packages` are enough for
-everything bondebarras does but one optional display (see `admin:org`
-below) — reading and deleting caches, artifacts, workflow runs, and
-container package versions; listing the organizations and repositories a
-token can see; and reading the Billing tab's usage report (a 403 there just
-means the token's owner isn't an org owner — the org stays otherwise
-navigable). Branches, tags, and release assets need no scope
-beyond `repo`, already in that list — nothing new to grant for them.
-Repository archiving needs no new scope either: it goes through the same
-`repo`-scoped endpoint as everything else, and requires admin rights on the
-repository itself — a right the token either has or doesn't, not a scope to
-grant. Repository *deletion* is explicitly and permanently out of scope for
-this tool, so `delete_repo` is never required.
+bondebarras uses the token from `gh auth token`, falling back to
+`$GITHUB_TOKEN`. A classic token carrying `repo`, `read:org`,
+`read:packages` and `delete:packages` covers everything the tool does but one
+optional display: `admin:org` adds the organization's artifact and log
+retention, which GitHub reveals to no lesser scope. Repository archiving
+needs no new scope — it needs admin rights on that one repository — and
+`delete_repo` is never required, since repository *deletion* is permanently
+out of scope.
 
-Reading **budgets** is not a scope question: GitHub reserves the budgets
-endpoint for organization admins and billing managers. Anyone else is refused
-— observed as a 400, not the 403 the documentation announces — and the
-Billing tab reads `Budget Actions : illisible` instead of guessing, while
-`scan --json` reports `budgets_readable: false`. The rest of the tab, and the
-organization itself, are unaffected.
+Billing and budgets are a question of your **role** in the organization
+rather than of a scope: the usage report needs an owner, and budgets need an
+admin or a billing manager. Anything that cannot be read degrades to
+`illisible` in the Billing tab — or `null` in `scan --json` — and never
+drops the organization.
 
-`admin:org` is **optional**, and needed for one thing only: displaying an
-organization's artifact and log retention, which GitHub only reveals to that
-scope (or to the fine-grained "Actions policies" permission). bondebarras
-never changes the setting. Without it, the Billing tab reads
-`Rétention artefacts et journaux : illisible` and `scan --json` reports
-`artifact_retention_days: null`; everything else works unchanged.
+See [authentication and permissions](docs/authentication.md) for the
+`Feature → permission → behaviour if missing` table, a diagnostic recipe, and
+what degrades family by family.
+
+---
+
+## Documentation
+
+The full user documentation lives in [`docs/`](docs/README.md):
+
+- [Installation](docs/installation.md)
+- [Authentication and permissions](docs/authentication.md)
+- [Using the TUI](docs/tui.md)
+- [CLI reference](docs/cli.md)
+- [Safety model](docs/safety.md)
+- [Supported resources](docs/resources.md)
+- [Billing and GitHub limits](docs/billing.md)
+- [Troubleshooting](docs/troubleshooting.md)
+- [Releases and versioning](docs/releases.md)
+
+Pages that are not written yet say so at the top and name the issue that will
+fill them. `docs/` also holds the project's design history — see
+[the index](docs/README.md#design-history) for what that is and is not.
 
 ---
 
