@@ -124,8 +124,18 @@ jobs:
       - name: Installer cargo-generate-rpm
         run: cargo install cargo-generate-rpm --locked
 
+      # RPM interdit le tiret dans un numéro de version ; le tilde est sa
+      # convention pour une préversion, et il trie avant la version finale
+      # (1.0.0~rc.1 < 1.0.0). La version de Cargo reste la source de vérité :
+      # on ne fait que la traduire pour le paquet.
       - name: Construire le .rpm
-        run: cargo generate-rpm -p crates/bondebarras
+        run: |
+          set -euo pipefail
+          version=$(cargo metadata --no-deps --format-version 1 \
+            | python3 -c 'import json,sys; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"]=="bondebarras"))')
+          rpm_version=${version//-/\~}
+          echo "version cargo ${version} -> version rpm ${rpm_version}"
+          cargo generate-rpm -p crates/bondebarras -s "version=\"${rpm_version}\""
 
       - name: Upload artefact
         uses: actions/upload-artifact@v7
