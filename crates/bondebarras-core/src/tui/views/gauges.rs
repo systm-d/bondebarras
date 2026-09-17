@@ -1,5 +1,6 @@
-//! Two per-repository gauges: Actions cache usage against GitHub's
-//! documented (but API-unexposed) per-repository ceiling, and Actions
+//! Two per-repository gauges: Actions cache usage against GitHub's default
+//! included per-repository threshold — a cost threshold, not the
+//! repository's real limit, which no endpoint exposes — and Actions
 //! minutes against the allowance of the organization's plan
 //! (`billing::included_minutes_for`) — with no percentage when that
 //! allowance is unknown.
@@ -12,31 +13,41 @@ use crate::tui::{theme, views};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
-/// GitHub's documented per-repository Actions cache ceiling: 10 GiB.
+/// GitHub's default *included* per-repository Actions cache threshold:
+/// 10 GiB.
 ///
-/// `actions/cache/usage` only ever returns the org-wide total, never a
-/// per-repository ceiling — GitHub does not expose this figure through any
-/// endpoint — so it is hardcoded here rather than read from a response, and
-/// both gauge lines that use it say so.
-pub const CACHE_CEILING_BYTES: u64 = 10 * 1024 * 1024 * 1024;
+/// **Not a ceiling.** An authorized administrator can raise a repository's
+/// cache limit above it; usage past 10 GiB may simply be billed; and GitHub
+/// evicts only once the repository reaches its *configured* limit, which can
+/// therefore sit well above this figure.
+///
+/// That configured limit is exposed by no endpoint this crate can reach —
+/// `actions/cache/usage` only ever returns the org-wide total — so the
+/// included threshold is hardcoded here rather than read from a response,
+/// and every line gauged against it says it is a cost threshold, not the
+/// repository's known capacity.
+pub const CACHE_INCLUDED_BYTES: u64 = 10 * 1024 * 1024 * 1024;
 
 /// Whether a repository's caches are past the included 10 GiB.
 ///
-/// Strictly above: exactly `CACHE_CEILING_BYTES` is still inside it. Past it,
-/// GitHub evicts the least recently read caches — or, if the repository's
-/// cache limit was raised above the included 10 GB, bills the excess at its
-/// hourly peak (GitHub's Actions billing documentation).
-pub fn cache_over_ceiling(cache_bytes: u64) -> bool {
-    cache_bytes > CACHE_CEILING_BYTES
+/// Strictly above: exactly `CACHE_INCLUDED_BYTES` is still inside it. Past
+/// it, GitHub bills the excess at its hourly peak, evicts the least recently
+/// read caches, or both — which of the two, and from what point, depends on
+/// the repository's configured cache limit, which this crate cannot read.
+/// Being past the included threshold is therefore worth a ⚠ and nothing
+/// stronger: it is never proof that eviction has already begun.
+pub fn cache_over_included(cache_bytes: u64) -> bool {
+    cache_bytes > CACHE_INCLUDED_BYTES
 }
 
-/// `used / ceiling` as a whole percentage.
+/// `used / basis` as a whole percentage.
 ///
-/// A pure `(used, ceiling)` function, not `(used)` alone against a baked-in
-/// constant: the cache ceiling is a compile-time constant, but the minutes
-/// ceiling is the org's plan allowance (`billing::included_minutes_for`).
+/// A pure `(used, basis)` function, not `(used)` alone against a baked-in
+/// constant: the cache basis is a compile-time constant (the included
+/// threshold), but the minutes basis is the org's plan allowance
+/// (`billing::included_minutes_for`).
 /// An unknown allowance never reaches here — its gauges show no percentage
-/// at all — yet a zero ceiling still reads 0 %, never a division by zero.
+/// at all — yet a zero basis still reads 0 %, never a division by zero.
 ///
 /// `pub(crate)`, not private: `views::billing::gauge_line` and
 /// `views::billing::storage_percent` (the storage ratio, in hundredths of a
@@ -44,16 +55,16 @@ pub fn cache_over_ceiling(cache_bytes: u64) -> bool {
 /// percentage) rather than keeping their own copy of the same formula — the
 /// two gauges here and the Billing tab's two would otherwise need to change
 /// in lockstep with no single source of truth. Each call site has its own
-/// zero-ceiling test: `gauges::tests::a_zero_ceiling_does_not_divide_by_zero`
+/// zero-basis test: `gauges::tests::a_zero_basis_does_not_divide_by_zero`
 /// here, `views::billing::tests::a_zero_allowance_does_not_divide_by_zero`
 /// through the Billing tab's minutes gauge, and
 /// `views::billing::tests::storage_percent_is_the_shared_percentage_in_hundredths`
 /// for its storage ratio.
-pub(crate) fn percent(used: u64, ceiling: u64) -> u64 {
-    if ceiling == 0 {
+pub(crate) fn percent(used: u64, basis: u64) -> u64 {
+    if basis == 0 {
         0
     } else {
-        (used as f64 / ceiling as f64 * 100.0).round() as u64
+        (used as f64 / basis as f64 * 100.0).round() as u64
     }
 }
 
@@ -64,13 +75,18 @@ const BAR_CELLS: usize = 20;
 /// How far in an explanation starts on a row of its own.
 const INDENT: &str = "  ";
 
-/// The cache gauge's caveat: its ceiling is GitHub's documented figure, not
-/// one read from a response.
-const CACHE_CAVEAT: &str = "(plafond GitHub, non exposé par l'API)";
+/// The cache gauge's caveat: 10 Gio is GitHub's *default included*
+/// threshold, not the repository's real limit — which no endpoint exposes,
+/// so the gauge is a cost marker rather than a capacity one.
+const CACHE_CAVEAT: &str = "(seuil inclus par défaut ; limite réelle non exposée par l'API)";
 
-/// What a cache gauge past 100 % adds.
-const EVICTION: &str = "⚠ évince : GitHub supprime déjà les caches les moins récemment lus, y \
-                        compris ceux de la branche par défaut, au profit des PR fermées";
+/// What a cache gauge past 100 % adds. Past the included threshold GitHub
+/// bills the excess, evicts the least recently read caches, or both,
+/// depending on the repository's configured limit — never, as this line used
+/// to claim, proof that eviction is already under way.
+const OVER_INCLUDED: &str = "⚠ dépasse le seuil inclus : au-delà, GitHub facture le stockage ou \
+                             évince les caches les moins récemment lus, selon la limite \
+                             configurée du dépôt";
 
 /// Why a public repository's minutes gauge reads 0 %.
 ///
@@ -89,7 +105,7 @@ const UNKNOWN_PLAN: &str = "· formule inconnue, pas de quota";
 /// The filled portion of a bar, in at most `room` cells.
 ///
 /// Capped independently of `percent` (which is never capped) so a gauge well
-/// past its ceiling still draws a legible, full-looking bar instead of one
+/// past its basis still draws a legible, full-looking bar instead of one
 /// that would need hundreds of cells. Capped by `room` too — the cells its
 /// row leaves once the figures have theirs — so the bar is the part that
 /// gives in a narrow column, never the figures.
@@ -101,7 +117,7 @@ fn bar(percent: u64, room: usize) -> String {
 
 /// A gauge's figures row, `width` cells at most while its figures fit: the
 /// label, the bar in whatever room is left, the percentage, then `figures`
-/// — used against ceiling, with their units. Only the bar shrinks.
+/// — used against its basis, with their units. Only the bar shrinks.
 fn figures_row(label: &str, pct: u64, figures: &str, width: u16) -> String {
     let tail = format!("  {pct:>3} %   {figures}");
     let room = usize::from(width).saturating_sub(views::cells(label) + views::cells(&tail));
@@ -145,13 +161,15 @@ fn explained(figures: String, style: Style, explanation: &str, width: u16) -> Ve
     lines
 }
 
-/// Cache usage against GitHub's documented, hardcoded, 10 GiB per-repository
-/// ceiling, in a column `width` cells wide.
+/// Cache usage against GitHub's hardcoded 10 GiB default included
+/// per-repository threshold, in a column `width` cells wide.
 ///
-/// Never clamped at 100 %: past it, GitHub itself is already evicting the
-/// least-recently-read caches — including the default branch's — to make
-/// room for closed pull requests' still-warm ones. Clamping the number would
-/// hide exactly the fact this gauge exists to show.
+/// Never clamped at 100 %: past the included threshold the repository is
+/// being billed for the excess, or having its least-recently-read caches
+/// evicted, or both — which one depends on a configured limit the API never
+/// exposes. Clamping the number would hide exactly the fact this gauge
+/// exists to show, and the warning under it names both outcomes rather than
+/// asserting the one it cannot check.
 ///
 /// Nothing is clipped at any width the column is drawn at (final review
 /// I4): the percentage and the `used / 10 Gio` figures stay whole on the
@@ -159,7 +177,7 @@ fn explained(figures: String, style: Style, explanation: &str, width: u16) -> Ve
 /// read as 124 % — and the caveat and the eviction warning go on rows of
 /// their own when the row cannot hold them.
 pub fn cache_gauge_line(used: u64, width: u16) -> Vec<Line<'static>> {
-    let pct = percent(used, CACHE_CEILING_BYTES);
+    let pct = percent(used, CACHE_INCLUDED_BYTES);
     let figures = figures_row(
         "Cache   ",
         pct,
@@ -168,7 +186,7 @@ pub fn cache_gauge_line(used: u64, width: u16) -> Vec<Line<'static>> {
     );
     let mut lines = explained(figures, theme::text_style(), CACHE_CAVEAT, width);
     if pct > 100 {
-        lines.extend(own_rows(EVICTION, theme::status_warn(), width));
+        lines.extend(own_rows(OVER_INCLUDED, theme::status_warn(), width));
     }
     lines
 }
@@ -237,22 +255,32 @@ mod tests {
 
     #[test]
     fn the_cache_gauge_reports_overshoot_rather_than_capping() {
-        // josephine sits at 11.5 Gio against a 10 GiB (`CACHE_CEILING_BYTES`)
-        // ceiling: 12_360_000_000 / 10_737_418_240 = 115 %, not 123 % — 123 %
-        // would assume a decimal 10_000_000_000 ceiling, contrary to the
-        // binary constant this module actually uses. Clamping to 100 % would
-        // hide the one fact the gauge exists to show: GitHub is already
-        // evicting, and it evicts by least-recently-read, so it takes main's
-        // caches to make room for closed PRs'.
+        // josephine sits at 11.5 Gio against the 10 GiB included threshold
+        // (`CACHE_INCLUDED_BYTES`): 12_360_000_000 / 10_737_418_240 = 115 %,
+        // not 123 % — 123 % would assume a decimal 10_000_000_000 basis,
+        // contrary to the binary constant this module actually uses.
+        // Clamping to 100 % would hide the one fact the gauge exists to
+        // show: this repository is past what its plan includes, and is
+        // paying for it in dollars, in evictions, or in both.
         let line = text(&cache_gauge_line(12_360_000_000, 60));
         assert!(line.contains("115"), "got: {line}");
-        assert!(line.contains("évince"), "got: {line}");
+        assert!(line.contains("dépasse le seuil inclus"), "got: {line}");
+        // #19: the warning names billing *and* eviction, and pins them to
+        // the configured limit. Asserting "évince" alone would have passed
+        // just as well on the old line, which claimed eviction outright.
+        assert!(line.contains("facture"), "got: {line}");
+        assert!(line.contains("limite configurée"), "got: {line}");
     }
 
     #[test]
-    fn the_cache_gauge_stays_quiet_below_the_ceiling() {
+    fn the_cache_gauge_stays_quiet_below_the_included_threshold() {
         let line = text(&cache_gauge_line(4_000_000_000, 60));
+        assert!(!line.contains("dépasse le seuil inclus"), "got: {line}");
         assert!(!line.contains("évince"), "got: {line}");
+        // #19: the caveat is there at every usage, and it never calls the
+        // 10 Gio a plafond — the word the product used to print.
+        assert!(line.contains("seuil inclus par défaut"), "got: {line}");
+        assert!(!line.contains("plafond"), "got: {line}");
     }
 
     #[test]
@@ -328,19 +356,19 @@ mod tests {
     }
 
     /// Amended (2026-09-11, controller): the un-amended version of this test
-    /// called `cache_gauge_line(0, 60)`, which pins the ceiling to the
-    /// nonzero `CACHE_CEILING_BYTES` constant and only ever exercises zero
-    /// *usage* — it cannot fail on the zero-*ceiling* property its own name
-    /// promises, since production can never actually reach a zero ceiling
+    /// called `cache_gauge_line(0, 60)`, which pins the basis to the
+    /// nonzero `CACHE_INCLUDED_BYTES` constant and only ever exercises zero
+    /// *usage* — it cannot fail on the zero-*basis* property its own name
+    /// promises, since production can never actually reach a zero basis
     /// through that entry point. The percentage instead goes through a pure
-    /// `(used, ceiling)` helper — `percent` — shared by both gauges, and this
-    /// calls it directly with a ceiling of zero: the shape issue #11 gave the
-    /// minutes ceiling when it made it the plan's allowance, a figure read
+    /// `(used, basis)` helper — `percent` — shared by both gauges, and this
+    /// calls it directly with a basis of zero: the shape issue #11 gave the
+    /// minutes basis when it made it the plan's allowance, a figure read
     /// from data rather than a constant.
     #[test]
-    fn a_zero_ceiling_does_not_divide_by_zero() {
+    fn a_zero_basis_does_not_divide_by_zero() {
         assert_eq!(percent(0, 0), 0);
-        // A nonzero usage against a zero ceiling is the case that actually
+        // A nonzero usage against a zero basis is the case that actually
         // divides by zero without the guard — asserting the value, not just
         // the absence of "NaN"/"inf", the way `views::billing::gauge_line`'s
         // own zero-allowance test does: a saturating float-to-int cast turns
@@ -352,9 +380,9 @@ mod tests {
     /// #13: exactly 10 GiB is still inside the included cache storage; one
     /// byte more is not.
     #[test]
-    fn cache_over_ceiling_is_strictly_above_ten_gibibytes() {
-        assert!(!cache_over_ceiling(CACHE_CEILING_BYTES));
-        assert!(cache_over_ceiling(CACHE_CEILING_BYTES + 1));
-        assert!(!cache_over_ceiling(0));
+    fn cache_over_included_is_strictly_above_ten_gibibytes() {
+        assert!(!cache_over_included(CACHE_INCLUDED_BYTES));
+        assert!(cache_over_included(CACHE_INCLUDED_BYTES + 1));
+        assert!(!cache_over_included(0));
     }
 }

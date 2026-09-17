@@ -2,8 +2,10 @@
 //!
 //! GitHub keys Actions caches per git ref. A cache on `refs/pull/32/merge`
 //! becomes dead weight the moment PR #32 is closed or merged, but GitHub only
-//! evicts at the 10 GB per-repo ceiling or after 7 days without a read — so it
-//! lingers, and it crowds out the caches that still matter. Flagging those is
+//! evicts once the repository reaches its *configured* cache limit — 10 GB is
+//! the default included threshold, and an administrator can raise it — or
+//! after 7 days without a read. So it lingers, and it crowds out the caches
+//! that still matter. Flagging those is
 //! the highest-volume, lowest-risk cleanup the tool offers.
 
 use std::collections::HashSet;

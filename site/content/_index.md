@@ -28,7 +28,7 @@ cta2 = "Install"
 <div class="why-grid">
 <div class="why-text">
 <p>Fifteen organizations is enough to lose track of what CI is doing. On the author's own account, GitHub Actions caches alone add up to <strong>51.4 GB</strong> — and a single repository was holding <strong>69 caches for 11.1 GB</strong> by itself, almost all of it pinned to pull requests that had been closed for months.</p>
-<p>GitHub only evicts a repository's caches once it crosses the 10 GB ceiling, or after seven days without a read. Until then, dead caches from long-closed PRs sit there, crowding out the caches that still matter — the ones CI actually reuses — and every eviction they cause makes the next build slower.</p>
+<p>10 GB is the default <em>included</em> cache threshold per repository, not a fixed ceiling: an administrator can raise the real limit, usage above 10 GB may be billed, and GitHub evicts only once a repository reaches its configured limit — a figure its API does not expose. Either way, dead caches from long-closed PRs sit there, crowding out the caches that still matter — the ones CI actually reuses — and every eviction they cause makes the next build slower.</p>
 <p>The alternative is fifteen browser tabs, each on <em>Settings → Actions → Caches</em>, clicking through repositories one at a time with no way to tell which caches are still alive. bondebarras reads the whole picture in one scan and lets you clear it from the keyboard.</p>
 </div>
 <div class="term-window why-tree">
@@ -61,7 +61,7 @@ cta2 = "Install"
 <li>Every organization the token can see, one pass</li>
 <li>Three columns at once — orgs, repositories, resources — folding from the left as the terminal narrows, so the column you delete from is never the one dropped</li>
 <li>A repository loads once the cursor rests on it for 300 ms, then stays for the session: coming back costs no request</li>
-<li>Two gauges above the resources — caches against GitHub's 10 GiB per-repository ceiling, minutes against the plan's allowance — neither ever clamped at 100 %</li>
+<li>Two gauges above the resources — caches against GitHub's default included 10 GiB per-repository threshold, minutes against the plan's allowance — neither ever clamped at 100 %, and the cache gauge says plainly that the repository's real limit is not exposed by the API</li>
 </ul>
 </div>
 

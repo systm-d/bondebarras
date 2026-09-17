@@ -28,7 +28,7 @@ cta2 = "Installer"
 <div class="why-grid">
 <div class="why-text">
 <p>Quinze organisations, c'est suffisant pour perdre le fil de ce que fait la CI. Sur le compte de l'auteur, les caches Actions à eux seuls atteignent <strong>51,4 Go</strong> — et un seul dépôt en détenait <strong>69 caches pour 11,1 Go</strong> à lui tout seul, presque tous rattachés à des pull requests fermées depuis des mois.</p>
-<p>GitHub n'évince les caches d'un dépôt qu'au-delà de 10 Go, ou après sept jours sans lecture. En attendant, les caches morts de PR fermées depuis longtemps restent là, prennent la place de ceux qui comptent encore — ceux que la CI réutilise vraiment — et chaque éviction qu'ils provoquent ralentit le build suivant.</p>
+<p>10 Go est le seuil <em>inclus</em> par défaut par dépôt, pas un plafond fixe : un administrateur peut relever la limite réelle, le stockage au-delà de 10 Go peut être facturé, et GitHub n'évince qu'une fois la limite configurée du dépôt atteinte — un chiffre que son API n'expose pas. Dans tous les cas, les caches morts de PR fermées depuis longtemps restent là, prennent la place de ceux qui comptent encore — ceux que la CI réutilise vraiment — et chaque éviction qu'ils provoquent ralentit le build suivant.</p>
 <p>L'alternative, c'est quinze onglets de navigateur, chacun sur <em>Settings → Actions → Caches</em>, à cliquer dépôt par dépôt sans aucun moyen de savoir lesquels sont encore utiles. bondebarras lit tout ça en un scan et laisse nettoyer au clavier.</p>
 </div>
 <div class="term-window why-tree">
@@ -61,7 +61,7 @@ cta2 = "Installer"
 <li>Toutes les organisations accessibles au jeton, en une passe</li>
 <li>Trois colonnes à la fois — orgs, dépôts, ressources — qui se replient par la gauche quand le terminal rétrécit : celle où l'on supprime n'est jamais la première sacrifiée</li>
 <li>Un dépôt se charge quand le curseur s'y pose 300 ms, puis reste en mémoire pour la session : y revenir ne coûte aucune requête</li>
-<li>Deux jauges au-dessus des ressources — les caches face au plafond de 10 Gio par dépôt, les minutes face au quota de la formule — jamais bornées à 100 %</li>
+<li>Deux jauges au-dessus des ressources — les caches face au seuil inclus par défaut de 10 Gio par dépôt, les minutes face au quota de la formule — jamais bornées à 100 %, et la jauge de cache dit sans détour que la limite réelle du dépôt n'est pas exposée par l'API</li>
 </ul>
 </div>
 

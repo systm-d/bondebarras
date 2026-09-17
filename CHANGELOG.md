@@ -5,6 +5,24 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **The Actions cache threshold is no longer presented as a fixed ceiling.**
+  10 GiB is GitHub's *default included* threshold per repository: an
+  authorized administrator can raise the real limit, usage above it may be
+  billed, and eviction starts only once a repository reaches its
+  **configured** limit — a figure no endpoint exposes. The cache gauge's
+  caveat now reads `(seuil inclus par défaut ; limite réelle non exposée par
+  l'API)` in place of `(plafond GitHub, non exposé par l'API)`, and a gauge
+  past 100 % warns `⚠ dépasse le seuil inclus : au-delà, GitHub facture le
+  stockage ou évince les caches les moins récemment lus, selon la limite
+  configurée du dépôt` instead of asserting that eviction was already under
+  way. `gauges::CACHE_CEILING_BYTES` and `gauges::cache_over_ceiling` became
+  `CACHE_INCLUDED_BYTES` and `cache_over_included`, so the mistake cannot be
+  read back out of the code; the README and both landing pages say the same.
+
 ## [1.0.0-rc.1] - 2026-09-17
 
 First release candidate, and the only entry in this file: it describes
@@ -66,11 +84,13 @@ bondebarras as it stands, not a step away from anything earlier.
   deletion wording, since claiming a reversible action is permanent would be
   as much a lie as the reverse.
 - **Two per-repository gauges** at the head of the resources column: Actions
-  cache usage against GitHub's documented (but API-unexposed) 10 GiB
-  per-repository ceiling, and Actions minutes against the allowance of the
-  organization's plan — `formule inconnue`, with no percentage, when the
-  plan cannot be read. Neither is clamped past 100 %, since GitHub does not
-  clamp there either.
+  cache usage against GitHub's **default included** 10 GiB per-repository
+  threshold — not a ceiling, and the gauge says so: the real limit can be
+  raised, usage above it may be billed, and eviction starts only at the
+  repository's configured limit, which no endpoint exposes — and Actions
+  minutes against the allowance of the organization's plan — `formule
+  inconnue`, with no percentage, when the plan cannot be read. Neither is
+  clamped past 100 %, since GitHub does not clamp there either.
 - **Load-after-pause with a per-session cache**: a repository's resources
   load once the cursor rests on it for 300 ms, are kept for the rest of the
   session, and `Entrée` forces an immediate reload, bypassing both the pause

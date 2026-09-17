@@ -834,8 +834,9 @@ mod tests {
 
     /// The final review's I2 probe as a fixture: a repository whose name
     /// (`SecondBrain-organisation/claudine-landing-positioning`) takes two
-    /// lines of a narrow resources column, private and over its cache
-    /// ceiling — both gauges, and the eviction warning; no plan read, so the
+    /// lines of a narrow resources column, private and over its included
+    /// cache threshold — both gauges, and the over-threshold warning; no
+    /// plan read, so the
     /// minutes gauge is the taller unknown-plan one, with its `formule
     /// inconnue` explanation (#11) — with sizeless rows
     /// whose explanation leaves the title, and package versions whose class

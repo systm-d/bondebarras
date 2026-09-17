@@ -17,14 +17,14 @@ use ratatui::widgets::{List, ListItem};
 /// they did for Finding 2 of the v0.5 final review.
 ///
 /// Wide enough for the repository row's five columns — checkbox, name,
-/// status, ceiling mark, cache — at their own widths below, plus the block's
+/// status, threshold mark, cache — at their own widths below, plus the block's
 /// left/right border. Finding 2: the row used to be squeezed to fit a bare
 /// 26 columns by dropping the cache-byte column outright, in a tool whose
 /// entire point is volume; this widens the pane instead, past what the
 /// checkbox, the widest status (`déjà archivé`, 12 characters) and the cache
 /// column together actually need. Of the two columns of slack past that,
 /// one spends on the status's leading separator space; the other, unused
-/// until #13, carries `ceiling_mark`. The row now fills all 36 inner cells
+/// until #13, carries `over_included_mark`. The row now fills all 36 inner cells
 /// with no margin left, which is why a repository's storage goes on a
 /// detail line of its own (`repo_item`) rather than on its row. The
 /// three-column design first set this column at 26 again, and was amended
@@ -65,7 +65,7 @@ const REPO_NAME_WIDTH: usize = 10;
 ///   of this row dropped that column outright to fit a too-narrow pane — in
 ///   a tool whose whole point is showing where the volume is, the repos
 ///   column is exactly where a single repo's own share of it belongs on
-///   screen. One cell before it, `ceiling_mark`: `⚠` past the included
+///   screen. One cell before it, `over_included_mark`: `⚠` past the included
 ///   10 GiB, a space otherwise (#13).
 pub fn repo_row_spans(repo: &RepoSummary, checked: bool) -> Vec<Span<'static>> {
     let checkbox = match repo.class {
@@ -89,7 +89,7 @@ pub fn repo_row_spans(repo: &RepoSummary, checked: bool) -> Vec<Span<'static>> {
     // like this project's own "bondebarras" (11 characters, truncated) ran
     // straight into its status: "bondebarr…5 j". The leading space spends
     // one of the two columns `COLUMN_WIDTH` leaves past what the fields
-    // themselves need; the other is `ceiling_mark`'s cell, just before the
+    // themselves need; the other is `over_included_mark`'s cell, just before the
     // cache figure.
     let status_col = format!(" {status:<12}");
 
@@ -97,7 +97,7 @@ pub fn repo_row_spans(repo: &RepoSummary, checked: bool) -> Vec<Span<'static>> {
         Span::styled(checkbox.to_string(), theme::text_style()),
         Span::styled(views::fit(&repo.name, REPO_NAME_WIDTH), theme::text_style()),
         Span::styled(status_col, theme::muted()),
-        ceiling_mark(repo.cache_bytes),
+        over_included_mark(repo.cache_bytes),
         Span::styled(
             format!("{:>8}", human_size(repo.cache_bytes)),
             theme::muted(),
@@ -106,11 +106,11 @@ pub fn repo_row_spans(repo: &RepoSummary, checked: bool) -> Vec<Span<'static>> {
 }
 
 /// `⚠` before the cache figure of a repository past the included 10 GiB
-/// (`gauges::cache_over_ceiling`), a space otherwise, so figures stay
+/// (`gauges::cache_over_included`), a space otherwise, so figures stay
 /// aligned. The row has no room to say why; column 3's cache gauge does, the
 /// moment the repository is opened.
-pub fn ceiling_mark(cache_bytes: u64) -> Span<'static> {
-    if gauges::cache_over_ceiling(cache_bytes) {
+pub fn over_included_mark(cache_bytes: u64) -> Span<'static> {
+    if gauges::cache_over_included(cache_bytes) {
         Span::styled("⚠", theme::status_warn())
     } else {
         Span::raw(" ")
@@ -120,7 +120,7 @@ pub fn ceiling_mark(cache_bytes: u64) -> Span<'static> {
 /// The detail line under a repository that held Actions storage in the
 /// newest month its org's usage report carries, naming that month, so the
 /// one holding it is found without opening every repository. On its own
-/// line because the repository row has no cell left once `ceiling_mark`
+/// line because the repository row has no cell left once `over_included_mark`
 /// takes its one.
 pub fn storage_detail_line(gbh: f64, month: &str) -> Line<'static> {
     Line::from(Span::styled(
@@ -639,14 +639,14 @@ mod tests {
             .map(|s| s.content.as_ref())
             .collect();
         assert_eq!(text, "  ↳ 359.9 GB-h, 2026-09");
-        let quiet: String = ceiling_mark(gauges::CACHE_CEILING_BYTES)
+        let quiet: String = over_included_mark(gauges::CACHE_INCLUDED_BYTES)
             .content
             .to_string();
-        assert_eq!(quiet, " ", "exactly at the ceiling: no mark");
-        let marked: String = ceiling_mark(gauges::CACHE_CEILING_BYTES + 1)
+        assert_eq!(quiet, " ", "exactly at the included threshold: no mark");
+        let marked: String = over_included_mark(gauges::CACHE_INCLUDED_BYTES + 1)
             .content
             .to_string();
-        assert_eq!(marked, "⚠", "one byte past the ceiling: marked");
+        assert_eq!(marked, "⚠", "one byte past the included threshold: marked");
     }
 
     /// Pre-flight 5.2, arbitrage A: the column reads the newest month the
@@ -695,12 +695,12 @@ mod tests {
     /// else: both caches display as `10.7 Go`, and only the one past 10 GiB
     /// is marked.
     #[test]
-    fn the_repos_column_shows_storage_and_the_ceiling_mark_at_every_width() {
+    fn the_repos_column_shows_storage_and_the_over_included_mark_at_every_width() {
         let sizes = (60..=200u16)
             .map(|w| (w, 30))
             .chain((8..=30u16).map(|h| (100, h)));
-        let mut over = exec_d_with_storage(gauges::CACHE_CEILING_BYTES + 1);
-        let mut at = exec_d_with_storage(gauges::CACHE_CEILING_BYTES);
+        let mut over = exec_d_with_storage(gauges::CACHE_INCLUDED_BYTES + 1);
+        let mut at = exec_d_with_storage(gauges::CACHE_INCLUDED_BYTES);
         for (width, height) in sizes {
             let (_, column) = testing::focused_column(&mut over, Focus::Repos, width, height);
             assert!(
@@ -713,7 +713,7 @@ mod tests {
             );
             assert!(
                 column.contains("⚠ 10.7 Go"),
-                "ceiling mark or its figure missing at {width}x{height}:\n{column}"
+                "threshold mark or its figure missing at {width}x{height}:\n{column}"
             );
 
             let (_, column) = testing::focused_column(&mut at, Focus::Repos, width, height);
@@ -750,9 +750,9 @@ mod tests {
                         name: format!("repo-{n:02}"),
                         // The first row is the informative one, as it was on
                         // the real organization: the only cache past the
-                        // ceiling, and the only storage detail line.
+                        // included threshold, and the only storage detail line.
                         cache_bytes: if n == 1 {
-                            gauges::CACHE_CEILING_BYTES + 1
+                            gauges::CACHE_INCLUDED_BYTES + 1
                         } else {
                             1_000
                         },

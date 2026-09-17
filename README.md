@@ -30,10 +30,12 @@ An account with fifteen organizations can accumulate a surprising amount of
 dead weight: on the author's own account, GitHub Actions caches alone add up
 to **51.4 GB**, with a single repository holding **69 caches for 11.1 GB** —
 almost all of it CI caches pinned to pull requests that were closed months
-ago. GitHub only evicts a repo's caches once it crosses 10 GB or after seven
-days of no reads, so this kind of junk just sits there, crowding out the
-caches that still matter and slowing down every CI run that has to rebuild
-what should have stayed cached.
+ago. And 10 GB is only the *default included* cache threshold per repository
+— an administrator can raise the real limit, usage past it may be billed,
+and GitHub evicts only once a repository reaches its **configured** limit —
+so this kind of junk just sits there, crowding out the caches that still
+matter and slowing down every CI run that has to rebuild what should have
+stayed cached.
 
 bondebarras' headline feature is exactly that: **flagging Actions caches
 pinned to a closed pull request** — the safest, highest-volume cleanup
@@ -97,12 +99,16 @@ again by anything.
   `[A]` selects every ⛑ row, `[V]` adds every • row, and neither ever takes
   a protected one.
 - **Two per-repository gauges** at the head of the resources column: Actions
-  cache usage against GitHub's documented (but API-unexposed) 10 GiB
-  per-repository ceiling — past 100 % it warns that GitHub is already
-  evicting least-recently-read caches to make room — and Actions minutes
-  against the allowance of the organization's plan (`formule inconnue`, with
-  no percentage, when the plan cannot be read). Neither is ever clamped at
-  100 %: a number past the ceiling is real, not an error.
+  cache usage against GitHub's **default included 10 GiB per-repository
+  threshold** — *not* a ceiling, and the gauge says so (`seuil inclus par
+  défaut ; limite réelle non exposée par l'API`): the limit can be raised by
+  an administrator, usage above it may be billed, and eviction starts only
+  at the repository's **configured** limit, which no endpoint exposes. Past
+  100 % the gauge warns that GitHub is billing the excess *or* evicting
+  least-recently-read caches, without claiming which. Beside it, Actions
+  minutes against the allowance of the organization's plan (`formule
+  inconnue`, with no percentage, when the plan cannot be read). Neither is
+  ever clamped at 100 %: a number past the threshold is real, not an error.
 - **A progress row** appears between the status line and the footer while a
   purge, an archive, or a repository load is running, with a real, counted
   done/total — never an estimate.
@@ -148,8 +154,9 @@ again by anything.
   row, its GB-hours for the most recent month of the usage report — the
   month the resources column's minutes gauge reads, named on the line — and
   marks with ⚠ a repository whose caches are past the included 10 GiB
-  (10.7 Go as displayed), past which GitHub evicts, or bills the excess at
-  its hourly peak if the repository's cache limit was raised.
+  (10.7 Go as displayed) — past which GitHub bills the excess at its hourly
+  peak, evicts least-recently-read caches, or both, depending on the
+  configured limit it does not publish.
   The tab also says what happens once an allowance runs out, from the
   organization's **Actions budget**: `0.00 $ · bloquant` (GitHub stops
   Actions at the allowance), `5.00 $ · bloquant` (billed up to 5 $, then
