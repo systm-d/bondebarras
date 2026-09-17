@@ -204,20 +204,24 @@ cta2 = "Install"
 <section id="install" class="install">
 <h2>Install</h2>
 <p class="section-lede">Reads and writes only the GitHub API — no account of its own, no telemetry, no cloud storage.</p>
+<h3>Available now — v1.0.0-rc.1</h3>
+<p>Binaries and packages for Windows x86-64, macOS Apple Silicon, Linux x86-64, Debian/Ubuntu AMD64 and Fedora/RHEL x86-64 are attached to <a href="https://github.com/systm-d/bondebarras/releases/tag/v1.0.0-rc.1">the v1.0.0-rc.1 release</a>. Download the one for your platform first: the package commands below install a file you already have, they do not fetch one.</p>
 <div class="term-window">
 <div class="term-bar"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span><span class="term-title">install</span></div>
 <div class="term-body cmds">
-<div class="comment"># From source — all platforms</div>
+<div class="comment"># From source — all platforms, Intel Macs included</div>
 <div class="line"><span class="prompt">$</span>cargo install <span class="flag">--git</span> https://github.com/systm-d/bondebarras bondebarras</div>
-<div class="comment"># Debian / Ubuntu</div>
+<div class="comment"># Debian / Ubuntu — after downloading the .deb from the release page</div>
 <div class="line"><span class="prompt">$</span>sudo dpkg -i bondebarras_*_amd64.deb</div>
-<div class="comment"># Fedora / RHEL</div>
-<div class="line"><span class="prompt">$</span>sudo rpm -i bondebarras-*.rpm</div>
-<div class="comment"># Arch — AUR</div>
-<div class="line"><span class="prompt">$</span>yay -S bondebarras</div>
-<div class="comment"># Homebrew</div>
-<div class="line"><span class="prompt">$</span>brew tap systm-d/bondebarras https://github.com/systm-d/bondebarras</div>
-<div class="line"><span class="prompt">$</span>brew install bondebarras</div>
+<div class="comment"># Fedora / RHEL — after downloading the .rpm from the release page</div>
+<div class="line"><span class="prompt">$</span>sudo rpm -i bondebarras-*.x86_64.rpm</div>
 </div>
 </div>
+<h3>After the first stable release</h3>
+<p>Homebrew, the AUR and winget are <strong>not published yet</strong>, so none of their commands works today: the release workflow skips all three for a pre-release tag, on purpose. Each will be listed here only once its package has actually been published through that channel.</p>
+<ul>
+<li><strong>Homebrew</strong> (macOS) — not published: the tap serves stable releases only</li>
+<li><strong>AUR</strong> (Arch Linux) — not published: no AUR page exists yet, and the <code>PKGBUILD</code> attached to each release is the supported path meanwhile</li>
+<li><strong>winget</strong> (Windows) — not published: the manifest has not been accepted into <code>winget-pkgs</code></li>
+</ul>
 </section>

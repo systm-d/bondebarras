@@ -204,20 +204,24 @@ cta2 = "Installer"
 <section id="install" class="install">
 <h2>Installation</h2>
 <p class="section-lede">Ne lit et n'écrit que l'API GitHub — pas de compte propre, pas de télémétrie, pas de stockage cloud.</p>
+<h3>Disponible maintenant — v1.0.0-rc.1</h3>
+<p>Les binaires et paquets pour Windows x86-64, macOS Apple Silicon, Linux x86-64, Debian/Ubuntu AMD64 et Fedora/RHEL x86-64 sont joints à <a href="https://github.com/systm-d/bondebarras/releases/tag/v1.0.0-rc.1">la release v1.0.0-rc.1</a>. Télécharge d'abord celui de ta plateforme : les commandes de paquet ci-dessous installent un fichier que tu as déjà, elles ne le récupèrent pas.</p>
 <div class="term-window">
 <div class="term-bar"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span><span class="term-title">install</span></div>
 <div class="term-body cmds">
-<div class="comment"># Depuis les sources — toutes plateformes</div>
+<div class="comment"># Depuis les sources — toutes plateformes, Mac Intel compris</div>
 <div class="line"><span class="prompt">$</span>cargo install <span class="flag">--git</span> https://github.com/systm-d/bondebarras bondebarras</div>
-<div class="comment"># Debian / Ubuntu</div>
+<div class="comment"># Debian / Ubuntu — après avoir téléchargé le .deb depuis la page de release</div>
 <div class="line"><span class="prompt">$</span>sudo dpkg -i bondebarras_*_amd64.deb</div>
-<div class="comment"># Fedora / RHEL</div>
-<div class="line"><span class="prompt">$</span>sudo rpm -i bondebarras-*.rpm</div>
-<div class="comment"># Arch — AUR</div>
-<div class="line"><span class="prompt">$</span>yay -S bondebarras</div>
-<div class="comment"># Homebrew</div>
-<div class="line"><span class="prompt">$</span>brew tap systm-d/bondebarras https://github.com/systm-d/bondebarras</div>
-<div class="line"><span class="prompt">$</span>brew install bondebarras</div>
+<div class="comment"># Fedora / RHEL — après avoir téléchargé le .rpm depuis la page de release</div>
+<div class="line"><span class="prompt">$</span>sudo rpm -i bondebarras-*.x86_64.rpm</div>
 </div>
 </div>
+<h3>À partir de la première version stable</h3>
+<p>Homebrew, l'AUR et winget ne sont <strong>pas encore publiés</strong> : aucune de leurs commandes ne fonctionne aujourd'hui, le workflow de release écartant volontairement les trois pour un tag de préversion. Chacun ne sera annoncé ici qu'une fois son paquet réellement publié sur son canal.</p>
+<ul>
+<li><strong>Homebrew</strong> (macOS) — pas publié : le tap ne sert que les versions stables</li>
+<li><strong>AUR</strong> (Arch Linux) — pas publié : aucune page AUR n'existe encore, et le <code>PKGBUILD</code> joint à chaque release est le chemin pris en charge en attendant</li>
+<li><strong>winget</strong> (Windows) — pas publié : le manifeste n'a pas encore été accepté dans <code>winget-pkgs</code></li>
+</ul>
 </section>

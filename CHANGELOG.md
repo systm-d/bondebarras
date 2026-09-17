@@ -22,6 +22,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   way. `gauges::CACHE_CEILING_BYTES` and `gauges::cache_over_ceiling` became
   `CACHE_INCLUDED_BYTES` and `cache_over_included`, so the mistake cannot be
   read back out of the code; the README and both landing pages say the same.
+- **Only install channels that actually exist are advertised.** The README
+  and both landing pages showed `yay -S bondebarras`, `brew install
+  bondebarras` and `winget install bondebarras` as runnable commands. None
+  of the three is published: the release workflow skips all of them for a
+  pre-release tag, on purpose. Installation is now given in two levels —
+  what works today (the release's binaries and packages, and `cargo install
+  --git`) and what comes after the first stable release, each marked *not
+  published*. The `.deb` and `.rpm` instructions now say where the file
+  comes from before showing `dpkg -i`, which installs a file already
+  downloaded rather than fetching one.
+- **Removed `Formula/bondebarras.rb`.** It carried an all-zero sha256 and a
+  URL for a tag whose formula the release workflow deliberately never
+  publishes, so it looked installable and was not. The workflow regenerates
+  it on a stable tag from [`packaging/homebrew/bondebarras.rb`](packaging/homebrew/bondebarras.rb),
+  which is unchanged, so nothing is lost by deleting it now.
 
 ## [1.0.0-rc.1] - 2026-09-17
 

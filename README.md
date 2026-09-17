@@ -227,82 +227,66 @@ stays available one row at a time regardless of level.
 
 ## Installation
 
-### From source
+Two channels work today. The package managers further down are **not
+published yet** — they are listed so you know what is coming, not as
+commands to run.
 
-Rust ≥ 1.88 and a C compiler (gcc, clang, or MSVC's) required — the
-`aws-lc-rs` crypto backend builds a C library.
+### Available now — [`v1.0.0-rc.1`][rc]
 
-```sh
-git clone https://github.com/systm-d/bondebarras
-cd bondebarras
-cargo install --path crates/bondebarras
-```
+Download the file for your platform from [the release page][rc]:
 
-### Precompiled packages
+| Platform            | File on the release page                    |
+| ------------------- | ------------------------------------------- |
+| Windows x86-64      | `bondebarras-windows-x86_64.exe` (+ `.zip`) |
+| macOS Apple Silicon | `bondebarras-macos-aarch64.tar.gz`          |
+| Linux x86-64        | `bondebarras-linux-x86_64.tar.gz`           |
+| Debian / Ubuntu     | `bondebarras_<version>_amd64.deb`           |
+| Fedora / RHEL       | `bondebarras-<version>.x86_64.rpm`          |
 
-Every tag `v*` triggers the [Release](.github/workflows/release.yml) workflow,
-which publishes artifacts for the most common platforms:
-
-| Platform            | Artifact                                          |
-| -------------------- | ------------------------------------------------- |
-| Windows (Microsoft)  | `bondebarras-windows-x86_64.exe` (+ `.zip`)        |
-| macOS Apple Silicon  | `bondebarras-macos-aarch64.tar.gz`                 |
-| Linux (generic)      | `bondebarras-linux-x86_64.tar.gz`                  |
-| Debian / Ubuntu      | `bondebarras_<version>_amd64.deb`                  |
-| Fedora / RHEL        | `bondebarras-<version>.x86_64.rpm`                 |
-| Arch Linux           | AUR (source) — `yay -S bondebarras`                |
-
-> Intel Macs are covered by Homebrew, which builds from source (no
-> precompiled Intel binary).
-
-> A pre-release tag — one carrying a `-`, like `v1.0.0-rc.1` — publishes the
-> same artifacts and is marked *Pre-release* on GitHub, but deliberately
-> updates neither the Homebrew formula nor the winget manifests: a release
-> candidate is not what `brew install bondebarras` should hand out.
+The `.deb` and `.rpm` commands below install a file you have **already
+downloaded** from that page — neither fetches anything:
 
 ```sh
-# Debian / Ubuntu
-sudo dpkg -i bondebarras_*.deb
+# Debian / Ubuntu, from the directory you downloaded it into
+sudo dpkg -i bondebarras_*_amd64.deb
 # Fedora / RHEL
-sudo rpm -i bondebarras-*.rpm
+sudo rpm -i bondebarras-*.x86_64.rpm
 ```
 
-#### Package managers
+On Windows, put `bondebarras-windows-x86_64.exe` in a folder on your `PATH`.
 
-**Arch Linux — AUR:**
+**Or build from source** — every platform, Intel Macs included. Rust ≥ 1.88
+and a C compiler (gcc, clang, or MSVC's) are required: the `aws-lc-rs` crypto
+backend builds a C library.
 
 ```sh
-yay -S bondebarras   # or: paru -S bondebarras
+cargo install --git https://github.com/systm-d/bondebarras bondebarras
 ```
 
-Every release also publishes a ready-to-use `PKGBUILD`
-([`packaging/aur/PKGBUILD`](packaging/aur/PKGBUILD)) for a manual install
-from source:
+On Arch, the `PKGBUILD` published with every release
+([`packaging/aur/PKGBUILD`](packaging/aur/PKGBUILD)) builds the same thing:
 
 ```sh
 curl -LO https://github.com/systm-d/bondebarras/releases/latest/download/PKGBUILD
 makepkg -si
 ```
 
-**macOS — Homebrew:** the tap serves *stable* releases only, and there is none
-yet — `Formula/bondebarras.rb` is refreshed by the release workflow on a stable
-tag, which a release candidate deliberately skips. Until 1.0.0 ships, install
-from source or from the release binaries above.
+### After the first stable release
 
-```sh
-brew tap systm-d/bondebarras https://github.com/systm-d/bondebarras
-brew install bondebarras
-```
+None of these three is published, so none of their commands works today. The
+release workflow skips all of them for a pre-release tag — one carrying a
+`-`, like `v1.0.0-rc.1` — on purpose: a release candidate is not what `brew
+install bondebarras` should hand out. Each will be documented here as
+available only once its package has actually been published through that
+channel.
 
-**Windows — winget** (once the package is published to `winget-pkgs`, see
-[`packaging/winget`](packaging/winget/README.md)):
+| Channel          | Status        | Why not yet                                                                                                   |
+| ---------------- | ------------- | ------------------------------------------------------------------------------------------------------------- |
+| Homebrew (macOS) | Not published | The tap serves stable releases only; the workflow renders the formula from [`packaging/homebrew/bondebarras.rb`](packaging/homebrew/bondebarras.rb) on a stable tag |
+| AUR (Arch Linux) | Not published | No AUR page exists yet — the `PKGBUILD` above is the supported path meanwhile                                   |
+| winget (Windows) | Not published | The manifest has not been accepted into `winget-pkgs` yet (see [`packaging/winget`](packaging/winget/README.md)) |
 
-```powershell
-winget install bondebarras
-```
-
-Otherwise, download `bondebarras-windows-x86_64.exe` from the release and
-place it in a folder on your `PATH`.
+[rc]: https://github.com/systm-d/bondebarras/releases/tag/v1.0.0-rc.1
 
 ---
 
