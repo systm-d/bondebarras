@@ -234,7 +234,7 @@ dependencies = [
 
 [[package]]
 name = "bondebarras"
-version = "1.0.0-rc.1"
+version = "1.0.0-rc.2"
 dependencies = [
  "assert_cmd",
  "bondebarras-core",
@@ -243,7 +243,7 @@ dependencies = [
 
 [[package]]
 name = "bondebarras-core"
-version = "1.0.0-rc.1"
+version = "1.0.0-rc.2"
 dependencies = [
  "anyhow",
  "chrono",
