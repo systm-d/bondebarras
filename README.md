@@ -1,6 +1,8 @@
-# bondebarras
+<p align="center">
+  <img src="site/static/logo-h.png" alt="bondebarras" width="420">
+</p>
 
-*Good riddance.*
+<p align="center"><em>Good riddance.</em></p>
 
 **bondebarras** is a Rust TUI/CLI to audit and clean up the resources piling
 up across your GitHub organizations: Actions caches, artifacts and workflow
