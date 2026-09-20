@@ -13,15 +13,17 @@ the limits of the model — see the [safety model](safety.md).
 | --- | --- | --- | --- | --- | --- |
 | Actions cache | Yes | Yes | Yes | Closed/merged PR, merged or vanished branch | No — but a re-run produces a new one |
 | Artifact | Yes | Yes | Yes | Expired, then age ≥ 30 days | No — but a re-run produces a new one |
-| Workflow run | **No — always `0`** | Yes | Yes | Merged PR, then age ≥ 90 days | No — a re-run is a *new* run |
+| Workflow run | No — shown `—` | Yes | Yes | Merged PR, then age ≥ 90 days | No — a re-run is a *new* run |
 | Package version (GHCR) | No — shown `—` | Yes | Untagged / orphaned attestation only | Tags and attestations | No |
 | Branch | No — shown `—` | Yes, except default/protected | Merged-PR branches only | Merge status and protections | No |
 | Tag | No — shown `—` | Yes | **Never** | Always protected | No |
 | Release asset | Yes | Yes | Yes | Release depth (not age) | No |
 | Repository | No — frees nothing, by design | Archive only, from the tree | **Never** | Human choice only | **Yes** — un-archive |
 
-Two cells in that table deserve their own explanation, because they are the
-ones most likely to be read wrong. They are covered under
+Two of those "no"s say different things, and each deserves its own
+explanation: a workflow run has no *known* size — deleting one does free
+space, GitHub simply never says how much — while archiving a repository frees
+no bytes at all, by design. They are covered under
 [Workflow run](#workflow-run) and [Repository](#repository) below.
 
 ## Actions cache
@@ -60,13 +62,18 @@ is the same one the dead-branch classification uses.
 
 ## Workflow run
 
-- **Size: none — and this is the one cell worth reading twice.** GitHub's runs
-  endpoint reports no size for a workflow run, so bondebarras stores `0`. But
-  unlike the other sizeless families below, a run is **not** displayed as `—`:
-  it renders as a real `0 o`, because `WorkflowRun` is classed as a kind with a
-  known size. The reclaimed space is real — it comes from the logs and
-  artifacts GitHub drops alongside the run — it is simply never quantified.
-  Do not read a run's `0 o` as "this run occupies nothing".
+- **Size: none, at any endpoint.** GitHub reports no size for a workflow run
+  anywhere: not on the run object, not through `.../timing` — which reports
+  billable milliseconds, not bytes — and not through `.../logs`, which answers
+  a redirect with no length to read off it. The size is hardcoded to `0` and
+  displayed as `—`, never as `0 o`, which would read as "empty". The resources
+  column carries the same header line explaining the `—`, and a plan of runs
+  alone recaps as `taille inconnue` rather than as `0 o`. **Never estimate or
+  extrapolate a figure here.**
+- **Deleting a run does free space**, and that is not in doubt: the logs and
+  artifacts GitHub drops alongside it go with it. It is the *amount* that is
+  unknown, not the effect — and the artifacts it takes along are listed and
+  sized in their own right, above.
 - **Individual deletion:** yes.
 - **Bulk selection:** yes — never protected.
 - **Headless flag:** `--runs`.

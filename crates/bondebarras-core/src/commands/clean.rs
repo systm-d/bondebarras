@@ -128,10 +128,11 @@ pub async fn run(
             "Plan ({}) — relancez avec --yes pour l'appliquer :",
             plan.summary()
         );
-        // `size_display` shows `—` rather than "0 o" for a package version:
-        // this is the screen a headless user reads *before* typing --yes,
-        // and the TUI's resource list already shows `—` here — the two
-        // must not disagree about what a package version's size means.
+        // `size_display` shows `—` rather than "0 o" for every kind
+        // `ResourceKind::has_known_size` answers `false` for: this is the
+        // screen a headless user reads *before* typing --yes, and the TUI's
+        // resource list already shows `—` there — the two must not disagree
+        // about what an unknown size means.
         for r in &plan.items {
             eprintln!("  {:<40} {:>10}", r.label, size_display(r));
         }

@@ -40,12 +40,32 @@ impl ResourceKind {
 
     /// Whether GitHub reports a real size for this family.
     ///
-    /// `false` for the four sizeless kinds: a package version (no size field
-    /// exists, under any name — see `api::packages`), a branch and a tag (a
-    /// ref carries no size of its own), and a repository (archiving frees no
-    /// bytes — the repository's size is unchanged, only its Actions are
-    /// disabled). `true` for every other kind, whose `size_bytes` is a real
-    /// GitHub-reported number, zero included.
+    /// `false` for the five sizeless kinds: a package version (no size field
+    /// exists, under any name — see `api::packages`), a workflow run (see
+    /// below), a branch and a tag (a ref carries no size of its own), and a
+    /// repository (archiving frees no bytes — the repository's size is
+    /// unchanged, only its Actions are disabled). `true` for the other
+    /// three — a cache, an artifact, a release asset — whose `size_bytes`
+    /// is a real GitHub-reported number, zero included.
+    ///
+    /// **The workflow run joined the sizeless set in #41.** It sat on the
+    /// `true` side while `api::runs::list` hardcoded `size_bytes: 0` with
+    /// "The API reports no size for a run" written beside it, so the column
+    /// printed a confident `0 o` over a figure GitHub never gave — and this
+    /// very doc comment promised "a real GitHub-reported number" for a
+    /// family that had none. The same fault as the cache ceiling #19 fixed:
+    /// an invented value presented as a measured one.
+    ///
+    /// The API was checked before the direction was chosen, since reading a
+    /// real size would have beaten admitting an absent one: the run object
+    /// carries no size field under any name, in either *List workflow runs
+    /// for a repository* or *Get a workflow run*; `GET
+    /// .../actions/runs/{id}/timing` reports billable milliseconds, not
+    /// bytes; and `GET .../actions/runs/{id}/logs` answers a redirect, with
+    /// no length to read off it. Deleting a run does reclaim space — its
+    /// logs and artifacts go with it — but GitHub never says how much, and
+    /// the artifacts it drops are already listed and sized in their own
+    /// right.
     ///
     /// An exhaustive `match`, not the `matches!` shorthand this used to be:
     /// that version, `!matches!(self, PackageVersion | Branch | Tag)`,
@@ -62,11 +82,9 @@ impl ResourceKind {
     /// whole fix wave on.
     pub fn has_known_size(self) -> bool {
         match self {
-            ResourceKind::Cache
-            | ResourceKind::Artifact
-            | ResourceKind::WorkflowRun
-            | ResourceKind::ReleaseAsset => true,
-            ResourceKind::PackageVersion
+            ResourceKind::Cache | ResourceKind::Artifact | ResourceKind::ReleaseAsset => true,
+            ResourceKind::WorkflowRun
+            | ResourceKind::PackageVersion
             | ResourceKind::Branch
             | ResourceKind::Tag
             | ResourceKind::Repository => false,
@@ -166,14 +184,23 @@ pub struct Resource {
 
 /// A resource's size, formatted for display.
 ///
-/// GitHub exposes no size at all for a package version, a branch or a tag
-/// (see `api::packages` and `api::refs`); `size_bytes` is hardcoded to `0`
-/// for all three, and a bare "0 o" would read as "empty" — the opposite of
+/// GitHub exposes no size at all for a package version, a workflow run, a
+/// branch or a tag (see `api::packages`, `api::runs` and `api::refs`);
+/// `size_bytes` is hardcoded to `0` for all four, and a bare "0 o" would
+/// read as "empty" — the opposite of
 /// the truth. Shown as `—` instead, everywhere a resource's size reaches a
 /// screen: the TUI's resource list and the headless `clean` dry-run listing
 /// both go through this one function and `ResourceKind::has_known_size`, so
 /// the two cannot drift the way independent `if r.kind == PackageVersion`
 /// checks did before v0.4 added the other two sizeless kinds.
+///
+/// Four here, five there, and both counts are right: `has_known_size` also
+/// answers `false` for `Repository`, a different statement — archiving
+/// frees no byte *by design*, rather than freeing an amount nobody can
+/// read. An archive candidate is drawn in the repositories column and
+/// never becomes a resource row, so it reaches neither this function nor
+/// the headless listing; the summary it does reach says so in its own
+/// words (`clean::Plan::summary`, `Archivage · 0 o libéré, par nature`).
 pub fn size_display(r: &Resource) -> String {
     if r.kind.has_known_size() {
         human_size(r.size_bytes)
@@ -292,7 +319,13 @@ mod tests {
         let expected: [(ResourceKind, bool); 8] = [
             (ResourceKind::Cache, true),
             (ResourceKind::Artifact, true),
-            (ResourceKind::WorkflowRun, true),
+            // #41: GitHub reports no size for a run anywhere — not on the
+            // run object, not through `/timing` (billable milliseconds),
+            // not through the logs redirect. `api::runs::list` said as much
+            // in a comment while this table still said `true`, so the
+            // column printed a confident "0 o" over a figure nobody ever
+            // measured.
+            (ResourceKind::WorkflowRun, false),
             (ResourceKind::PackageVersion, false),
             (ResourceKind::Branch, false),
             (ResourceKind::Tag, false),
@@ -342,12 +375,27 @@ mod tests {
         }
     }
 
+    /// #41: a workflow run is the fourth sizeless family, and the one that
+    /// shipped reading `0 o` — `api::runs::list` hardcodes `size_bytes: 0`
+    /// because GitHub reports no size for a run under any name, at any
+    /// endpoint, yet `has_known_size` called it known. Deleting a run does
+    /// free space (its logs and artifacts go with it); GitHub simply never
+    /// says how much, which is "unknown", not "nothing".
+    #[test]
+    fn size_display_shows_unknown_not_zero_for_a_workflow_run() {
+        let s = size_display(&resource(ResourceKind::WorkflowRun, 0));
+        assert!(!s.contains("0 o"), "got: {s}");
+        assert!(s.contains('—'), "got: {s}");
+    }
+
     #[test]
     fn size_display_shows_real_bytes_for_every_other_kind() {
+        // The three families GitHub actually measures. A kind added here
+        // without a real size behind it is the #41 defect returning: a
+        // number on screen that no response ever carried.
         for kind in [
             ResourceKind::Cache,
             ResourceKind::Artifact,
-            ResourceKind::WorkflowRun,
             ResourceKind::ReleaseAsset,
         ] {
             assert_eq!(size_display(&resource(kind, 1_500)), "1.5 Ko");
