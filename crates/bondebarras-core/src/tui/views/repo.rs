@@ -1615,7 +1615,9 @@ mod tests {
     /// what the screen says cannot pass unnoticed.
     const CACHE_CAVEAT: &str = "(seuil inclus ; limite réelle non exposée par l'API)";
     const OVER_INCLUDED: &str = "⚠ dépasse le seuil inclus : le stockage en excès est facturé ; \
-                                 l'éviction, elle, attend la limite configurée du dépôt";
+                                 l'éviction pour faire de la place, elle, attend la limite \
+                                 configurée du dépôt ; et, indépendamment de toute limite, \
+                                 toute entrée non lue depuis plus de 7 jours est supprimée";
     const PUBLIC_REASON: &str =
         "0 % (dépôt public : minutes Actions gratuites et illimitées, hors plafond)";
     // Grouped like the Billing tab's own gauges (review FR-tui-3): the same

@@ -28,6 +28,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   worth stating plainly: a listing holding runs — nearly every repository —
   now carries the `⚠ GitHub n'expose pas la taille de certaines ressources`
   banner that has always accompanied `—`.
+- **The TUI states GitHub's seven-day cache rule** (#37). Every cache entry
+  not read for over 7 days is deleted regardless of any limit. That rule was
+  in the README, both landing pages, the CHANGELOG and the code's own
+  comments, and nowhere in the interface — so the over-threshold warning's
+  clause about eviction waiting for the repository's configured limit read,
+  out of context, as a universal statement about eviction. It is not: the
+  configured limit governs eviction *to make room*, not the age sweep, which
+  waits for nothing. The warning now names which eviction the limit governs
+  and states the rule that ignores it: `⚠ dépasse le seuil inclus : le
+  stockage en excès est facturé ; l'éviction pour faire de la place, elle,
+  attend la limite configurée du dépôt ; et, indépendamment de toute limite,
+  toute entrée non lue depuis plus de 7 jours est supprimée`. It rides on the
+  line drawn only past the threshold, never on the caveat drawn at every
+  usage, so **the banner at rest is unchanged, row for row** — the price is
+  paid only by a gauge that was already warning: 5 rows to 7 at the resources
+  column's 58-cell inner width, 7 to 10 at its narrowest 38.
+
 ## [1.0.0-rc.2] - 2026-09-17
 
 ### Fixed
