@@ -200,6 +200,15 @@ fn every_document_that_names_a_release_names_this_one() {
 }
 
 /// The line every quoted help block is keyed on, and aligned at.
+///
+/// It reads the same on the three platforms because `cli.rs` pins clap's
+/// `bin_name`. Left to its default, clap names the binary after `argv[0]`,
+/// which Windows spells `bondebarras.exe`. This test carried a normalisation
+/// for that suffix until a second reading of #55 showed what it cost: the
+/// replacement was global and anchored on nothing, so forcing the suffix to
+/// `" [COMMAND]"` and deleting that token from the page left the test green —
+/// a real divergence, swallowed. The fix belongs where the name is chosen,
+/// not in the guard that checks it.
 const USAGE: &str = "Usage: bondebarras";
 
 /// The width `--help` is captured at. Not what makes the comparison
@@ -347,7 +356,7 @@ fn the_quoted_help_is_the_same_at_any_terminal_width() {
     // terminal claims to be. That is what lets `docs/cli.md` quote a single
     // rendering and call it *the* output. `COLUMNS` is pinned in the guard
     // below anyway — one line, and one environment variable fewer in an
-    // otherwise exact comparison across five CI targets — but pinning is not
+    // otherwise exact comparison across six CI targets — but pinning is not
     // what makes it deterministic: this is, and if the premise ever stops
     // holding, this test says so instead of leaving the next reader to guess
     // which width the page was captured at.

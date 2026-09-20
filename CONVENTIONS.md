@@ -57,9 +57,9 @@ cargo build --release
 `.github/workflows/ci.yml` is what actually gates a merge, and it runs the
 same checks with two differences worth knowing before opening a PR:
 
-- it runs `cargo test --workspace **--locked**`, across a five-target matrix
-  (Ubuntu 22.04/24.04, Fedora 40/41, macOS) — so a `Cargo.lock` left
-  unstaged after a dependency change fails CI while passing locally;
+- it runs `cargo test --workspace **--locked**`, across a six-target matrix
+  (Ubuntu 22.04/24.04, Fedora 40/41, macOS, Windows) — so a `Cargo.lock`
+  left unstaged after a dependency change fails CI while passing locally;
 - it does **not** build the release binary; `release.yml` does, and not with
   the gate's command either — it builds one binary per target
   (`cargo build --release --locked --bin bondebarras --target <triple>`),
