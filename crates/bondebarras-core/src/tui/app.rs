@@ -4,8 +4,8 @@
 //! and nothing is persisted. There is no rules engine and no config file:
 //! the user decides, every time.
 
-use crate::clean::{Plan, all_sizeless};
-use crate::model::{OrgSummary, RepoSummary, Resource, ResourceKind, human_size};
+use crate::clean::{Plan, all_sizeless, at_least_size};
+use crate::model::{OrgSummary, RepoSummary, Resource, ResourceKind};
 use crate::safety::Safety;
 use crate::tui::views::progress::{self, Work};
 use ratatui::widgets::ListState;
@@ -58,6 +58,9 @@ pub enum View {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SortKey {
     /// Biggest first — the default, because size is why the user is here.
+    ///
+    /// Which is also why a row GitHub gives no size for does not compete in
+    /// it: see `App::visible_resources` for where those rows go instead.
     Size,
     /// Oldest first.
     Age,
@@ -325,6 +328,28 @@ impl App {
     }
 
     /// Resources after filtering and sorting — what the resources column draws.
+    ///
+    /// **`SortKey::Size` ranks the measured rows, then lists the unmeasured
+    /// ones after them** (#51). A row whose kind GitHub reports no size for
+    /// carries `size_bytes: 0` as a placeholder, so ranking it on that
+    /// number filed it as the lightest thing in the repository while its own
+    /// line read `—`: the sort asserted what the row denied. Since #41 put
+    /// the workflow run in that set, it was most of the list saying it.
+    ///
+    /// Last, not first, and not interleaved: this is the default sort, and
+    /// it exists to answer "what weighs the most here". A row that cannot
+    /// answer leaves the ranking rather than being given a rank it did not
+    /// earn — and it leaves at the end, because a repository with 300 runs
+    /// would otherwise push the answer off the screen. Trailing is not a
+    /// claim that they weigh least: the claim is the group boundary, which
+    /// is why a genuinely empty cache — measured, and measured at zero —
+    /// now sorts *above* every sizeless row instead of below them, where the
+    /// old tie-break left it.
+    ///
+    /// The group is the key's first field, so `sort_by_key`'s stability does
+    /// the rest: rows within a group keep the relative order they had, and
+    /// the key is a pure function of the row, so two frames drawn from the
+    /// same listing come out identical. Nothing jumps between renders.
     pub fn visible_resources(&self) -> Vec<&Resource> {
         let needle = self.filter.to_lowercase();
         let mut out: Vec<&Resource> = self
@@ -334,7 +359,7 @@ impl App {
             .collect();
 
         match self.sort {
-            SortKey::Size => out.sort_by_key(|r| std::cmp::Reverse(r.size_bytes)),
+            SortKey::Size => out.sort_by_key(|r| crate::clean::size_rank(r)),
             SortKey::Age => out.sort_by_key(|r| std::cmp::Reverse(r.age_days)),
             SortKey::Name => out.sort_by(|a, b| a.label.cmp(&b.label)),
         }
@@ -1101,10 +1126,14 @@ impl App {
         self.selected_repo = None;
     }
 
+    /// The ticked rows' measured bytes — the same rule as
+    /// `clean::Plan::total_bytes`, on the selection the plan will be built
+    /// from: a kind GitHub reports no size for contributes nothing, because
+    /// it has nothing to contribute but a placeholder (#51).
     pub fn selection_bytes(&self) -> u64 {
         self.resources
             .iter()
-            .filter(|r| self.selected.contains(&(r.kind, r.id)))
+            .filter(|r| self.selected.contains(&(r.kind, r.id)) && r.kind.has_known_size())
             .map(|r| r.size_bytes)
             .sum()
     }
@@ -1121,10 +1150,19 @@ impl App {
     /// selection. One screen cannot hold a claim and its denial.
     ///
     /// The rule is `clean::all_sizeless` — the same one `Plan::summary` and
-    /// `clean::finished_recap` apply — not a second copy of it. A mixed
-    /// selection still sums, because the bytes it shows are real as far as
-    /// they go; an empty selection still reads `0 o`, because nothing is
-    /// ticked and that zero is true (smoke S3's `cochés` label).
+    /// `clean::finished_recap` apply — not a second copy of it. An empty
+    /// selection still reads `0 o`, because nothing is ticked and that zero
+    /// is true (smoke S3's `cochés` label).
+    ///
+    /// The **mixed** selection is the half #41 left behind, and #51 finishes
+    /// (`clean::at_least_size`): ticking 3 caches and 37 runs used to read
+    /// `cochés 4.1 Go`, a figure covering 3 of the 40 rows ticked and
+    /// silent about which — the same "a partial number presented as the
+    /// whole" this title was already fixed for once. It reads `cochés
+    /// ≥ 4.1 Go` now: still every byte we can name, no longer a claim to be
+    /// all of them. The count of what is missing does not fit on a block's
+    /// top border (see `at_least_size`'s own doc comment for the cells);
+    /// the modal `d` opens spells it out in full.
     pub fn selection_size_display(&self) -> String {
         let (ticked, sizeless) = self
             .resources
@@ -1136,7 +1174,7 @@ impl App {
         if all_sizeless(ticked, sizeless) {
             "—".to_string()
         } else {
-            human_size(self.selection_bytes())
+            at_least_size(self.selection_bytes(), sizeless)
         }
     }
 
@@ -1585,6 +1623,74 @@ mod tests {
         assert_eq!(a.sort, SortKey::Size);
     }
 
+    /// #51: the default sort ranked every row on `size_bytes`, so a
+    /// workflow run — `0` as a placeholder, never a measurement — was filed
+    /// as the lightest row in the repository while its own line read `—`.
+    /// Since #41 put the run in the sizeless set, that was most of the list
+    /// saying it. Measured rows rank; the unmeasured ones follow as a group.
+    ///
+    /// The empty cache is the discriminating row: its size is *known*, and
+    /// it is zero. A rule that merely swept zero-byte rows to the end would
+    /// file it with the runs; the old `Reverse(size_bytes)` tie-break put it
+    /// below them, which is how "we cannot measure this" came to outrank
+    /// "we measured this, and it is empty".
+    ///
+    /// The swap at the end is question 3 of the brief, asserted rather than
+    /// asserted-about: the group's internal order is the listing's own, so
+    /// reversing two runs upstream reverses them here. Equal keys keeping
+    /// their input order is what `sort_by_key`'s stability buys, and it is
+    /// what stops a row jumping between two frames of the same listing.
+    #[test]
+    fn the_size_sort_ranks_measured_rows_and_lists_unmeasured_ones_after_them() {
+        let mut a = App::new(vec![]);
+        // `..res(…)` keeps every other field of an ordinary row; only the
+        // kind changes, which is the whole of what the sort now reads.
+        let run = |id: u64, label: &str| Resource {
+            kind: ResourceKind::WorkflowRun,
+            ..res(id, label, 0, 100, false)
+        };
+        a.resources = vec![
+            run(128, "CI #128"),
+            res(1, "node-modules", 400_000_000, 30, false),
+            run(127, "CI #127"),
+            res(2, "cache-vide", 0, 30, false),
+        ];
+        let order = |a: &App| -> Vec<u64> { a.visible_resources().iter().map(|r| r.id).collect() };
+
+        assert_eq!(
+            order(&a),
+            vec![1, 2, 128, 127],
+            "the measured rows must rank first, the empty cache among them"
+        );
+
+        a.resources.swap(0, 2);
+        assert_eq!(
+            order(&a),
+            vec![1, 2, 127, 128],
+            "the unmeasured group must keep the listing's own order"
+        );
+    }
+
+    /// #51: `selection_bytes` summed `size_bytes` whatever the kind, so a
+    /// placeholder could join the figure `d` promises to free. It is zero
+    /// today for every sizeless family — this run's is not, which is the
+    /// only fixture that tells the rule apart from the coincidence.
+    #[test]
+    fn the_ticked_bytes_count_only_the_families_github_measures() {
+        let mut a = App::new(vec![]);
+        a.resources = vec![
+            Resource {
+                kind: ResourceKind::WorkflowRun,
+                ..res(128, "CI #128", 9_999, 100, false)
+            },
+            res(5, "cache-5", 200, 1, false),
+        ];
+        a.selected.insert((ResourceKind::WorkflowRun, 128));
+        a.selected.insert((ResourceKind::Cache, 5));
+
+        assert_eq!(a.selection_bytes(), 200);
+    }
+
     #[test]
     fn toggling_twice_clears_the_selection() {
         let mut a = app();
@@ -1644,8 +1750,9 @@ mod tests {
         a.selected.insert((ResourceKind::Cache, 5));
         assert_eq!(
             a.selection_size_display(),
-            "200 o",
-            "a mixed selection stopped reporting the bytes it does know"
+            "≥ 200 o",
+            "a mixed selection must keep the bytes it knows, and stop \
+             presenting them as all of what is ticked"
         );
     }
 

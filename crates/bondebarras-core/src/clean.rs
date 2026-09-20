@@ -30,8 +30,34 @@ impl Plan {
             .unwrap_or(RiskTier::Low)
     }
 
+    /// The bytes this plan would free, counting only the families GitHub
+    /// reports a size for.
+    ///
+    /// `size_bytes` is a hardcoded `0` for every kind
+    /// `ResourceKind::has_known_size` answers `false` for, so this sum is
+    /// numerically unchanged by the filter today — that is exactly the
+    /// reason to write it: a placeholder that happens to be zero is being
+    /// excluded because it is a placeholder, not tolerated because of what
+    /// it happens to equal (#51). A family whose placeholder is ever
+    /// something other than zero cannot quietly inflate a total through
+    /// here.
     pub fn total_bytes(&self) -> u64 {
-        self.items.iter().map(|i| i.size_bytes).sum()
+        self.items
+            .iter()
+            .filter(|i| i.kind.has_known_size())
+            .map(|i| i.size_bytes)
+            .sum()
+    }
+
+    /// How many of the plan's items are a kind
+    /// `ResourceKind::has_known_size` answers `false` for — what
+    /// `total_bytes` above could not count, and what `summary` therefore
+    /// has to name rather than leave out.
+    fn sizeless_items(&self) -> usize {
+        self.items
+            .iter()
+            .filter(|i| !i.kind.has_known_size())
+            .count()
     }
 
     /// Whether this plan archives a repository rather than deleting
@@ -75,22 +101,28 @@ impl Plan {
     /// branches, tags" while the predicate had already gained a fourth
     /// family, the workflow run (#41) — a list in a comment rots, a call
     /// does not.
+    ///
+    /// A *mixed* plan — some sizeless items among sized ones — names what
+    /// its figure left out, through `sizeless_tail` (#51). "40 élément(s) ·
+    /// 4.1 Go" over a plan of 3 caches and 37 workflow runs is true about
+    /// the 3 and silent about the 37, and silence here reads as "4.1 Go is
+    /// what those 40 rows weigh". Since `[A]` preselects a run whose pull
+    /// request merged, that mix is the ordinary case, not the exotic one.
+    /// This modal is the surface that can afford the whole sentence: it
+    /// wraps (`tui::views::confirm` measures its own height with
+    /// `wrapped_row_count`), so nothing here is ever clipped.
     pub fn summary(&self) -> String {
+        let sizeless = self.sizeless_items();
         if self.is_archive() {
             "Archivage · 0 o libéré, par nature".to_string()
-        } else if all_sizeless(
-            self.items.len(),
-            self.items
-                .iter()
-                .filter(|i| !i.kind.has_known_size())
-                .count(),
-        ) {
+        } else if all_sizeless(self.items.len(), sizeless) {
             format!("{} élément(s) · taille inconnue", self.items.len())
         } else {
             format!(
-                "{} élément(s) · {}",
+                "{} élément(s) · {}{}",
                 self.items.len(),
-                human_size(self.total_bytes())
+                human_size(self.total_bytes()),
+                sizeless_tail(sizeless)
             )
         }
     }
@@ -113,6 +145,79 @@ pub fn all_sizeless(total: usize, sizeless: usize) -> bool {
     total > 0 && sizeless == total
 }
 
+/// Where a resource ranks in a sort by size: its group first — measured
+/// before unmeasured — then its bytes, biggest first.
+///
+/// The one key behind both size sorts, `tui::app::App::visible_resources`
+/// (the TUI's resource column) and `scan::repo_detail`'s own (the headless
+/// listing and `scan --json`). #51 was the two of them agreeing on the
+/// wrong thing: both ranked on `size_bytes` alone, so both filed a workflow
+/// run — `size_bytes: 0`, a placeholder, never a measurement — as the
+/// lightest row in the repository while its own line read `—`. Written once
+/// here so the next family GitHub gives no size for cannot be fixed in one
+/// sort and missed in the other, the way `has_known_size` itself was missed
+/// in three places before v0.4 gathered it.
+///
+/// The group is the first field on purpose: it makes `sort_by_key`'s
+/// stability carry the rest, leaving every row's order within its group
+/// exactly as the caller assembled it.
+///
+/// `tui::app::App::visible_resources`'s doc comment argues *why* the
+/// unmeasured go last rather than first; this is only where the two callers
+/// share the answer.
+pub fn size_rank(r: &Resource) -> (bool, std::cmp::Reverse<u64>) {
+    (!r.kind.has_known_size(), std::cmp::Reverse(r.size_bytes))
+}
+
+/// What a byte figure could not count, as the tail of the line that shows
+/// it: `" + 37 de taille inconnue"`, or nothing at all when it counted
+/// everything.
+///
+/// The mixed case's wording, in one place, for the two surfaces that have a
+/// whole line to say it on: the confirmation modal (`Plan::summary`) and
+/// the post-purge recap (`finished_recap`). `all_sizeless` above answers
+/// the all-or-nothing question; this answers what is left when the answer
+/// is "some" (#51).
+///
+/// It reuses "taille inconnue" verbatim rather than inventing a second
+/// phrase for the same fact: a user who has seen a run-only purge say
+/// "taille inconnue" must recognise the same words here, not learn a
+/// synonym. The count is bare — `+ 37`, not `+ 37 éléments` — because both
+/// call sites already name what they are counting just before it.
+pub fn sizeless_tail(sizeless: usize) -> String {
+    if sizeless == 0 {
+        String::new()
+    } else {
+        format!(" + {sizeless} de taille inconnue")
+    }
+}
+
+/// The same fact as `sizeless_tail`, for a surface with no room for a
+/// sentence: `"≥ 4.1 Go"` when some of what the figure should have covered
+/// has no size, the plain figure otherwise.
+///
+/// The resources column's title (`tui::app::App::selection_size_display`,
+/// drawn by `tui::views::repo::list_title`) is written on a block's top
+/// border, and ratatui clips whatever overflows it. That border is 38 cells
+/// at the narrowest layout the width sweeps cover, of which `compact_title`
+/// — the last rung of its own degradation ladder — already spends about 35.
+/// `sizeless_tail`'s 23 cells cannot fit there under any arrangement, and a
+/// half-drawn "+ 37 de taille inc" is precisely the clipping that ladder
+/// exists to prevent. So the title states the weaker claim it *can* state
+/// whole: the ticked rows weigh **at least** this. The full accounting is
+/// one keystroke away, in the modal `d` opens.
+///
+/// Two renderings, one decision: both ask `ResourceKind::has_known_size`,
+/// through the counts their callers pass, and neither invents a set of its
+/// own. What differs is the room each has, not what either believes.
+pub fn at_least_size(bytes: u64, sizeless: usize) -> String {
+    if sizeless == 0 {
+        human_size(bytes)
+    } else {
+        format!("≥ {}", human_size(bytes))
+    }
+}
+
 /// The "N libérés" fragment of the post-purge recap, shared by the TUI's
 /// status line and the headless `clean` command so the wording never drifts
 /// between the two.
@@ -129,15 +234,24 @@ pub fn all_sizeless(total: usize, sizeless: usize) -> bool {
 /// Only "unknown" once every deletion that happened was one where the size
 /// genuinely cannot be known.
 ///
-/// A mixed purge (some sizeless items among sized resources) still just
-/// reports `freed` here — accurate as far as it goes, even though it says
-/// nothing about the sizeless items in the mix. Making that case honest too
-/// is a separate concern, out of scope for this fix.
+/// A mixed purge — some sizeless items among sized resources — names what
+/// `freed` could not count, through `sizeless_tail` (#51): a purge of 3
+/// caches and 37 runs reads "4.1 Go libérés + 37 de taille inconnue".
+/// Reporting `freed` alone was accurate as far as it went, and that was the
+/// whole problem: it went as far as the 3 caches and stayed silent about
+/// the 37 runs deleted beside them, so the one figure on screen read as the
+/// whole purge's yield. Rare while the sizeless families were package
+/// versions, branches and tags; ordinary since `[A]` began preselecting
+/// workflow runs whose pull request merged.
 pub fn finished_recap(freed: u64, deleted: usize, deleted_sizeless: usize) -> String {
     if all_sizeless(deleted, deleted_sizeless) {
         format!("{deleted} élément(s) supprimé(s) · taille inconnue")
     } else {
-        format!("{} libérés", human_size(freed))
+        format!(
+            "{} libérés{}",
+            human_size(freed),
+            sizeless_tail(deleted_sizeless)
+        )
     }
 }
 
@@ -262,9 +376,18 @@ pub async fn execute(client: &Client, plan: Plan, tx: UnboundedSender<Progress>)
 
         match result {
             Ok(()) => {
-                freed += item.size_bytes;
                 deleted += 1;
-                if !item.kind.has_known_size() {
+                // One branch, so a deletion is counted in exactly one of the
+                // two tallies and `has_known_size` is asked once: either its
+                // bytes are a real measurement and join `freed`, or there
+                // are none to join and it joins `deleted_sizeless` instead
+                // (#51). The `freed += item.size_bytes` this replaces added
+                // a hardcoded placeholder to a figure the recap presents as
+                // measured — zero today for every sizeless family, which is
+                // why it never showed, and not a reason to keep summing it.
+                if item.kind.has_known_size() {
+                    freed += item.size_bytes;
+                } else {
                     deleted_sizeless += 1;
                 }
                 let _ = tx.send(Progress::Done {
@@ -350,6 +473,74 @@ mod tests {
         assert_eq!(p.total_bytes(), 3_000_000);
         assert!(p.summary().contains("3.0 Mo"));
         assert!(p.summary().contains('2'));
+    }
+
+    /// #51: `total_bytes` summed `size_bytes` over every item, whatever its
+    /// kind. The placeholder those kinds carry is `0` today, so the figure
+    /// came out right — by luck, not by rule. This run's placeholder is not
+    /// zero, which is the only fixture that can tell "left out because it
+    /// is unmeasured" apart from "taken in, and happens to add nothing".
+    #[test]
+    fn total_bytes_counts_only_the_families_github_measures() {
+        let p = plan(vec![
+            item(ResourceKind::Cache, 1, 1_000_000),
+            item(ResourceKind::WorkflowRun, 2, 9_999),
+        ]);
+        assert_eq!(p.total_bytes(), 1_000_000);
+    }
+
+    /// The mixed plan #41 left behind, and the ordinary one since `[A]`
+    /// began preselecting runs whose pull request merged: 1 cache and 2
+    /// runs used to announce "3 élément(s) · 3.0 Mo" — true of the cache,
+    /// silent about the runs, and read as the weight of all three.
+    #[test]
+    fn summary_names_what_a_mixed_plan_could_not_count() {
+        let p = plan(vec![
+            item(ResourceKind::Cache, 1, 3_000_000),
+            item(ResourceKind::WorkflowRun, 2, 0),
+            item(ResourceKind::WorkflowRun, 3, 0),
+        ]);
+        let s = p.summary();
+        assert!(
+            s.contains("3.0 Mo"),
+            "the bytes it does know must survive: {s}"
+        );
+        assert!(s.contains("+ 2 de taille inconnue"), "got: {s}");
+    }
+
+    /// The discriminating half: an implementation appending the tail
+    /// unconditionally would write "+ 0 de taille inconnue" over two
+    /// ordinary caches, admitting an uncertainty that does not exist.
+    #[test]
+    fn summary_adds_no_tail_when_every_item_is_measured() {
+        let p = plan(vec![
+            item(ResourceKind::Cache, 1, 1_000_000),
+            item(ResourceKind::Artifact, 2, 2_000_000),
+        ]);
+        let s = p.summary();
+        assert!(!s.to_lowercase().contains("inconnue"), "got: {s}");
+    }
+
+    /// #51's sort rule, at the key both sorts share. The empty cache is the
+    /// row that discriminates: its size is *known*, and it is zero. A rule
+    /// that merely pushed zero-byte rows to the end — or that kept ranking
+    /// on `size_bytes` alone — would file it with the runs instead of above
+    /// them.
+    #[test]
+    fn a_measured_row_outranks_an_unmeasured_one_even_at_zero_bytes() {
+        let empty_cache = item(ResourceKind::Cache, 1, 0);
+        let run = item(ResourceKind::WorkflowRun, 2, 0);
+        assert!(size_rank(&empty_cache) < size_rank(&run));
+    }
+
+    /// The title's rendering of the same fact: a figure that covers
+    /// everything ticked is stated flat, one that does not is marked as a
+    /// floor. Asserted on exact strings — the whole difference is two cells
+    /// a substring check would read straight past.
+    #[test]
+    fn a_size_that_could_not_count_everything_is_marked_as_a_floor() {
+        assert_eq!(at_least_size(200, 0), "200 o");
+        assert_eq!(at_least_size(200, 1), "≥ 200 o");
     }
 
     #[test]
@@ -634,6 +825,61 @@ mod tests {
             freed, 2_400_000,
             "a release asset's real size must be freed"
         );
+    }
+
+    /// #51, end to end on the purge that has become the ordinary one: an
+    /// asset GitHub measures deleted beside a run it does not. Two things
+    /// must hold at once — `freed` carries only measured bytes, and the
+    /// recap built from it names what those bytes left out.
+    ///
+    /// The run's `size_bytes` is deliberately non-zero, which `api::runs::
+    /// list` never writes: with a zero there, an implementation that still
+    /// added every item's bytes to `freed` would pass this test unchanged,
+    /// and the assertion would be proving nothing.
+    #[tokio::test]
+    async fn a_mixed_purge_frees_only_measured_bytes_and_says_what_it_could_not_count() {
+        let server = MockServer::start().await;
+        Mock::given(method("DELETE"))
+            .and(path("/repos/systm-d/claudine/releases/assets/9"))
+            .respond_with(ResponseTemplate::new(204))
+            .mount(&server)
+            .await;
+        Mock::given(method("DELETE"))
+            .and(path("/repos/systm-d/claudine/actions/runs/128"))
+            .respond_with(ResponseTemplate::new(204))
+            .mount(&server)
+            .await;
+
+        let client = Client::with_base("t0ken", &server.uri()).unwrap();
+        let p = plan(vec![
+            item(ResourceKind::ReleaseAsset, 9, 2_400_000),
+            item(ResourceKind::WorkflowRun, 128, 9_999),
+        ]);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+
+        execute(&client, p, tx).await;
+
+        let mut finished = None;
+        while let Ok(msg) = rx.try_recv() {
+            match msg {
+                Progress::Failed { reason, .. } => panic!("unexpected failure: {reason}"),
+                Progress::Finished {
+                    freed,
+                    deleted,
+                    deleted_sizeless,
+                    ..
+                } => finished = Some((freed, deleted, deleted_sizeless)),
+                Progress::Done { .. } => {}
+            }
+        }
+
+        let (freed, deleted, sizeless) = finished.expect("the purge must report Finished");
+        assert_eq!(freed, 2_400_000, "the run's placeholder reached `freed`");
+        assert_eq!((deleted, sizeless), (2, 1));
+
+        let recap = finished_recap(freed, deleted, sizeless);
+        assert!(recap.contains("2.4 Mo"), "got: {recap}");
+        assert!(recap.contains("+ 1 de taille inconnue"), "got: {recap}");
     }
 
     #[tokio::test]
