@@ -302,6 +302,12 @@ const SIZELESS_WARNING: &str = "⚠ GitHub n'expose pas la taille de certaines r
 /// already said (#41). Taking a bare `u64` is what let this line print a
 /// confident `cochés 0 o` over a column of `—`.
 ///
+/// A *mixed* selection reads `cochés ≥ 467.0 Mo` (#51): every byte we can
+/// name, no longer claiming to be all of them. The count of what is missing
+/// — "+ 37 de taille inconnue", which `Plan::summary` spells out in the
+/// modal `d` opens — does not fit on a top border; `clean::at_least_size`
+/// carries the arithmetic of that decision and its reasons.
+///
 /// Smoke S3: that size stood bare, and `353 éléments · 0 o` over caches of
 /// about 400 Mo each read as a listing weighing nothing. It says what it
 /// counts: `cochés 0 o`.
@@ -339,7 +345,11 @@ fn plural(count: usize, noun: &str) -> String {
 /// too narrow for the whole title: its border clips from the right, and the
 /// ticked size — the figure that matters before `d` — would go first. This
 /// one takes 33 cells and the count's digits, so the column's narrowest
-/// inside, 38 cells, holds it for up to 99 999 rows.
+/// inside, 38 cells, holds it for up to 99 999 rows — or up to 999 when a
+/// mixed selection prefixes the ticked figure with `≥` and its space (#51).
+/// Past either figure the border clips from the right, and the ticked size
+/// sits at that end — the two cells `≥ ` costs are two cells of headroom
+/// spent, on the rung that exists to keep that size whole.
 fn compact_title(count: usize, ticked: &str) -> String {
     format!(" RESSOURCES · {count} · cochés {ticked} ")
 }
@@ -1840,8 +1850,17 @@ mod tests {
             let (_, column) = views::testing::focused_column(&mut app, Focus::Resources, width, 12);
             let title = column.lines().next().unwrap_or_default().to_string();
             assert!(
-                title.contains("cochés 467.0 Mo"),
+                title.contains("cochés ≥ 467.0 Mo"),
                 "a mixed selection lost the bytes it does know at width {width}: {title:?}"
+            );
+            // #51: and it no longer presents those bytes as the whole of
+            // what is ticked. The needle above carries the `≥` for exactly
+            // that reason — `cochés 467.0 Mo` on a selection that also
+            // holds a run is the claim this fixes, so it must not be what
+            // the title says at any width.
+            assert!(
+                !title.contains("cochés 467.0 Mo"),
+                "a mixed selection still reads as a complete total at width {width}: {title:?}"
             );
         }
     }
