@@ -10,9 +10,22 @@ Where to get each artifact, and how to verify it, is in
 
 ## Stable releases and pre-releases
 
-A release is produced by pushing a tag matching `v*`. **The tag itself decides
-whether the release is a pre-release: one containing a `-` is published as
-such.**
+A release is produced by pushing a tag named `v` followed by a version —
+`v<major>.<minor>.<patch>`, with an optional `-<pre-release>` suffix.
+**The tag itself decides whether the release is a pre-release: one containing
+a `-` is published as such.**
+
+**A tag of any other shape fails the release, loudly, before a single file is
+rendered.** Git accepts far more in a tag name than this project has ever used
+— backticks, `$(…)`, `;`, quotes, `#{…}` — and the workflow substitutes the tag
+into a Ruby formula, a shell `PKGBUILD` and a set of YAML manifests. A `#{…}`
+reaching the formula's `url` line passes every field check and `ruby -c`, then
+gets interpolated by Ruby on the machine running `brew install`. So the tag
+name is constrained once, on the way in, rather than escaped once per
+destination: escaping per destination leaves the next destination added
+uncovered. Build metadata (`v1.0.0+build.5`) is refused along with the rest —
+nothing downstream handles it, and `bondebarras update` drops it when comparing
+versions, so such a release could never be offered as an upgrade anyway.
 
 | Tag | GitHub status | Served as *Latest*? |
 | --- | --- | --- |
@@ -51,7 +64,11 @@ On a **stable** tag only, two more steps run:
 - the Homebrew formula is rendered and **opened as a pull request** against the
   default branch, adding `Formula/bondebarras.rb` — on a branch named after the
   tag, so a second release never overwrites a pull request still open for the
-  first. Nothing is merged automatically;
+  first. Nothing is merged automatically. The rendered formula is checked
+  before it is proposed — the two substituted fields compared exactly, then
+  `ruby -c` — and a runner without `ruby` fails the job instead of skipping
+  the check, because nothing else reads that file between its rendering and
+  the pull request;
 - winget manifests are generated and attached as `winget-manifests.tar.gz`.
 
 Publication to crates.io is opt-in: it runs only when the repository variable
