@@ -5,8 +5,8 @@ remove it, and keep it up to date.
 
 ## Current status: pre-release
 
-**The only published release is [`v1.0.0-rc.2`][rc], a pre-release**, tagged
-2026-09-17. GitHub marks it *Pre-release* and does not serve it as *Latest*.
+**The newest published release is [`v1.0.0-rc.3`][rc], a pre-release**, tagged
+2026-09-20. GitHub marks it *Pre-release* and does not serve it as *Latest*.
 **No stable release exists yet.**
 
 The release candidate is feature-complete and safe to run — every safety rule
@@ -14,7 +14,7 @@ described in the [safety model](safety.md) is in force — but the CLI flags and
 the `scan --json` schema may still change before `v1.0.0`. See
 [releases and versioning](releases.md).
 
-[rc]: https://github.com/systm-d/bondebarras/releases/tag/v1.0.0-rc.2
+[rc]: https://github.com/systm-d/bondebarras/releases/tag/v1.0.0-rc.3
 
 ## What is published, and what is not
 
@@ -39,7 +39,7 @@ work anyway" — it is one that does not exist yet.**
 | Windows aarch64 | aarch64 | — | **Not published** — not in the build matrix |
 
 "Pre-release only" means the artifact is built and attached to
-`v1.0.0-rc.2`, but no stable release has ever produced one. Everything under
+`v1.0.0-rc.3`, but no stable release has ever produced one. Everything under
 **Planned** is wired in the release workflow and deliberately gated on a
 stable tag.
 
@@ -53,8 +53,8 @@ and you should hold a manual download to the same standard.
 Linux:
 
 ```sh
-curl -LO https://github.com/systm-d/bondebarras/releases/download/v1.0.0-rc.2/bondebarras-linux-x86_64.tar.gz
-curl -LO https://github.com/systm-d/bondebarras/releases/download/v1.0.0-rc.2/bondebarras-linux-x86_64.tar.gz.sha256
+curl -LO https://github.com/systm-d/bondebarras/releases/download/v1.0.0-rc.3/bondebarras-linux-x86_64.tar.gz
+curl -LO https://github.com/systm-d/bondebarras/releases/download/v1.0.0-rc.3/bondebarras-linux-x86_64.tar.gz.sha256
 sha256sum -c bondebarras-linux-x86_64.tar.gz.sha256
 ```
 
@@ -76,11 +76,11 @@ A mismatch means the file is not the one that was published. Do not run it.
 ## Linux (generic)
 
 ```sh
-curl -LO https://github.com/systm-d/bondebarras/releases/download/v1.0.0-rc.2/bondebarras-linux-x86_64.tar.gz
+curl -LO https://github.com/systm-d/bondebarras/releases/download/v1.0.0-rc.3/bondebarras-linux-x86_64.tar.gz
 # verify, as above
 tar xzf bondebarras-linux-x86_64.tar.gz
 sudo install -m 755 bondebarras-linux-x86_64/bondebarras /usr/local/bin/bondebarras
-bondebarras --version   # bondebarras 1.0.0-rc.2
+bondebarras --version   # bondebarras 1.0.0-rc.3
 ```
 
 The archive contains the binary plus `README.md` and both licence files.
@@ -91,27 +91,27 @@ The `.deb` is downloaded first, then installed from the file — `apt install`
 here takes a path, not a package name from a repository:
 
 ```sh
-curl -LO https://github.com/systm-d/bondebarras/releases/download/v1.0.0-rc.2/bondebarras_1.0.0.rc.2-1_amd64.deb
+curl -LO https://github.com/systm-d/bondebarras/releases/download/v1.0.0-rc.3/bondebarras_1.0.0.rc.3-1_amd64.deb
 # verify, as above
-sudo apt install ./bondebarras_1.0.0.rc.2-1_amd64.deb
+sudo apt install ./bondebarras_1.0.0.rc.3-1_amd64.deb
 ```
 
 ## Fedora / RHEL
 
 ```sh
-curl -LO https://github.com/systm-d/bondebarras/releases/download/v1.0.0-rc.2/bondebarras-1.0.0.rc.2-1.x86_64.rpm
+curl -LO https://github.com/systm-d/bondebarras/releases/download/v1.0.0-rc.3/bondebarras-1.0.0.rc.3-1.x86_64.rpm
 # verify, as above
-sudo dnf install ./bondebarras-1.0.0.rc.2-1.x86_64.rpm
+sudo dnf install ./bondebarras-1.0.0.rc.3-1.x86_64.rpm
 ```
 
 RPM forbids a dash in a version number, so the package's own version reads
-`1.0.0~rc.2` — the tilde is RPM's pre-release convention and sorts *before*
+`1.0.0~rc.3` — the tilde is RPM's pre-release convention and sorts *before*
 the eventual `1.0.0`, which is what makes the upgrade work.
 
 ## macOS (Apple Silicon)
 
 ```sh
-curl -LO https://github.com/systm-d/bondebarras/releases/download/v1.0.0-rc.2/bondebarras-macos-aarch64.tar.gz
+curl -LO https://github.com/systm-d/bondebarras/releases/download/v1.0.0-rc.3/bondebarras-macos-aarch64.tar.gz
 # verify, as above
 tar xzf bondebarras-macos-aarch64.tar.gz
 sudo install -m 755 bondebarras-macos-aarch64/bondebarras /usr/local/bin/bondebarras
@@ -132,10 +132,10 @@ Two forms, same binary:
 
 ```powershell
 # Standalone executable
-curl.exe -LO https://github.com/systm-d/bondebarras/releases/download/v1.0.0-rc.2/bondebarras-windows-x86_64.exe
+curl.exe -LO https://github.com/systm-d/bondebarras/releases/download/v1.0.0-rc.3/bondebarras-windows-x86_64.exe
 
 # Or the archive, which also carries the README and licences
-curl.exe -LO https://github.com/systm-d/bondebarras/releases/download/v1.0.0-rc.2/bondebarras-windows-x86_64.zip
+curl.exe -LO https://github.com/systm-d/bondebarras/releases/download/v1.0.0-rc.3/bondebarras-windows-x86_64.zip
 Expand-Archive .\bondebarras-windows-x86_64.zip -DestinationPath .
 ```
 
@@ -149,7 +149,7 @@ There is **no AUR package**. Each release attaches a rendered `PKGBUILD` with
 the correct version and source checksum filled in:
 
 ```sh
-curl -LO https://github.com/systm-d/bondebarras/releases/download/v1.0.0-rc.2/PKGBUILD
+curl -LO https://github.com/systm-d/bondebarras/releases/download/v1.0.0-rc.3/PKGBUILD
 makepkg -si
 ```
 

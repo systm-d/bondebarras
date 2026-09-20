@@ -1,7 +1,7 @@
 # CLI reference
 
 The headless surface: `scan`, `clean` and `update`. Every flag below is taken
-from the binary's own `--help` at `1.0.0-rc.2`, and every behaviour is
+from the binary's own `--help` at `1.0.0-rc.3`, and every behaviour is
 verified against the code, with the named tests that enforce it cited inline.
 
 The interactive surface is the [TUI](tui.md). What a headless run is allowed
@@ -141,7 +141,7 @@ can therefore show a real `storage_allowance_gbh` beside a `storage_gbh` of
 ### Schema stability
 
 **The `scan --json` schema is not stable before `1.0.0`.** The current release
-is `1.0.0-rc.2`, a pre-release; its changelog states that the CLI flags and
+is `1.0.0-rc.3`, a pre-release; its changelog states that the CLI flags and
 this schema may still change before `v1.0.0`. Pin a version if you parse it,
 and read [releases and versioning](releases.md) for what the project does and
 does not promise.
@@ -157,10 +157,10 @@ Options:
       --caches                   Inclut les caches Actions
       --artifacts                Inclut les artifacts
       --runs                     Inclut les workflow runs
-      --packages                 Inclut les versions de packages (conteneurs)
-      --branches                 Inclut les branches mergées
-      --tags                     Inclut les tags
-      --assets                   Inclut les assets de releases
+      --packages                 Inclut les versions de packages (conteneurs). GitHub n'en expose pas la taille : aucun octet n'est promis pour cette famille
+      --branches                 Inclut les branches mergées. Une branche vivante — par défaut, protégée, ou sans PR mergée derrière elle — n'est jamais prise en masse, drapeau ou pas
+      --tags                     Inclut les tags. Un tag n'est jamais présélectionnable en masse : c'est ce sur quoi pointent les releases, `go get`, `Cargo.toml`
+      --assets                   Inclut les assets de releases. La release elle-même n'est jamais supprimée — seuls ses binaires le sont
       --stale-pr                 Restreint aux ressources rattachées à une PR fermée
       --older-than <OLDER_THAN>  Restreint aux ressources d'au moins N jours
       --yes                      Confirme sans interaction. Sans lui, rien n'est supprimé

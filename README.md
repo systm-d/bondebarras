@@ -12,7 +12,7 @@ the stuff CI leaves behind that nobody ever comes back to delete — plus
 repository archiving, which turns off the tap producing them rather than
 mopping up after it forever. A Billing tab prices what is left.
 
-[![Pre-release](https://img.shields.io/badge/release-v1.0.0--rc.2%20%E2%80%94%20pre--release-d97757)](https://github.com/systm-d/bondebarras/releases/tag/v1.0.0-rc.2)
+[![Pre-release](https://img.shields.io/badge/release-v1.0.0--rc.3%20%E2%80%94%20pre--release-d97757)](https://github.com/systm-d/bondebarras/releases/tag/v1.0.0-rc.3)
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)](#license)
 [![CI](https://github.com/systm-d/bondebarras/actions/workflows/ci.yml/badge.svg)](https://github.com/systm-d/bondebarras/actions/workflows/ci.yml)
 [![Pages](https://github.com/systm-d/bondebarras/actions/workflows/pages.yml/badge.svg)](https://github.com/systm-d/bondebarras/actions/workflows/pages.yml)
@@ -21,7 +21,7 @@ mopping up after it forever. A Billing tab prices what is left.
 **Site:** <https://systm-d.github.io/bondebarras> · **Docs:**
 [`docs/`](docs/README.md)
 
-> **Status: `v1.0.0-rc.2` — pre-release.** There is no stable release yet.
+> **Status: `v1.0.0-rc.3` — pre-release.** There is no stable release yet.
 > The tool is feature-complete and safe to run — every deletion goes through a
 > confirmation, and nothing is ever deleted without one — but the CLI flags and
 > the `scan --json` schema may still change before `v1.0.0`, so pin the version
@@ -97,7 +97,7 @@ bondebarras
 ```
 
 Prebuilt binaries for Linux, macOS (Apple Silicon) and Windows, plus a `.deb`
-and an `.rpm`, are attached to [`v1.0.0-rc.2`][rc] — every binary artifact with
+and an `.rpm`, are attached to [`v1.0.0-rc.3`][rc] — every binary artifact with
 its own `.sha256` sidecar. Arch builds from the `PKGBUILD` attached to the same
 release; there is no AUR package. Every platform, every channel and how to
 verify a download are in [installation](docs/installation.md).
@@ -211,5 +211,5 @@ Dual-licensed under **MIT OR Apache-2.0**, at your option — see
 
 Copyright © 2026 Kevin Delfour / systm-d.
 
-[rc]: https://github.com/systm-d/bondebarras/releases/tag/v1.0.0-rc.2
+[rc]: https://github.com/systm-d/bondebarras/releases/tag/v1.0.0-rc.3
 [gh-cache]: https://docs.github.com/en/actions/reference/workflows-and-actions/dependency-caching#usage-limits-and-eviction-policy
