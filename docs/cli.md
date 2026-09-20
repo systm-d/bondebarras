@@ -157,10 +157,10 @@ Options:
       --caches                   Inclut les caches Actions
       --artifacts                Inclut les artifacts
       --runs                     Inclut les workflow runs
-      --packages                 Inclut les versions de packages (conteneurs)
-      --branches                 Inclut les branches mergées
-      --tags                     Inclut les tags
-      --assets                   Inclut les assets de releases
+      --packages                 Inclut les versions de packages (conteneurs). GitHub n'en expose pas la taille : aucun octet n'est promis pour cette famille
+      --branches                 Inclut les branches mergées. Une branche vivante — par défaut, protégée, ou sans PR mergée derrière elle — n'est jamais prise en masse, drapeau ou pas
+      --tags                     Inclut les tags. Un tag n'est jamais présélectionnable en masse : c'est ce sur quoi pointent les releases, `go get`, `Cargo.toml`
+      --assets                   Inclut les assets de releases. La release elle-même n'est jamais supprimée — seuls ses binaires le sont
       --stale-pr                 Restreint aux ressources rattachées à une PR fermée
       --older-than <OLDER_THAN>  Restreint aux ressources d'au moins N jours
       --yes                      Confirme sans interaction. Sans lui, rien n'est supprimé

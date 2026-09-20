@@ -6,7 +6,7 @@ remove it, and keep it up to date.
 ## Current status: pre-release
 
 **The newest published release is [`v1.0.0-rc.3`][rc], a pre-release**, tagged
-2026-09-17. GitHub marks it *Pre-release* and does not serve it as *Latest*.
+2026-09-20. GitHub marks it *Pre-release* and does not serve it as *Latest*.
 **No stable release exists yet.**
 
 The release candidate is feature-complete and safe to run — every safety rule
