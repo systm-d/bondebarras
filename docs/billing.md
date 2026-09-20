@@ -115,7 +115,8 @@ that pin a private repository *inside* its allowance still being counted.
 That was a real bug — GitHub discounts such a repository exactly as it
 discounts a public one, so a filter on the discount fields made
 `included_minutes` read `0` right up until GitHub started billing. Both tests
-fail against it, returning 0 where 24 632 is true.
+fail against that filter — the gauge reading 0 where 24 632 is true, and the
+breakdown listing no line at all for the repository it exists to name.
 
 **And 49 % is a floor, not a measurement.** An `enterprise` allowance belongs
 to the enterprise account and is shared across its organizations, and
