@@ -107,21 +107,39 @@ fn fetch_latest(url: &str) -> Result<Option<ReleaseInfo>> {
 /// Propose or apply the update, once we know a newer version exists.
 fn apply(release: &ReleaseInfo) -> Result<()> {
     let channel = update::detect_channel();
+    let target = update::current_target();
 
-    // Pacman/Homebrew/Nix/Cargo always land here (no package_suffix at all —
-    // bondebarras never touches those binaries itself). Deb/Rpm/Tarball land
-    // here too, but only when this specific release genuinely ships nothing
-    // for this platform — worth a distinct message rather than the generic
-    // "no asset" case those channels never hit for a well-formed release.
-    let Some(asset) = release.asset_for(channel) else {
-        match update::install_plan(channel, Path::new("")) {
-            InstallPlan::Manual(message) => println!("{message}"),
-            InstallPlan::Run { .. } => println!(
-                "Cette release ne publie pas de paquet pour votre plateforme. Consultez {}",
-                release.html_url
-            ),
+    // Two ways to end up with nothing to download, and they do not share a
+    // message.
+    //
+    // Deb/Rpm/Tarball do download a package, so landing here means this
+    // release publishes none for the platform we are running on — worth
+    // naming (#49): matching `.tar.gz` alone used to hand a macOS user the
+    // Linux archive rather than admit there was nothing for them.
+    //
+    // Pacman/Homebrew/Nix/Cargo have no package suffix at all — bondebarras
+    // never touches those binaries itself — so nothing was ever going to be
+    // downloaded, and their own install plan already says what to run
+    // instead.
+    let asset = match release.asset_for(channel, &target) {
+        Some(asset) => asset,
+        None if channel.downloads_an_asset() => {
+            println!(
+                "{}",
+                update::no_asset_for_target(&target, &release.html_url)
+            );
+            return Ok(());
         }
-        return Ok(());
+        None => {
+            match update::install_plan(channel, Path::new("")) {
+                InstallPlan::Manual(message) => println!("{message}"),
+                InstallPlan::Run { .. } => println!(
+                    "Cette release ne publie pas de paquet pour votre plateforme. Consultez {}",
+                    release.html_url
+                ),
+            }
+            return Ok(());
+        }
     };
 
     // `dir` is a `tempfile::TempDir` guard: dropping it deletes the
