@@ -105,7 +105,7 @@ status_note = "No stable release yet: feature-complete and safe to run — nothi
 <li>Runs in the background, TUI stays responsive</li>
 <li>A progress row with a real, counted done/total — never an estimate</li>
 <li>Spaced out and retried on GitHub's rate limit</li>
-<li>Every item reports <span class="kbd">✓</span> or <span class="kbd">✗</span> when it's done, and a run that ends with failures says so instead of hiding it</li>
+<li>A deletion GitHub confirms takes its row off the list and moves the bar on; one it refuses leaves the row where it is and names it on the status line — <code>Erreur : suppression de 9 — 404</code> — and a run that ends with failures says so instead of hiding it, closing on <code>, 2 échec(s).</code></li>
 <li>No trash, no undo: nothing GitHub lets us delete comes back, and the tool never pretends otherwise</li>
 </ul>
 </div>
@@ -152,10 +152,10 @@ status_note = "No stable release yet: feature-complete and safe to run — nothi
 <div class="term-bar"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span><span class="term-title">bondebarras — systm-d</span></div>
 <div class="term-body">
 <div class="tui">
-<div class="tui-head"><span class="tui-brand">bondebarras</span><span class="tui-home">15 orgs</span></div>
+<div class="tui-head"><span class="tui-brand">bondebarras</span><span class="tabs"><span class="tab active">Orgs</span><span class="tab">Billing</span></span><span class="tui-home">15 orgs</span></div>
 <div class="tui-panels">
 <div class="tui-col"><div class="col-title">ORGS</div><div class="row sel">systm-d      37.2 Go</div><div class="row dim">SecondBrain  13.9 Go</div></div>
-<div class="tui-col"><div class="col-title">DÉPÔTS</div><div class="row">another-repo  9.8 Go</div><div class="row sel">ci-heavy    ⚠11.1 Go</div></div>
+<div class="tui-col"><div class="col-title">DÉPÔTS</div><div class="row">[ ] another-r… 775 j          9.8 Go</div><div class="row sel">[ ] ci-heavy   2 j         ⚠ 11.1 Go</div><div class="row">    repolens   déjà archivé      0 o</div></div>
 <div class="tui-col grow"><div class="col-title">RESSOURCES · 69 éléments · cochés 522.0 Mo</div><div class="row dim">Cache   ████████████   111 %   11.1 Go / 10 Go</div><div class="row dim">  (seuil inclus ; limite réelle non exposée par l'API)</div><div class="row">  ⚠ dépasse le seuil inclus : le stockage en excès est facturé ; l'éviction, elle, attend la limite configurée du dépôt</div><div class="row dim">Minutes ████            33 %   1 004 / 3 000</div><div class="row sel">[x]⛑ cache  coverage-linux-x64               261Mo  <span class="stale">PR#32 ⚑</span></div><div class="row">[x]⛑ cache  coverage-linux-x64               261Mo  <span class="stale">PR#25 ⚑</span></div><div class="row">[ ]  cache  ubuntu-22.04-test                257Mo  12j</div><div class="row">[ ]• artif  build-output                     1.1Mo  45j</div></div>
 </div>
 <div class="tui-foot"><span class="key">←/→</span> col.<span class="key">↑/↓</span> ligne<span class="key">espace</span> cocher<span class="key">A</span> sûrs<span class="key">V</span> +à vérifier<span class="key">d</span> supprimer<span class="key">f</span> filtrer<span class="key">s</span> trier<span class="key">b</span> billing<span class="key">q</span> quitter</div>
@@ -196,7 +196,7 @@ status_note = "No stable release yet: feature-complete and safe to run — nothi
 <div class="out">Bon débarras ! 261.0 Mo libérés.</div>
 <div class="comment"># package versions carry no size — GitHub's API exposes none</div>
 <div class="line"><span class="prompt">$</span>bondebarras clean <span class="flag">--org</span> systm-d <span class="flag">--repo</span> repolens <span class="flag">--packages</span> <span class="flag">--yes</span></div>
-<div class="out">Bon débarras ! 0 o libérés.</div>
+<div class="out">Bon débarras ! 45 élément(s) supprimé(s) · taille inconnue.</div>
 <div class="comment"># the release stays — only its assets go</div>
 <div class="line"><span class="prompt">$</span>bondebarras clean <span class="flag">--org</span> exec-d <span class="flag">--repo</span> terminus <span class="flag">--assets</span> <span class="flag">--older-than</span> 180 <span class="flag">--yes</span></div>
 <div class="out">Bon débarras ! 1.4 Go libérés.</div>
