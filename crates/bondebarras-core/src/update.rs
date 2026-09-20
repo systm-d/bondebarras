@@ -493,6 +493,15 @@ pub fn no_asset_for_target(channel: InstallChannel, target: &str, html_url: &str
     // the wrong thing on top of that — a Fedora user reading "aucune archive
     // pour votre plateforme" would go hunting for a portability problem that
     // does not exist.
+    // "aucune archive pour elle" would be false on Windows, where a release
+    // publishes a `.zip` and a bare `.exe` — but this branch cannot reach a
+    // Windows user: `detect_channel_for` recognises no Windows install path,
+    // so the channel is `Unknown` there and `downloads_an_asset` stops the
+    // caller two steps earlier. `asset_for_refuses_when_no_archive_matches_
+    // the_platform` pins `Tarball + WINDOWS -> None` at the `asset_for`
+    // level, which is a different claim: no `.tar.gz` for Windows, true.
+    // Serving those two Windows assets is #55; if it lands, this sentence
+    // has to be revisited before the channel becomes reachable.
     if channel.asset_name_carries_target() {
         format!(
             "Plateforme détectée : {target}. Cette release ne publie aucune archive pour elle — \
@@ -505,8 +514,9 @@ pub fn no_asset_for_target(channel: InstallChannel, target: &str, html_url: &str
         // grammatical rather than trusting that from a distance.
         let kind = channel.package_suffix().unwrap_or("installable");
         format!(
-            "Cette release ne publie aucun paquet {kind} — rien n'est téléchargé, et bondebarras \
-             ne remplace pas un paquet par un autre format. Consultez {page}"
+            "Cette release ne publie aucun paquet {kind} — rien n'est téléchargé : bondebarras \
+             ne substitue pas un autre format à celui par lequel il a été installé. Consultez \
+             {page}"
         )
     }
 }

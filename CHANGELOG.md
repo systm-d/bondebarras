@@ -28,7 +28,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   target also makes the rule testable: CI builds on five platforms, and a
   test keyed on the host's own target would assert something different on
   each.
-
 - **A workflow run no longer reads `0 o`** (#41). `api::runs::list` hardcodes
   `size_bytes: 0` because GitHub reports no size for a run anywhere — no size
   field on the run object under any name, billable *milliseconds* (not bytes)
