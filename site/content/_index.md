@@ -152,7 +152,7 @@ status_note = "No stable release yet: feature-complete and safe to run — nothi
 <div class="term-bar"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span><span class="term-title">bondebarras — systm-d</span></div>
 <div class="term-body">
 <div class="tui">
-<div class="tui-head"><span class="tui-brand">bondebarras</span><span class="tabs"><span class="tab active">Orgs</span><span class="tab">Billing</span></span><span class="tui-home">15 orgs</span></div>
+<div class="tui-head"><span class="tui-brand">bondebarras</span><span class="tui-sep">·</span><span class="tui-count">15 orgs</span><span class="tui-sep">·</span><span class="tab active">Orgs</span></div>
 <div class="tui-panels">
 <div class="tui-col"><div class="col-title">ORGS</div><div class="row sel">systm-d      37.2 Go</div><div class="row dim">SecondBrain  13.9 Go</div></div>
 <div class="tui-col"><div class="col-title">DÉPÔTS</div><div class="row">[ ] another-r… 775 j          9.8 Go</div><div class="row sel">[ ] ci-heavy   2 j         ⚠ 11.1 Go</div><div class="row">    repolens   déjà archivé      0 o</div></div>

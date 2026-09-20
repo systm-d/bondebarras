@@ -209,10 +209,12 @@ section > h2 { font-size: 1.6rem; letter-spacing: -0.01em; margin: 0 0 .4rem; }
   padding-bottom: .6rem; margin-bottom: .7rem; border-bottom: 1px solid var(--line);
 }
 .tui-brand { color: var(--brand); font-weight: 700; }
-.tabs { display: flex; gap: .35rem; flex-wrap: wrap; }
 .tab { padding: .05rem .5rem; border-radius: .3rem; color: var(--muted); }
 .tab.active { background: var(--brand); color: #1a120d; font-weight: 600; }
-.tui-home { margin-left: auto; color: var(--dim); }
+/* The header quotes one header line, not a tab bar: ` bondebarras · 15 orgs ·
+   Orgs `. The TUI draws the tab it is on and no other, so there is no
+   inactive pill to style and nothing to push to the far right. */
+.tui-sep, .tui-count { color: var(--dim); }
 .tui-panels { display: flex; gap: 1.1rem; }
 .tui-col { flex: 0 0 auto; min-width: 0; }
 .tui-col.grow { flex: 1 1 auto; }
@@ -277,8 +279,12 @@ section > h2 { font-size: 1.6rem; letter-spacing: -0.01em; margin: 0 0 .4rem; }
   .tui-col + .tui-col { border-left: 0; border-top: 1px solid var(--line); padding-left: 0; padding-top: .8rem; }
   /* `pre-wrap`, not `normal`: a phone still wraps the longest rows rather
      than scrolling sideways for them, but the spaces they are aligned with
-     survive the wrap instead of collapsing. */
-  .row { white-space: pre-wrap; }
+     survive the wrap instead of collapsing. Every quoted block gets this,
+     not just `.row`: `.cmds .line` and `.cmds .out` are `pre` for the same
+     reason at full width — `scan` aligns its organizations in columns — so
+     leaving them out would scroll the command listings sideways on the one
+     screen size where the TUI mockup no longer does. */
+  .row, .cmds .line, .cmds .out { white-space: pre-wrap; }
 }
 
 @media (prefers-reduced-motion: reduce) {
