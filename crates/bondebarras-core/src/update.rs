@@ -418,9 +418,24 @@ fn detect_channel_for(exe: &Path, os: &str, owns: impl Fn(&str, &Path) -> bool) 
     InstallChannel::Unknown
 }
 
-/// The directories a winget-managed bondebarras can sit in, lowercased and
-/// spelled with `/` — the form [`channel_from_path`] normalises a path into
-/// before matching.
+/// winget's user-scope root, `%LOCALAPPDATA%\Microsoft\WinGet\`, lowercased
+/// and spelled with `/` — the form [`channel_from_path`] normalises a path
+/// into before matching. Matched wherever it appears: nothing but winget
+/// puts a `WinGet` directory under a `Microsoft` one.
+const WINGET_USER_ROOT: &str = "/microsoft/winget/";
+
+/// The machine-scope pair. These two names carry nothing distinctive on
+/// their own, so [`is_winget_path`] accepts them under a Program Files root
+/// and nowhere else.
+const WINGET_MACHINE_DIRECTORIES: [&str; 2] = ["/winget/packages/", "/winget/links/"];
+
+/// What `%PROGRAMFILES%` widens to. The x86 form is a root of its own rather
+/// than a prefix match: `C:\Program Files (x86)\WinGet\` holds an x86
+/// package and is as much winget's as the other.
+const PROGRAM_FILES_ROOTS: [&str; 2] = ["/program files", "/program files (x86)"];
+
+/// Whether `lower` — already lowercased and spelled with `/` — sits in a
+/// directory winget owns.
 ///
 /// bondebarras' winget manifests declare `InstallerType: portable` (the
 /// `winget` job in `.github/workflows/release.yml`), so the two directories
@@ -443,10 +458,33 @@ fn detect_channel_for(exe: &Path, os: &str, owns: impl Fn(&str, &Path) -> bool) 
 /// database goes on describing the version it installed, which is the exact
 /// desynchronisation detecting winget at all exists to prevent.
 ///
-/// `%PROGRAMFILES%` widens to `C:\Program Files (x86)\` for an x86 package;
-/// that path holds `/winget/packages/` just the same, so it needs no fourth
-/// entry.
-const WINGET_DIRECTORIES: [&str; 3] = ["/microsoft/winget/", "/winget/packages/", "/winget/links/"];
+/// **So the machine-scope pair is anchored under Program Files, not searched
+/// for anywhere in the path.** `winget\Links\` and `winget\Packages\` are
+/// ordinary directory names — `…\Downloads\winget\Links\bondebarras.exe`,
+/// a hand-unpacked copy sitting next to some downloaded manifests, answered
+/// `Winget` unanchored, and would have been told to uninstall through a
+/// winget that never installed it. The user-scope root needs no such anchor,
+/// which is why the two are matched differently rather than uniformly.
+///
+/// Two layouts this deliberately does not catch, both read as a hand
+/// install: a root redirected through winget's `settings.json`
+/// (`portablePackageUserRoot` / `portablePackageMachineRoot` are settable),
+/// and a binary sitting directly in `%PROGRAMFILES%\WinGet\` rather than in
+/// its `Packages\` or `Links\` subdirectory. Recognising either would mean
+/// reading winget's configuration — a second source of truth, on disk, to
+/// keep in step — for a layout the default install never produces. It is
+/// documented instead, in `docs/installation.md`'s *Updating* section, where
+/// the reader it concerns is already standing.
+fn is_winget_path(lower: &str) -> bool {
+    if lower.contains(WINGET_USER_ROOT) {
+        return true;
+    }
+    WINGET_MACHINE_DIRECTORIES.iter().any(|dir| {
+        lower
+            .split_once(dir)
+            .is_some_and(|(above, _)| PROGRAM_FILES_ROOTS.iter().any(|root| above.ends_with(root)))
+    })
+}
 
 /// The path-only part of channel detection (no system calls) — unit-testable
 /// on its own.
@@ -461,12 +499,22 @@ const WINGET_DIRECTORIES: [&str; 3] = ["/microsoft/winget/", "/winget/packages/"
 /// see [`detect_channel_for`] for why that gate belongs here and not after
 /// the call.
 fn channel_from_path(path: &str, os: &str) -> Option<InstallChannel> {
-    let path = path.replace('\\', "/");
-    // Matched case-insensitively, as Windows itself compares paths.
-    let lower = path.to_ascii_lowercase();
+    let normalized = path.replace('\\', "/");
+    let lower = normalized.to_ascii_lowercase();
+    // Case is folded where the filesystem folds it, and only there. Windows
+    // compares paths case-insensitively, so `C:\Users\x\.CARGO\bin\` is
+    // cargo's own directory and must answer `Cargo` — comparing it exactly
+    // sent it to `Zip`, inviting a hand swap of a binary the next `cargo
+    // install` overwrites anyway. Unix does not fold, so `/home/x/.CARGO/`
+    // there is somebody else's directory and stays one.
+    let path = if os == WINDOWS_OS {
+        lower.as_str()
+    } else {
+        normalized.as_str()
+    };
     if path.contains("/.cargo/") {
         Some(InstallChannel::Cargo)
-    } else if WINGET_DIRECTORIES.iter().any(|dir| lower.contains(dir)) {
+    } else if is_winget_path(&lower) {
         Some(InstallChannel::Winget)
     } else if os != WINDOWS_OS && (path.contains("linuxbrew") || path.contains("/Cellar/")) {
         Some(InstallChannel::Homebrew)
@@ -994,7 +1042,7 @@ mod tests {
     }
 
     // Only the four downloading channels can be told "nothing for your
-    // platform"; the other five never download anything, and get their own
+    // platform"; the other six never download anything, and get their own
     // install plan instead — `commands::update::apply` branches on this.
     #[test]
     fn only_the_downloading_channels_ever_claim_an_asset() {
@@ -1250,6 +1298,71 @@ mod tests {
         }
     }
 
+    // Case is folded where the filesystem folds it (#55, second review).
+    // Windows compares paths case-insensitively, so `.CARGO` is `.cargo`
+    // there; comparing it exactly answered `Zip`, which invites a hand swap
+    // of a binary the next `cargo install` overwrites anyway. Unix folds
+    // nothing, and a `/home/x/.CARGO/` of somebody else's making must not
+    // become a cargo install on the way past.
+    #[test]
+    fn a_windows_cargo_install_is_spotted_whatever_its_case() {
+        assert_eq!(
+            channel_from_path(r"C:\Users\x\.CARGO\bin\bondebarras.exe", WINDOWS_OS),
+            Some(InstallChannel::Cargo)
+        );
+        assert_eq!(
+            detect_channel_for(
+                Path::new(r"C:\Users\x\.Cargo\Bin\bondebarras.exe"),
+                WINDOWS_OS,
+                |_bin, _exe| false
+            ),
+            InstallChannel::Cargo
+        );
+        for os in [LINUX_OS, MACOS_OS] {
+            assert_eq!(
+                channel_from_path("/home/x/.CARGO/bin/bondebarras", os),
+                None,
+                "{os}"
+            );
+        }
+    }
+
+    // The machine-scope pair is anchored under Program Files (#55, second
+    // review). `winget\Links\` and `winget\Packages\` are ordinary directory
+    // names: matched anywhere in a path, a hand-unpacked copy sitting beside
+    // some downloaded manifests answered `Winget`, and its owner was told to
+    // uninstall through a winget that never installed it — the mirror image
+    // of the machine-scope miss, and the reason the two scopes are matched
+    // differently rather than uniformly.
+    #[test]
+    fn a_directory_merely_named_winget_is_not_a_winget_install() {
+        for path in [
+            r"C:\Users\x\Downloads\winget\Links\bondebarras.exe",
+            r"C:\Users\x\Downloads\winget\Packages\bondebarras.exe",
+            r"D:\winget\Links\bondebarras.exe",
+        ] {
+            assert_eq!(
+                detect_channel_for(Path::new(path), WINDOWS_OS, |_bin, _exe| false),
+                InstallChannel::Zip,
+                "{path}"
+            );
+        }
+        // Under a real Program Files root the same two directories are
+        // winget's, and the user-scope root needs no anchor at all: nobody
+        // else spells `Microsoft\WinGet\`.
+        assert_eq!(
+            channel_from_path(r"C:\Program Files\WinGet\Links\bondebarras.exe", WINDOWS_OS),
+            Some(InstallChannel::Winget)
+        );
+        assert_eq!(
+            channel_from_path(
+                r"D:\AppData\Local\Microsoft\WinGet\Links\bondebarras.exe",
+                WINDOWS_OS
+            ),
+            Some(InstallChannel::Winget)
+        );
+    }
+
     // Detection order (#55, review finding). `linuxbrew` and `Cellar` are
     // Unix facts, and `channel_from_path` ran before the `windows` branch,
     // so `C:\Cellar\…` answered `Homebrew` — implausible, but inverted with
@@ -1329,6 +1442,64 @@ mod tests {
             "{msg}"
         );
         assert!(msg.contains("releases/latest"), "{msg}");
+    }
+
+    // Arch, the first of the three channels `docs/releases.md` promises for.
+    // No AUR package was ever submitted (#20), so `yay -S bondebarras` and
+    // `pacman -S bondebarras` are precisely the commands that cannot
+    // succeed; the PKGBUILD attached to every release is what can.
+    #[test]
+    fn the_arch_message_names_the_pkgbuild_rather_than_an_aur_helper() {
+        let InstallPlan::Manual(msg) = install_plan(InstallChannel::Pacman, Path::new("")) else {
+            panic!("expected Manual");
+        };
+        assert!(msg.contains("PKGBUILD"), "{msg}");
+        assert!(msg.contains("makepkg -si"), "{msg}");
+        assert!(msg.contains("releases/latest"), "{msg}");
+        for helper in ["yay ", "paru ", "pacman -S"] {
+            assert!(!msg.contains(helper), "names {helper}: {msg}");
+        }
+    }
+
+    // macOS, the second. The tap is committed on a stable tag only and none
+    // has shipped, so `brew upgrade bondebarras` finds nothing — and that is
+    // the exact sentence the second review wrote into this arm, watching the
+    // whole suite stay green. `docs/releases.md` made the promise for three
+    // channels while one test held it up.
+    #[test]
+    fn the_homebrew_message_says_no_formula_is_published_yet() {
+        let InstallPlan::Manual(msg) = install_plan(InstallChannel::Homebrew, Path::new("")) else {
+            panic!("expected Manual");
+        };
+        assert!(msg.contains("Aucune formule Homebrew"), "{msg}");
+        assert!(msg.contains("releases/latest"), "{msg}");
+        for command in ["brew upgrade", "brew install", "brew reinstall"] {
+            assert!(!msg.contains(command), "names {command}: {msg}");
+        }
+    }
+
+    // Nix is deliberately left out of the three above rather than forgotten.
+    // Its message names no command: it points at the reader's own flake
+    // input or channel, so it makes no claim about a published package that
+    // could come to be false, and `/nix/store` being read-only is not a fact
+    // that rots. The remaining hands-off channel, cargo, is pinned by
+    // `cargo_manual_message_names_this_repository` — which fails on `cargo
+    // install bondebarras`, the crates.io form that is not published either.
+
+    // The empty-package `Tarball` arm, unreachable from
+    // `commands::update::apply` exactly as its `Zip` twin is, and pinned for
+    // the same reason — plus one of its own: the second review rewrote it
+    // into « Votre bondebarras est déjà à jour » and nothing failed. An arm
+    // whose whole job is to point at a newer release told the reader there
+    // was none.
+    #[test]
+    fn the_tarball_plan_without_a_package_still_names_the_archive() {
+        let InstallPlan::Manual(msg) = install_plan(InstallChannel::Tarball, Path::new("")) else {
+            panic!("expected Manual");
+        };
+        assert!(msg.contains("archive"), "{msg}");
+        assert!(msg.contains("releases/latest"), "{msg}");
+        assert!(!msg.contains("à jour"), "{msg}");
     }
 
     // The reserve the review deleted and watched nothing notice. It is the

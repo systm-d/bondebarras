@@ -253,5 +253,18 @@ The `.deb` and `.rpm` channels carry no such token in their filenames, so
 neither is filtered on the platform: each release publishes exactly one of
 each.
 
+> **Two winget layouts `update` reads as a hand install.** It recognises
+> winget's default portable directories — `%LOCALAPPDATA%\Microsoft\WinGet\`
+> for a user-scope install, `%PROGRAMFILES%\WinGet\Packages\` and `…\Links\`
+> for a machine-scope one — and nothing else. A root redirected through
+> winget's own `settings.json` (`portablePackageUserRoot`,
+> `portablePackageMachineRoot`), or a binary left directly in
+> `%PROGRAMFILES%\WinGet\` rather than in one of those two subdirectories,
+> is taken for a manually installed binary: `update` then downloads and
+> verifies the `.zip` and invites you to swap the `.exe` yourself, while
+> winget's database goes on naming the version it installed. If you
+> installed with winget and moved its roots, run
+> `winget uninstall systm-d.bondebarras` before replacing anything.
+
 Once installed, start with [authentication](authentication.md) — bondebarras
 needs a GitHub token before it can show you anything.
