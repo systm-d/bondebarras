@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **`--help` names the binary `bondebarras` on all three platforms** (#55,
+  second review). clap defaults its `bin_name` to `argv[0]`, which Windows
+  spells `bondebarras.exe`, so `Usage:` carried that suffix there and only
+  there — and `docs/cli.md`, a page that quotes one rendering and claims it
+  is the binary's own output, was literally true on two platforms out of
+  three. The name is pinned on the parser now, and `bondebarras` is in any
+  case the invocation that works, under PowerShell as under `cmd`. The
+  normalisation the help guard carried for that suffix is gone with it: it
+  was global and anchored on nothing, so forcing the suffix to `" [COMMAND]"`
+  and deleting that token from the page left the test green. A guard that
+  patches the binary's output into the shape the page expects is not a guard.
+
 ### Fixed
 
 - **Windows is tested, and `update` knows how to serve it** (#55). Windows was
@@ -55,6 +69,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Windows user at a tap that publishes nothing. Those two patterns are gated
   on the operating system now; cargo's and winget's directories stay ungated,
   being spelled the same wherever they appear.
+- **Two path patterns that matched too much, and one that matched too
+  little** (#55, second review). `…\Downloads\winget\Links\` was read as a
+  winget install, because the machine-scope directories were searched for
+  anywhere in a path rather than under a Program Files root — its owner would
+  have been told to uninstall through a winget that never installed them. And
+  `C:\…\.CARGO\bin\` was *not* read as a cargo install, that one pattern
+  being compared case-sensitively while Windows compares paths
+  case-insensitively. Case is now folded where the filesystem folds it and
+  nowhere else, so `/home/x/.CARGO/` on Linux stays somebody else's
+  directory. Two winget layouts remain outside the detection by decision — a
+  portable root redirected through winget's `settings.json`, and a binary
+  left in the bare machine root — and are written down in
+  `docs/installation.md` rather than guessed at.
+- **`docs/releases.md`'s promise now covers the three channels it names**
+  (#55, second review). The page swears `update` never prints a command that
+  could not succeed, for Arch, macOS and winget; only the winget message was
+  held by a test. Rewriting the Homebrew one into « Lancez `brew upgrade
+  bondebarras` » left the suite green, as did turning the packageless archive
+  arm into « Votre bondebarras est déjà à jour ». Each is pinned now, and the
+  page cites the tests. Nix stays unpinned on purpose: its message names no
+  command at all, only the reader's own flake input or channel.
 
 ## [1.0.0-rc.3] - 2026-09-20
 

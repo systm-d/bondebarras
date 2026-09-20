@@ -282,7 +282,7 @@ manager's own command or prints what to do:
 | --- | --- |
 | `.deb` | `sudo apt install <file>` |
 | `.rpm` | `sudo dnf install <file>` |
-| Homebrew, AUR/pacman, Nix, `cargo install` | Prints the right instruction and touches nothing — overwriting a managed file would desynchronize that manager's database |
+| Homebrew, AUR/pacman, Nix, `cargo install`, winget | Prints the right instruction and touches nothing — overwriting a managed file would desynchronize that manager's database |
 | A manually installed binary | Downloads and verifies the archive, then tells you where it is |
 
 **Verification fails closed.** Nothing is installed unless the digest matches:
@@ -299,8 +299,9 @@ its own message. Tests: `verify_outcome_proceeds_only_when_verified`,
 > refused, a `sudo` that could not be launched. Either way, do not use
 > `update`'s exit code as a signal in a script; read its output instead.
 
-Details of each channel, and the one case where the archive offered may not
-match your platform, are in [installation](installation.md#updating).
+Details of each channel, and what `update` does when the release publishes no
+archive for the platform it detected, are in
+[installation](installation.md#updating).
 
 ## Exit codes
 

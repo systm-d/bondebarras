@@ -119,6 +119,17 @@ only reader who can ever see it: that branch is taken only when winget
 installed bondebarras in the first place, so winget's database already holds
 the identifier `release.yml` writes into the manifests it attaches.
 
+**All three are held up by a test**, because a promise of this kind rots in
+silence: the winget message was pinned first, and a review then rewrote the
+Homebrew one into « Lancez `brew upgrade bondebarras` » — a command that
+resolves to nothing today — without a single test failing. Tests:
+`the_arch_message_names_the_pkgbuild_rather_than_an_aur_helper`,
+`the_homebrew_message_says_no_formula_is_published_yet`,
+`the_winget_message_says_winget_upgrade_would_find_nothing`. Nix is the one
+hands-off channel left unpinned, deliberately: its message names no command
+at all, only the reader's own flake input or channel, so it makes no claim
+about a published package that could turn false.
+
 ## Versioning
 
 bondebarras follows **[Semantic Versioning](https://semver.org/spec/v2.0.0.html)**
