@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   was global and anchored on nothing, so forcing the suffix to `" [COMMAND]"`
   and deleting that token from the page left the test green. A guard that
   patches the binary's output into the shape the page expects is not a guard.
+
 ### Fixed
 
 - **A placeholder zero no longer passes for a measurement, in the ordering
@@ -38,11 +39,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   announced a total that said nothing about the runs in it — rare until
   `[A]` began preselecting runs whose pull request had merged, routine
   after. The confirmation now reads `40 élément(s) · 4.1 Go + 37 de taille
-  inconnue` and the post-purge recap `4.1 Go + 37 de taille inconnue
-  libérés`. The resources column has 38 cells at its narrowest and cannot
+  inconnue`, and the post-purge recap `4.1 Go libérés + 37 de taille
+  inconnue`. The resources column has 38 cells at its narrowest and cannot
   hold that clause, so its title states the bound it can write whole —
-  `cochés ≥ 4.1 Go`. One rule behind all three: `clean::all_sizeless`, the
-  function `Plan::summary` and `finished_recap` already shared.
+  `cochés ≥ 4.1 Go`. All three lean on one pre-existing rule,
+  `clean::all_sizeless`, through the two functions this change adds beside
+  it: `sizeless_tail` for the first two, `at_least_size` for the title.
 - **The CLI reference is held to the binary's own `--help`** (#61).
   `docs/cli.md` opens on a claim about its own provenance — every flag below
   is taken from what the binary prints — and nothing checked it. It had been
@@ -57,10 +59,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that screen's output, line by line. It found a drift of its own on the
   first run: the synopsis block wrapped `update`'s description over three
   lines by hand, a shape no terminal ever produced. A companion test pins
-  the premise the comparison rests on, `the_quoted_help_is_the_same_at_any_
-  terminal_width`, because clap without `wrap_help` is width-invariant — and
-  the day that stops being true the guard should say so rather than quietly
-  compare against the wrong rendering.
+  the premise the comparison rests on —
+  `the_quoted_help_is_the_same_at_any_terminal_width` — because clap without
+  `wrap_help` is width-invariant, and the day that stops being true the
+  guard should say so rather than quietly compare against the wrong
+  rendering.
 - **The seven-day rule reaches the page a TUI user reads** (#52, #59). The
   README and the billing guide both carried GitHub's rule — any cache entry
   unread for more than seven days is deleted, whatever limit is configured —
