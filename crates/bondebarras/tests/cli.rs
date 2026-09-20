@@ -1,5 +1,8 @@
 use assert_cmd::Command;
 use predicates::str::contains;
+use std::collections::{BTreeMap, BTreeSet};
+use std::fs;
+use std::path::{Path, PathBuf};
 
 #[test]
 fn help_lists_the_subcommands() {
@@ -147,56 +150,425 @@ fn release_tokens(text: &str) -> Vec<&str> {
     out
 }
 
+/// The repository root, from this test's own manifest directory.
+///
+/// `include_str!` is the sharper tool for a page named in the source, and
+/// the guard that compares `docs/cli.md` to the binary keeps using it. It
+/// cannot list a directory, though, and a census that cannot list one only
+/// ever checks the pages somebody remembered to name — which is how
+/// `docs/tui.md` and `docs/billing.md` arrived in #63 watched by nothing.
+fn repo_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .nth(2)
+        .expect("crates/bondebarras sits two directories under the repository root")
+        .to_path_buf()
+}
+
+/// A repository-relative page, read as text — failing with its path rather
+/// than with a bare `No such file or directory`.
+fn read(root: &Path, page: &str) -> String {
+    fs::read_to_string(root.join(page)).unwrap_or_else(|e| panic!("{page} cannot be read: {e}"))
+}
+
+/// The Markdown files directly inside `dir`, repository-relative and sorted.
+/// One level only: what sits in a subdirectory is classified by its own
+/// caller, never swept in by accident.
+fn markdown_in(root: &Path, dir: &str) -> Vec<String> {
+    let mut pages: Vec<String> = fs::read_dir(root.join(dir))
+        .unwrap_or_else(|e| panic!("{dir} cannot be listed: {e}"))
+        .map(|entry| entry.expect("a readable directory entry").file_name())
+        .filter_map(|name| {
+            let name = name.into_string().expect("a UTF-8 file name");
+            name.ends_with(".md").then(|| format!("{dir}/{name}"))
+        })
+        .collect();
+    pages.sort();
+    pages
+}
+
+/// The pages a version pass has to reach: the README, every page of `docs/`,
+/// and the site's two landing pages.
+///
+/// `docs/` is read one level deep on purpose. `docs/audits/` and
+/// `docs/superpowers/` sit below it and are frozen records — an audit, and
+/// the design history — whose job is to name the release they were written
+/// against, the same reason `CHANGELOG.md` is out of the census too.
+fn documented_pages(root: &Path) -> Vec<String> {
+    let mut pages = vec!["README.md".to_string()];
+    pages.extend(markdown_in(root, "docs"));
+    pages.extend(markdown_in(root, "site/content"));
+    pages
+}
+
+/// What a page is expected to say about the release it ships with.
+#[derive(Clone, Copy, Debug)]
+enum Names {
+    /// The page advertises the current release, and every version pass has
+    /// to reach it. The `usize` is how many mentions of an *older* release
+    /// are deliberate.
+    Current(usize),
+    /// The page carries no version at all, and is expected to keep carrying
+    /// none. Declared rather than inferred: the defect this guard exists for
+    /// is a pass applied to some files and not others, so a page that
+    /// *starts* naming a release has to be moved to `Current` by hand — one
+    /// line, and the next pass then knows the page exists.
+    Nothing,
+}
+
+/// Every page `documented_pages` finds, and what it says about the release.
+///
+/// Checked against the directory itself rather than trusted, so a page added
+/// tomorrow fails this test until somebody classifies it here — which is the
+/// half #33 asked for: `docs/tui.md` and `docs/billing.md` were recensed by
+/// nothing at all, and a hand-written list is exactly what cannot notice
+/// that.
+const RELEASE_CENSUS: &[(&str, Names)] = &[
+    ("README.md", Names::Current(0)),
+    ("docs/README.md", Names::Nothing),
+    ("docs/authentication.md", Names::Nothing),
+    ("docs/billing.md", Names::Nothing),
+    ("docs/cli.md", Names::Current(0)),
+    ("docs/installation.md", Names::Current(0)),
+    // Three mentions of an older release are this page's subject matter: the
+    // table of published tags lists rc.2, the sentence below it enumerates
+    // both pre-releases, and the versioning section cites rc.1's changelog
+    // entry.
+    ("docs/releases.md", Names::Current(3)),
+    ("docs/resources.md", Names::Nothing),
+    ("docs/safety.md", Names::Nothing),
+    ("docs/troubleshooting.md", Names::Nothing),
+    ("docs/tui.md", Names::Nothing),
+    ("site/content/_index.fr.md", Names::Current(0)),
+    ("site/content/_index.md", Names::Current(0)),
+];
+
 #[test]
 fn every_document_that_names_a_release_names_this_one() {
     const CURRENT: &str = env!("CARGO_PKG_VERSION");
     let current = release_spellings(CURRENT);
+    let root = repo_root();
 
-    // The third field is how many mentions of an *older* release are
-    // deliberate. `docs/releases.md` has three: the table of published tags
-    // lists rc.2, the sentence below it enumerates both pre-releases, and
-    // the versioning section cites rc.1's changelog entry.
-    let docs: &[(&str, &str, usize)] = &[
-        ("README.md", include_str!("../../../README.md"), 0),
-        (
-            "docs/installation.md",
-            include_str!("../../../docs/installation.md"),
-            0,
-        ),
-        ("docs/cli.md", include_str!("../../../docs/cli.md"), 0),
-        (
-            "docs/releases.md",
-            include_str!("../../../docs/releases.md"),
-            3,
-        ),
-        (
-            "site/content/_index.md",
-            include_str!("../../../site/content/_index.md"),
-            0,
-        ),
-        (
-            "site/content/_index.fr.md",
-            include_str!("../../../site/content/_index.fr.md"),
-            0,
-        ),
-    ];
+    let censused: Vec<String> = RELEASE_CENSUS
+        .iter()
+        .map(|(page, _)| (*page).to_string())
+        .collect();
+    assert_eq!(
+        documented_pages(&root),
+        censused,
+        "the documentation and `RELEASE_CENSUS` disagree about which pages exist; \
+         classify the difference here — an unclassified page is one the next version \
+         pass has no reason to visit"
+    );
 
-    for (name, text, deliberate) in docs {
-        assert!(
-            current.iter().any(|s| text.contains(s.as_str())),
-            "{name} never names {CURRENT} — was the version pass applied to it?"
-        );
-        let stale: Vec<&str> = release_tokens(text)
-            .into_iter()
-            .filter(|t| !current.iter().any(|s| s == t))
-            .collect();
-        assert_eq!(
-            stale.len(),
-            *deliberate,
-            "{name} names {} older release(s) ({stale:?}), {deliberate} deliberate",
-            stale.len()
-        );
+    for (page, names) in RELEASE_CENSUS {
+        let text = read(&root, page);
+        let tokens = release_tokens(&text);
+        match names {
+            Names::Current(deliberate) => {
+                assert!(
+                    current.iter().any(|s| text.contains(s.as_str())),
+                    "{page} never names {CURRENT} — was the version pass applied to it?"
+                );
+                let stale: Vec<&str> = tokens
+                    .into_iter()
+                    .filter(|t| !current.iter().any(|s| s == t))
+                    .collect();
+                assert_eq!(
+                    stale.len(),
+                    *deliberate,
+                    "{page} names {} older release(s) ({stale:?}), {deliberate} deliberate",
+                    stale.len()
+                );
+            }
+            Names::Nothing => assert!(
+                tokens.is_empty(),
+                "{page} now names {tokens:?}, and is censused as carrying no version. \
+                 Move it to `Names::Current` so the next version pass visits it too."
+            ),
+        }
     }
+}
+
+/// `md`'s lines outside fenced code blocks, numbered from 1.
+///
+/// Every guard below reads a page through this, and none of them ever looks
+/// inside a fence. What a fence holds was quoted from somewhere else —
+/// `docs/cli.md`'s four `--help` blocks, the README's shell transcripts —
+/// and answers to the thing it was quoted from rather than to this
+/// repository's rules: the README's `# 2. Authenticate …` is a shell
+/// comment, not a heading, and a URL printed by a command is not a link
+/// anyone here promised to keep alive.
+///
+/// The same boundary is why no prose-wrapping formatter may ever be let
+/// loose on this tree; the reason is written out where one would be added,
+/// in `.github/workflows/ci.yml`'s `lint` job.
+fn prose_lines(md: &str) -> Vec<(usize, &str)> {
+    let mut lines = Vec::new();
+    let mut fence: Option<&str> = None;
+    for (n, line) in md.lines().enumerate() {
+        let line = line.trim_end_matches('\r');
+        let trimmed = line.trim_start();
+        let marker = ["```", "~~~"]
+            .into_iter()
+            .find(|marker| trimmed.starts_with(marker));
+        match (fence, marker) {
+            (None, None) => lines.push((n + 1, line)),
+            (None, Some(open)) => fence = Some(open),
+            (Some(open), Some(close)) if open == close => fence = None,
+            _ => {}
+        }
+    }
+    lines
+}
+
+/// The anchor GitHub gives a heading: lowercased, everything that is not a
+/// letter, a digit, a hyphen or an underscore dropped, spaces turned into
+/// hyphens. `### \`scan --json\`` becomes `scan---json`, which is what
+/// `docs/billing.md` links to — three hyphens, two of them the flag's own.
+///
+/// A heading holding a Markdown link would slug its target along with its
+/// label; none does. If one ever did, the links pointing at it would fail
+/// here rather than quietly resolve to something else — noisy, not silent.
+fn slug(heading: &str) -> String {
+    let mut anchor = String::new();
+    for c in heading.trim().chars() {
+        if c.is_alphanumeric() || c == '-' || c == '_' {
+            anchor.extend(c.to_lowercase());
+        } else if c == ' ' {
+            anchor.push('-');
+        }
+    }
+    anchor
+}
+
+/// Every anchor `md`'s headings answer to, deduplicated the way GitHub
+/// deduplicates them: the second heading that slugs to `changed` answers to
+/// `changed-1`, as `CHANGELOG.md`'s do.
+fn heading_anchors(md: &str) -> BTreeSet<String> {
+    let mut seen: BTreeMap<String, usize> = BTreeMap::new();
+    let mut anchors = BTreeSet::new();
+    for (_, line) in prose_lines(md) {
+        let depth = line.chars().take_while(|c| *c == '#').count();
+        if depth == 0 || depth > 6 {
+            continue;
+        }
+        let Some(text) = line[depth..].strip_prefix(' ') else {
+            continue;
+        };
+        let base = slug(text);
+        if base.is_empty() {
+            continue;
+        }
+        let seen_before = seen.entry(base.clone()).or_insert(0);
+        anchors.insert(if *seen_before == 0 {
+            base
+        } else {
+            format!("{base}-{seen_before}")
+        });
+        *seen_before += 1;
+    }
+    anchors
+}
+
+/// `line` with its inline code spans removed, the survivors held apart by a
+/// space so that nothing is glued into a `](` that was never written.
+fn outside_code_spans(line: &str) -> String {
+    line.split('`').step_by(2).collect::<Vec<_>>().join(" ")
+}
+
+/// The target of `[label]: target`, when `line` is a reference definition.
+fn reference_definition(line: &str) -> Option<&str> {
+    let (_, target) = line.strip_prefix('[')?.split_once("]:")?;
+    target.split_whitespace().next()
+}
+
+/// Every link target in `md`, with the line it is written on: inline
+/// `[label](target)` links and `[label]: target` definitions alike.
+fn link_targets(md: &str) -> Vec<(usize, String)> {
+    let mut targets = Vec::new();
+    for (n, line) in prose_lines(md) {
+        let line = outside_code_spans(line);
+        if let Some(target) = reference_definition(&line) {
+            targets.push((n, target.to_string()));
+            continue;
+        }
+        let mut rest = line.as_str();
+        while let Some(open) = rest.find("](") {
+            rest = &rest[open + 2..];
+            let Some(close) = rest.find(')') else { break };
+            // A title after the target — `(page.md "Title")` — is not part
+            // of it.
+            let target = rest[..close].split_whitespace().next().unwrap_or_default();
+            if !target.is_empty() {
+                targets.push((n, target.to_string()));
+            }
+            rest = &rest[close + 1..];
+        }
+    }
+    targets
+}
+
+/// Whether `target` leaves the repository. `mailto:` counts: there is
+/// nothing on disk to check there either.
+fn is_external(target: &str) -> bool {
+    ["http://", "https://", "mailto:"]
+        .iter()
+        .any(|scheme| target.starts_with(scheme))
+}
+
+/// `target`, resolved against the directory `page` sits in, as a
+/// repository-relative `/`-separated path — the way a reader's browser
+/// resolves it. `None` when it climbs out of the repository entirely.
+fn resolve(page: &str, target: &str) -> Option<String> {
+    let mut parts: Vec<&str> = page.split('/').collect();
+    parts.pop()?; // the page's own file name
+    for part in target.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => {
+                parts.pop()?;
+            }
+            _ => parts.push(part),
+        }
+    }
+    Some(parts.join("/"))
+}
+
+/// Every Markdown file in the repository, repository-relative and sorted.
+///
+/// Four directories are stepped over, for four different reasons. `.git` and
+/// `target` are written by tools, not by authors. `.worktrees` holds other
+/// checkouts of this same repository, whose pages belong to their own branch
+/// and are none of this one's business. And `docs/audits/` is a frozen
+/// record that quotes the prose it recommends for *other* files: its
+/// `[Billing and GitHub limits](docs/billing.md)` is a line proposed for the
+/// README, correct from the README and meaningless from where it is quoted.
+/// Checking those links would be checking them against the wrong base, and
+/// the fix would be to edit an audit — which would make it stop being one.
+fn all_markdown(root: &Path) -> Vec<String> {
+    const SKIPPED: [&str; 4] = [".git", "target", ".worktrees", "docs/audits"];
+    let mut found = Vec::new();
+    let mut directories = vec![String::new()];
+    while let Some(directory) = directories.pop() {
+        let entries = fs::read_dir(root.join(&directory))
+            .unwrap_or_else(|e| panic!("{directory:?} cannot be listed: {e}"));
+        for entry in entries {
+            let entry = entry.expect("a readable directory entry");
+            let name = entry.file_name().into_string().expect("a UTF-8 file name");
+            let path = if directory.is_empty() {
+                name
+            } else {
+                format!("{directory}/{name}")
+            };
+            if SKIPPED.contains(&path.as_str()) {
+                continue;
+            }
+            // Not `metadata()`: a symlink to a directory stays a symlink
+            // here, so the walk cannot be sent round in a circle.
+            if entry.file_type().expect("a readable file type").is_dir() {
+                directories.push(path);
+            } else if path.ends_with(".md") {
+                found.push(path);
+            }
+        }
+    }
+    found.sort();
+    found
+}
+
+/// #33's guard, and the reason it exists: the links and anchors of three
+/// successive documentation passes were checked by hand — 55 of them in #48,
+/// 26 in #58, 24 in #63 — which is three times the same work, and one
+/// distraction is all it takes to publish a dead one. That already happened
+/// at the rc.1 → rc.2 pass.
+///
+/// Its scope, stated as plainly as the two guards above state theirs.
+///
+/// **Relative links are checked**, because those break for reasons that are
+/// ours: a page renamed, a section retitled, a file moved.
+///
+/// **Anchors are checked too**, both `#section` inside a page and
+/// `page.md#section` across two, because they are the half that actually
+/// breaks during a rewrite. Retitling a heading leaves every link to it
+/// pointing at a file that still exists, so a checker that only stats files
+/// would have found nothing in three passes of manual work.
+///
+/// **External links are not fetched.** They break for reasons that are not
+/// ours, and a build that goes red because a third-party site is down is a
+/// build people learn to ignore — which costs more than the dead link the
+/// check was bought for. The one class of external link that breaks *because
+/// of an edit made here* is the one carrying our own version number, which
+/// is exactly what the rc.1 → rc.2 incident was; those are read offline, on
+/// every page, by `every_document_that_names_a_release_names_this_one` above.
+/// So nothing here touches the network: this runs in the local gate, before
+/// CI, and on a train.
+#[test]
+fn every_relative_link_and_anchor_in_the_documentation_resolves() {
+    let root = repo_root();
+    let mut anchors: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    let mut dead: Vec<String> = Vec::new();
+
+    for page in all_markdown(&root) {
+        for (line, target) in link_targets(&read(&root, &page)) {
+            let here = format!("{page}:{line}: `{target}`");
+            if is_external(&target) {
+                continue;
+            }
+            if target.starts_with('/') {
+                dead.push(format!(
+                    "{here} — an absolute path is resolved against github.com, not against \
+                     the repository; write it relative to {page}"
+                ));
+                continue;
+            }
+            let (path, fragment) = match target.split_once('#') {
+                Some((path, fragment)) => (path, Some(fragment)),
+                None => (target.as_str(), None),
+            };
+            // A bare `#section` points inside the page it is written on.
+            let destination = if path.is_empty() {
+                page.clone()
+            } else {
+                match resolve(&page, path) {
+                    Some(destination) => destination,
+                    None => {
+                        dead.push(format!("{here} — climbs out of the repository"));
+                        continue;
+                    }
+                }
+            };
+            if !root.join(&destination).exists() {
+                dead.push(format!("{here} — {destination} does not exist"));
+                continue;
+            }
+            let Some(fragment) = fragment else { continue };
+            if !destination.ends_with(".md") {
+                dead.push(format!(
+                    "{here} — {destination} is not Markdown, so it has no headings to \
+                     anchor to"
+                ));
+                continue;
+            }
+            let known = anchors
+                .entry(destination.clone())
+                .or_insert_with(|| heading_anchors(&read(&root, &destination)));
+            if !known.contains(fragment) {
+                dead.push(format!(
+                    "{here} — {destination} has no heading whose anchor is `#{fragment}`. \
+                     It answers to: {}",
+                    known.iter().cloned().collect::<Vec<_>>().join(", ")
+                ));
+            }
+        }
+    }
+
+    assert!(
+        dead.is_empty(),
+        "{} dead link(s) or anchor(s) in the documentation:\n{}",
+        dead.len(),
+        dead.join("\n")
+    );
 }
 
 /// The line every quoted help block is keyed on, and aligned at.
