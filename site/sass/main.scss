@@ -217,8 +217,17 @@ section > h2 { font-size: 1.6rem; letter-spacing: -0.01em; margin: 0 0 .4rem; }
 .tui-col { flex: 0 0 auto; min-width: 0; }
 .tui-col.grow { flex: 1 1 auto; }
 .tui-col + .tui-col { border-left: 1px solid var(--line); padding-left: 1.1rem; }
-.col-title { color: var(--dim); text-transform: uppercase; font-size: .72rem; letter-spacing: .06em; margin-bottom: .35rem; }
-.row { white-space: nowrap; color: var(--fg); padding: .05rem 0; }
+/* No `text-transform`: the titles quote the product's own (` ORGS `,
+   ` DÉPÔTS `, ` RESSOURCES · … `), and uppercasing what is already written
+   turned `cochés 522.0 Mo` into `COCHÉS 522.0 MO` — a unit the tool never
+   prints. A screenshot does not change the case of what it quotes. */
+.col-title { color: var(--dim); font-size: .72rem; letter-spacing: .06em; margin-bottom: .35rem; }
+/* `pre`, not `nowrap`: these rows are columns of text padded with runs of
+   spaces, and `nowrap` only stops the wrapping — the browser still collapsed
+   every run to a single space, which is the whole alignment gone. The
+   enclosing `.term-body` scrolls horizontally, so a row wider than the
+   window stays inside it instead of widening the page. */
+.row { white-space: pre; color: var(--fg); padding: .05rem 0; }
 .row.sel { color: var(--brand); font-weight: 600; }
 .row.dim, .dim { color: var(--dim); }
 .mark { color: var(--brand); }
@@ -240,7 +249,9 @@ section > h2 { font-size: 1.6rem; letter-spacing: -0.01em; margin: 0 0 .4rem; }
 .cmds .prompt { color: var(--brand); margin-right: .5rem; user-select: none; }
 .cmds .flag { color: var(--brand); }
 .cmds .arg { color: var(--ok); }
-.cmds .out { color: var(--muted); padding-left: 1.1rem; }
+/* `pre` like `.cmds .line` above, and for the same reason: `scan` aligns its
+   organizations in columns, and a collapsed run of spaces loses them. */
+.cmds .out { white-space: pre; color: var(--muted); padding-left: 1.1rem; }
 .cmds .comment { color: var(--dim); margin-top: .7rem; }
 .cmds .comment:first-child { margin-top: 0; }
 
@@ -264,7 +275,10 @@ section > h2 { font-size: 1.6rem; letter-spacing: -0.01em; margin: 0 0 .4rem; }
   .tui { min-width: 0; }
   .tui-panels { flex-direction: column; gap: .8rem; }
   .tui-col + .tui-col { border-left: 0; border-top: 1px solid var(--line); padding-left: 0; padding-top: .8rem; }
-  .row { white-space: normal; }
+  /* `pre-wrap`, not `normal`: a phone still wraps the longest rows rather
+     than scrolling sideways for them, but the spaces they are aligned with
+     survive the wrap instead of collapsing. */
+  .row { white-space: pre-wrap; }
 }
 
 @media (prefers-reduced-motion: reduce) {
