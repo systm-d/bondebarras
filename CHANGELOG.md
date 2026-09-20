@@ -42,9 +42,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   inconnue`, and the post-purge recap `4.1 Go libérés + 37 de taille
   inconnue`. The resources column has 38 cells at its narrowest and cannot
   hold that clause, so its title states the bound it can write whole —
-  `cochés ≥ 4.1 Go`. All three lean on one pre-existing rule,
-  `clean::all_sizeless`, through the two functions this change adds beside
-  it: `sizeless_tail` for the first two, `at_least_size` for the title.
+  `cochés ≥ 4.1 Go`. Each of the three asks `clean::all_sizeless` itself —
+  that rule predates this change, from #41 — and what this one adds beside
+  it is the pair that shapes the mixed case: `sizeless_tail` for the first
+  two, `at_least_size` for the title.
 - **The CLI reference is held to the binary's own `--help`** (#61).
   `docs/cli.md` opens on a claim about its own provenance — every flag below
   is taken from what the binary prints — and nothing checked it. It had been
