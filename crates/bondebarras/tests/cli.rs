@@ -311,6 +311,21 @@ fn split_at_usage_line(actual: &str) -> (&str, &str) {
 /// no use for — while still checking that what it skips is only ever those
 /// two lines.
 fn assert_block_is_verbatim(label: &str, quoted: &str, actual: &str) {
+    // Windows names the binary `bondebarras.exe`, so clap's `Usage:` line and
+    // its `Commands:` table carry that suffix there and only there. The page
+    // quotes the canonical name, and should: writing `bondebarras.exe` into
+    // docs/cli.md would make it false on the two platforms that have no such
+    // suffix. So the suffix comes off what the binary printed rather than
+    // going onto what the page says — `EXE_SUFFIX` is empty off Windows,
+    // where this is a no-op.
+    //
+    // Found by the Windows runner #55 added, failing the guard #61 added:
+    // each change proved the other one earns its keep.
+    let actual = actual.replace(
+        &format!("bondebarras{}", std::env::consts::EXE_SUFFIX),
+        "bondebarras",
+    );
+    let actual = actual.as_str();
     let expected = if quoted.starts_with(USAGE) {
         let (dropped, from_usage) = split_at_usage_line(actual);
         assert!(
