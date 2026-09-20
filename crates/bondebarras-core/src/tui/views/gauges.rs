@@ -102,12 +102,36 @@ const CACHE_CAVEAT: &str = "(seuil inclus ; limite réelle non exposée par l'AP
 /// What a cache gauge past 100 % adds.
 ///
 /// Billing is *not* conditional on the repository's configured limit — the
-/// excess is billed either way — while eviction is. Stated as two separate
-/// facts rather than as an alternative, because presenting them with "or …
-/// depending on the configured limit" made the billing half conditional on
-/// something it does not depend on.
+/// excess is billed either way — while eviction *to make room* is. Stated as
+/// separate facts rather than as an alternative, because presenting them
+/// with "or … depending on the configured limit" made the billing half
+/// conditional on something it does not depend on.
+///
+/// **The seven-day rule lives here, and only here (#37).** GitHub deletes
+/// every cache entry not read for over 7 days, whatever the limit. Until
+/// this line said so, the interface mentioned that rule nowhere — the
+/// README, both landing pages, the CHANGELOG and `CACHE_INCLUDED_BYTES`'
+/// own doc comment all carried it, the TUI did not — and the clause about
+/// eviction waiting for the configured limit read, out of context, as a
+/// universal claim about eviction. It is not: it is true of eviction to
+/// make room, and false of the age sweep, which waits for nothing. Naming
+/// which eviction the limit governs is half the fix; stating the rule that
+/// ignores it is the other half.
+///
+/// It rides on this line rather than on `CACHE_CAVEAT` because this one is
+/// drawn only past the threshold, while the caveat is drawn at every usage:
+/// the same sentence there would cost a row on every repository the tool
+/// ever shows, which is exactly what
+/// `the_cache_banner_stays_within_its_line_budget` exists to prevent, and
+/// what the three-column spec's "nothing truncated, explanations wrap
+/// whole" constraint makes expensive. The quiet banner's row counts are
+/// unchanged by #37 — that test is the proof — so the cost falls only on
+/// the gauge that was already warning, which is also where the misreading
+/// actually happened.
 const OVER_INCLUDED: &str = "⚠ dépasse le seuil inclus : le stockage en excès est facturé ; \
-                             l'éviction, elle, attend la limite configurée du dépôt";
+                             l'éviction pour faire de la place, elle, attend la limite \
+                             configurée du dépôt ; et, indépendamment de toute limite, toute \
+                             entrée non lue depuis plus de 7 jours est supprimée";
 
 /// Why a public repository's minutes gauge reads 0 %.
 ///
@@ -310,6 +334,34 @@ mod tests {
             line.contains("le stockage en excès est facturé"),
             "billing is stated unconditionally: {line}"
         );
+        // #37: the seven-day rule, stated in the interface at last — and
+        // stated as independent of any limit, which is the whole point.
+        // Without it the clause above reads as a universal claim about
+        // eviction, when it only governs eviction *to make room*.
+        assert!(
+            line.contains("7 jours"),
+            "the seven-day rule is not on the warning: {line}"
+        );
+        assert!(
+            line.contains("indépendamment de toute limite"),
+            "the seven-day rule is not stated as limit-independent: {line}"
+        );
+        assert!(
+            line.contains("l'éviction pour faire de la place"),
+            "the limit-bound eviction is not named as the make-room one: {line}"
+        );
+    }
+
+    /// #37, the other half of the arbitrage: the rule went on the
+    /// over-threshold warning precisely so the banner *at rest* would not
+    /// grow, and this pins that the quiet gauge stays silent about it. A
+    /// future rewording that moved the sentence up into `CACHE_CAVEAT`
+    /// would cost a row on every repository the tool ever draws — see
+    /// `the_cache_banner_stays_within_its_line_budget`, which counts them.
+    #[test]
+    fn the_quiet_cache_gauge_stays_silent_about_the_seven_day_rule() {
+        let line = prose(&cache_gauge_line(4_000_000_000, 60));
+        assert!(!line.contains("7 jours"), "got: {line}");
     }
 
     /// Review I5: the caveat rides on the banner at *every* usage, so a
@@ -319,6 +371,38 @@ mod tests {
     /// warned banner up by two at 47-51. Pinned here so the next rewording
     /// cannot grow it in silence.
     ///
+    /// **This is where #37's arbitrage is paid, and where its price is
+    /// recorded.** Adding GitHub's seven-day rule to `OVER_INCLUDED` grew
+    /// the *warned* banner from 5 rows to 7 at inner 58, and from 7 to 10 at
+    /// inner 38. The two quiet rows are the ones that matter and they did
+    /// not move: 2 and 3, exactly as before, because the rule went on the
+    /// line drawn only past the threshold rather than on the caveat drawn at
+    /// every usage. A future rewording that moves it up into `CACHE_CAVEAT`
+    /// shows up here immediately, as the quiet figures changing — which is
+    /// the whole reason those two cases are pinned beside the warned ones.
+    ///
+    /// **What those extra warned rows cost, measured.** A head part is
+    /// never cut, so a taller warned banner is not clipped: past a point
+    /// the whole cache gauge goes, warning included. At inner 38 — the
+    /// narrowest the column is drawn at, and what a 100-column terminal
+    /// gives it in the three-column layout — the warned head needs 13 rows
+    /// where it needed 10 (its name, the wrapped sizeless warning, and the
+    /// gauge itself), and the gauge that used to appear from a terminal
+    /// height of 17 now appears from 20: at heights 17, 18 and 19 the
+    /// warning no longer reaches the screen at all. At inner 58 (a
+    /// 60-column terminal) the same head went from 7 rows to 9, and the
+    /// gauge from height 13 to height 15: heights 13 and 14 lost it.
+    /// Recorded rather than reshaped — teaching `head_within` to prefer a
+    /// shortened warning over dropping the gauge is a design question, not
+    /// a wording one — because #37's price is only worth paying knowingly.
+    ///
+    /// The warned banner's extra rows are affordable because the head
+    /// yields whole parts rather than truncating any
+    /// (`views::repo::head_within`): on a frame too short for it, the cache
+    /// gauge goes entirely, warning included, and
+    /// `the_column_head_keeps_each_part_whole_or_drops_it_across_swept_heights`
+    /// is what proves it never half-goes.
+    ///
     /// 58 is the resources column's inner width at a 60-column terminal (one
     /// column, less the block's two borders); 38 is `repo::MIN_WIDTH` less
     /// its borders — the narrowest the column is ever drawn at.
@@ -326,9 +410,9 @@ mod tests {
     fn the_cache_banner_stays_within_its_line_budget() {
         for (used, width, rows, case) in [
             (4_000_000_000u64, 58u16, 2usize, "quiet, inner 58"),
-            (12_360_000_000, 58, 5, "warned, inner 58"),
+            (12_360_000_000, 58, 7, "warned, inner 58"),
             (4_000_000_000, 38, 3, "quiet, inner 38"),
-            (12_360_000_000, 38, 7, "warned, inner 38"),
+            (12_360_000_000, 38, 10, "warned, inner 38"),
         ] {
             assert_eq!(
                 cache_gauge_line(used, width).len(),
