@@ -14,13 +14,14 @@
   <p class="tagline">{{ section.extra.tagline }}</p>
   <p class="lede">{{ section.extra.lede }}</p>
   <p class="status">
-    <a class="status-pill" href="{{ section.extra.status_url }}">{{ section.extra.status }}</a>
+    <a class="status-pill" href="{{ section.extra.status_url | safe }}">{{ section.extra.status }}</a>
     <span class="status-note">{{ section.extra.status_note }}</span>
   </p>
   <div class="cta">
     <a class="btn btn-primary" href="#install">{{ section.extra.cta2 }}</a>
-    <a class="btn" href="{{ config.extra.repo_url }}">{{ section.extra.cta }}</a>
+    <a class="btn" href="{{ config.extra.repo_url | safe }}">{{ section.extra.cta }}</a>
   </div>
+  <p class="cta-tertiary"><a href="{{ config.extra.docs_url | safe }}">{{ section.extra.cta3 }}</a></p>
 </header>
 <main>{{ section.content | safe }}</main>
 {% endblock %}

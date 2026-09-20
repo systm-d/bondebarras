@@ -80,6 +80,9 @@ a { color: var(--brand); }
 .btn:hover { background: var(--brand-soft); }
 .btn-primary { background: var(--brand); color: #1a120d; }
 .btn-primary:hover { background: #e6875f; }
+.cta-tertiary { margin: 1rem 0 0; font-size: .9rem; }
+.cta-tertiary a { color: var(--muted); }
+.cta-tertiary a:hover { color: var(--brand); }
 
 /* ---------- Sections ---------- */
 main { max-width: 62rem; margin: 0 auto; padding: 0 1.25rem 1rem; }
@@ -99,76 +102,24 @@ section > h2 { font-size: 1.6rem; letter-spacing: -0.01em; margin: 0 0 .4rem; }
 .card h3 { margin: 0 0 .45rem; color: var(--brand); font-size: 1.05rem; }
 .card p { margin: 0; color: var(--muted); font-size: .95rem; }
 
-/* ---------- Flow diagram (GitHub orgs -> bondebarras -> you) ---------- */
-.flow-section { text-align: center; }
-.flow-title { font-size: 1.6rem; letter-spacing: -0.01em; margin: 0 0 .4rem; }
-.flow-lede { margin-left: auto; margin-right: auto; }
-.flow {
-  display: flex; flex-flow: row nowrap;
-  align-items: center; justify-content: center; gap: .8rem;
-  margin-top: 1.6rem; padding: 1.9rem 1.5rem;
-  background: var(--panel); border: 1px solid var(--line); border-radius: .9rem;
-}
-.flow-node {
-  display: flex; flex-direction: column; align-items: center; gap: .12rem;
-  flex: none; min-width: 11.5rem; padding: .8rem 1.2rem;
-  background: var(--panel-2); border: 1px solid var(--line); border-radius: .7rem;
-}
-.flow-name { font: 600 1rem/1.2 var(--mono); color: var(--fg); }
-.flow-sub { font: .74rem/1.2 var(--mono); color: var(--dim); }
-.flow-node.src .flow-name { color: var(--muted); }
-.flow-node.hub {
-  border-color: var(--brand);
-  background: linear-gradient(var(--brand-soft), var(--brand-soft)), var(--panel);
-  box-shadow: 0 0 0 3px var(--brand-soft);
-}
-.flow-node.hub .flow-name { color: var(--brand); }
-.flow-node.you { min-width: 7rem; }
-.flow-arrow { color: var(--brand); font-size: 1.2rem; line-height: 1; opacity: .75; flex: none; }
-.flow-chips {
-  display: flex; flex-wrap: wrap; justify-content: center; gap: .4rem;
-  flex: none; max-width: 15rem;
-}
+/* ---------- Chip rows: resource families, documentation links ---------- */
+.chips { display: flex; flex-wrap: wrap; gap: .45rem; margin: 0 0 1.1rem; }
 .chip {
   font: .76rem/1 var(--mono); color: var(--muted);
-  padding: .28rem .6rem; border: 1px solid var(--line);
+  padding: .34rem .68rem; border: 1px solid var(--line);
   border-radius: 999px; background: var(--panel-2);
 }
+a.chip { text-decoration: none; transition: color .15s, border-color .15s; }
+a.chip:hover { color: var(--brand); border-color: var(--brand); }
 
-/* ---------- Why bondebarras exists ---------- */
-.why-grid {
-  display: grid; gap: 1.6rem; align-items: start;
-  grid-template-columns: 1fr 1fr;
+/* ---------- Safety pledges ---------- */
+.pledges { margin: 0; padding: 0; list-style: none; }
+.pledges li {
+  position: relative; padding-left: 1.05rem; margin: .5rem 0;
+  color: var(--muted);
 }
-.why-text p { color: var(--muted); margin: 0 0 .9rem; }
-.why-text p:last-child { margin-bottom: 0; }
-.why-tree { margin: 0; align-self: start; }
-.cmds .cmt { color: var(--dim); }
-
-/* ---------- Missions ---------- */
-.missions .grid {
-  display: grid; gap: 1rem;
-  grid-template-columns: repeat(auto-fit, minmax(16.5rem, 1fr));
-}
-.mission {
-  background: var(--panel); border: 1px solid var(--line);
-  border-radius: .8rem; padding: 1.3rem 1.4rem;
-}
-.mission-glyph {
-  display: inline-flex; align-items: center; justify-content: center;
-  width: 2.1rem; height: 2.1rem; margin-bottom: .7rem;
-  font: 1.1rem/1 var(--mono); color: var(--brand);
-  background: var(--brand-soft); border-radius: .5rem;
-}
-.mission h3 { margin: 0 0 .2rem; color: var(--brand); font-size: 1.12rem; }
-.mission-line { margin: 0 0 .8rem; color: var(--fg); font-weight: 600; font-size: .96rem; }
-.mission ul { margin: 0; padding: 0; list-style: none; }
-.mission li {
-  position: relative; padding-left: 1.05rem; margin: .3rem 0;
-  color: var(--muted); font-size: .9rem;
-}
-.mission li::before {
-  content: "›"; position: absolute; left: 0; top: -.02em;
+.pledges li::before {
+  content: "\203A"; position: absolute; left: 0; top: -.02em;
   color: var(--brand); font-family: var(--mono);
 }
 .kbd {
@@ -176,6 +127,26 @@ section > h2 { font-size: 1.6rem; letter-spacing: -0.01em; margin: 0 0 .4rem; }
   background: var(--brand-soft); color: var(--brand);
   font: 600 .82em/1.4 var(--mono);
 }
+
+/* ---------- Platform / format table ---------- */
+.platforms {
+  width: 100%; border-collapse: collapse; margin: 1.1rem 0;
+  font: .86rem/1.5 var(--mono);
+}
+.platforms th, .platforms td {
+  text-align: left; padding: .5rem .7rem; border-bottom: 1px solid var(--line);
+}
+.platforms th {
+  color: var(--dim); font-weight: 600; font-size: .74rem; letter-spacing: .06em;
+}
+.platforms td { color: var(--muted); }
+.platforms code { color: var(--fg); }
+
+/* ---------- Supporting prose ---------- */
+.note { color: var(--muted); font-size: .92rem; margin: 1.1rem 0 0; max-width: 46rem; }
+.more { margin: 1rem 0 0; font-size: .92rem; }
+.more a { text-decoration: none; }
+.more a:hover { text-decoration: underline; }
 
 /* ---------- Screenshot figures ---------- */
 .shot { margin: 0 0 1.6rem; }
@@ -263,16 +234,6 @@ section > h2 { font-size: 1.6rem; letter-spacing: -0.01em; margin: 0 0 .4rem; }
   border-top: 1px solid var(--line); color: var(--muted); text-align: center; font-size: .9rem;
 }
 
-@media (max-width: 1000px) {
-  .flow { flex-direction: column; }
-  .flow-arrow { transform: rotate(90deg); }
-  .flow-node, .flow-chips { width: 100%; max-width: 22rem; }
-}
-
-@media (max-width: 760px) {
-  .why-grid { grid-template-columns: 1fr; }
-}
-
 @media (max-width: 560px) {
   .tui { min-width: 0; }
   .tui-panels { flex-direction: column; gap: .8rem; }
@@ -285,6 +246,8 @@ section > h2 { font-size: 1.6rem; letter-spacing: -0.01em; margin: 0 0 .4rem; }
      leaving them out would scroll the command listings sideways on the one
      screen size where the TUI mockup no longer does. */
   .row, .cmds .line, .cmds .out { white-space: pre-wrap; }
+  .platforms { font-size: .78rem; }
+  .platforms th, .platforms td { padding: .45rem .35rem; }
 }
 
 @media (prefers-reduced-motion: reduce) {
