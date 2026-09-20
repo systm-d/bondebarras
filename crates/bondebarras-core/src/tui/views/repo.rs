@@ -608,6 +608,26 @@ mod tests {
         }
     }
 
+    /// A workflow run, shaped exactly as `api::runs::list` builds one:
+    /// `size_bytes: 0`, because GitHub reports no size for a run at any
+    /// endpoint (#41). The fixture keeps that hardcoded zero rather than
+    /// inventing a size — one fed real bytes could not see the defect at
+    /// all.
+    fn run_resource() -> Resource {
+        Resource {
+            kind: ResourceKind::WorkflowRun,
+            id: 4471,
+            label: "CI #128".into(),
+            size_bytes: 0,
+            age_days: 12,
+            git_ref: Some("refs/heads/main".into()),
+            stale_pr: false,
+            protected: false,
+            branch_class: None,
+            safety: crate::safety::Safety::Keep,
+        }
+    }
+
     /// Builds its label through the real `scan::version_label`, from a
     /// full, unelided 71-character digest — the shape production actually
     /// produces. A fixture that instead hand-types an already-elided string
@@ -841,6 +861,43 @@ mod tests {
         let line = text(&row_spans(&package_resource(), false, LABEL_WIDTH));
         assert!(!line.contains("0 o") && !line.contains("0o"), "got: {line}");
         assert!(line.contains('—'), "got: {line}");
+    }
+
+    /// #41: a run shipped reading `0 o`. `api::runs::list` hardcodes a zero
+    /// GitHub never gave it, and `has_known_size` called that zero a known
+    /// size — so the column asserted "this run occupies nothing", when the
+    /// truth is that GitHub never says what it occupies.
+    #[test]
+    fn a_workflow_run_row_says_its_size_is_unknown_not_zero() {
+        let line = text(&row_spans(&run_resource(), false, LABEL_WIDTH));
+        assert!(!line.contains("0 o") && !line.contains("0o"), "got: {line}");
+        assert!(line.contains('—'), "got: {line}");
+    }
+
+    /// #41's consequence, proved on the real rect: a listing whose only
+    /// sizeless rows are workflow runs must carry the banner explaining the
+    /// `—` column, exactly as one holding package versions, branches or
+    /// tags does. Before #41 a run-only listing showed real-looking `0 o`
+    /// figures and no banner — nothing to explain; now a column of `—`
+    /// without it would read as "these runs are empty", the same
+    /// false-emptiness defect one level down from `row_spans`.
+    ///
+    /// Read back from the resources column's own `Rect` and swept across
+    /// widths, since the banner rides in the title where the whole title
+    /// fits and moves onto wrapped rows of its own where it does not
+    /// (`column_head`) — a version that only ever put it in the title would
+    /// pass at 200 and lose the banner entirely at 60.
+    #[test]
+    fn a_run_only_listing_carries_the_sizeless_banner_across_swept_widths() {
+        let mut app = App::new(vec![]);
+        app.resources = vec![run_resource()];
+        for width in 60..=200u16 {
+            let (_, column) = views::testing::focused_column(&mut app, Focus::Resources, width, 12);
+            assert!(
+                views::testing::unwrapped(&column).contains(SIZELESS_WARNING),
+                "a run-only listing explains its `—` nowhere at width {width}:\n{column}"
+            );
+        }
     }
 
     /// `package_resource`'s sibling for the other offered class: an orphaned

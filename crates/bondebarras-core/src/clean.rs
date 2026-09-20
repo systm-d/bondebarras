@@ -390,6 +390,38 @@ mod tests {
         assert!(s.to_lowercase().contains("inconnue"), "got: {s}");
     }
 
+    /// #41: a workflow run is sizeless too — `api::runs::list` hardcodes
+    /// `size_bytes: 0` for a family GitHub reports no size for anywhere — so
+    /// a plan of only runs totals 0 bytes and printed a bare "0 o", the same
+    /// "reads as nothing was selected" defect this branch already fixed for
+    /// package versions, branches and tags. Deleting those runs does free
+    /// space, through the logs and artifacts that go with them; it is the
+    /// amount that is unknown, not the effect.
+    #[test]
+    fn summary_says_size_is_unknown_for_an_all_workflow_run_plan() {
+        let p = plan(vec![
+            item(ResourceKind::WorkflowRun, 1, 0),
+            item(ResourceKind::WorkflowRun, 2, 0),
+        ]);
+        let s = p.summary();
+        assert!(!s.contains("0 o"), "got: {s}");
+        assert!(s.contains('2'), "got: {s}");
+        assert!(s.to_lowercase().contains("inconnue"), "got: {s}");
+    }
+
+    /// The `execute`-level counterpart of the test above: a purge of only
+    /// runs must report its count, not "0 o libérés". Keyed on
+    /// `deleted_sizeless`, which `execute` now increments for a run since
+    /// `has_known_size` is what it asks — a version keyed on `freed == 0`
+    /// could not tell this from a purge of two genuinely empty caches.
+    #[test]
+    fn finished_recap_says_the_count_for_a_purge_of_only_workflow_runs() {
+        let s = finished_recap(0, 12, 12);
+        assert!(!s.contains("0 o"), "got: {s}");
+        assert!(s.contains("12"), "got: {s}");
+        assert!(s.to_lowercase().contains("inconnue"), "got: {s}");
+    }
+
     #[test]
     fn finished_recap_says_the_count_when_bytes_are_meaningless() {
         // A purge of package versions frees 0 bytes by construction, even

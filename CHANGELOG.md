@@ -5,6 +5,29 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **A workflow run no longer reads `0 o`** (#41). `api::runs::list` hardcodes
+  `size_bytes: 0` because GitHub reports no size for a run anywhere — no size
+  field on the run object under any name, billable *milliseconds* (not bytes)
+  from `GET .../actions/runs/{id}/timing`, and a bare redirect from
+  `.../logs` — but `ResourceKind::WorkflowRun.has_known_size()` still
+  answered `true`, so the size column printed a confident `0 o` over a figure
+  nobody ever measured, and `model`'s own doc comment promised "a real
+  GitHub-reported number" for the family. The same fault as the cache ceiling
+  fixed in rc.2: an invented value presented as a measured one. The run now
+  joins the package version, the branch and the tag as a sizeless kind:
+  every screen shows `—` — the resources column and the headless `clean`
+  dry-run listing alike — a plan made only of runs summarises as `taille
+  inconnue` instead of `0 o`, and a purge of only runs reports its count
+  rather than `0 o libérés`. Deleting a run still frees space, since its logs
+  and artifacts go with it; GitHub simply never says how much, and the
+  artifacts it drops are listed and sized in their own right. Consequence
+  worth stating plainly: a listing holding runs — nearly every repository —
+  now carries the `⚠ GitHub n'expose pas la taille de certaines ressources`
+  banner that has always accompanied `—`.
 ## [1.0.0-rc.2] - 2026-09-17
 
 ### Fixed
