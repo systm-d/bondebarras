@@ -193,6 +193,14 @@ pub struct Resource {
 /// both go through this one function and `ResourceKind::has_known_size`, so
 /// the two cannot drift the way independent `if r.kind == PackageVersion`
 /// checks did before v0.4 added the other two sizeless kinds.
+///
+/// Four here, five there, and both counts are right: `has_known_size` also
+/// answers `false` for `Repository`, a different statement — archiving
+/// frees no byte *by design*, rather than freeing an amount nobody can
+/// read. An archive candidate is drawn in the repositories column and
+/// never becomes a resource row, so it reaches neither this function nor
+/// the headless listing; the summary it does reach says so in its own
+/// words (`clean::Plan::summary`, `Archivage · 0 o libéré, par nature`).
 pub fn size_display(r: &Resource) -> String {
     if r.kind.has_known_size() {
         human_size(r.size_bytes)

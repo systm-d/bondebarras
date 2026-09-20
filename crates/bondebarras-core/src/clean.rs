@@ -63,17 +63,28 @@ impl Plan {
     /// own doc comment). The summary says what the plan actually does
     /// instead of borrowing a deletion's uncertainty.
     ///
-    /// A plan made up entirely of sizeless deletions (package versions,
-    /// branches, tags) always totals 0 bytes — GitHub exposes no size for
-    /// any of them, `size_bytes` is hardcoded to 0 for every one (see
-    /// `scan::version_resources` and `scan::branch_resources`/`tag_resources`)
-    /// — but that is not the same thing as an empty plan. Printing "0 o"
-    /// would read as "nothing was selected"; the honest recap names the
-    /// count instead and says plainly that the size is unknown.
+    /// A plan made up entirely of sizeless deletions — whatever
+    /// `ResourceKind::has_known_size` answers `false` for — always totals 0
+    /// bytes, since `size_bytes` is hardcoded to `0` for every such kind.
+    /// That is not the same thing as an empty plan: printing "0 o" would
+    /// read as "nothing was selected", so the honest recap names the count
+    /// instead and says plainly that the size is unknown.
+    ///
+    /// The set is read off `has_known_size`, through `all_sizeless`, rather
+    /// than restated here: this comment used to list "package versions,
+    /// branches, tags" while the predicate had already gained a fourth
+    /// family, the workflow run (#41) — a list in a comment rots, a call
+    /// does not.
     pub fn summary(&self) -> String {
         if self.is_archive() {
             "Archivage · 0 o libéré, par nature".to_string()
-        } else if !self.items.is_empty() && self.items.iter().all(|i| !i.kind.has_known_size()) {
+        } else if all_sizeless(
+            self.items.len(),
+            self.items
+                .iter()
+                .filter(|i| !i.kind.has_known_size())
+                .count(),
+        ) {
             format!("{} élément(s) · taille inconnue", self.items.len())
         } else {
             format!(
@@ -85,13 +96,32 @@ impl Plan {
     }
 }
 
+/// Whether a set of `total` resources is sizeless through and through:
+/// `sizeless` of them are kinds `ResourceKind::has_known_size` answers
+/// `false` for, and that accounts for all of them.
+///
+/// The one rule behind every "the size is unknown" this crate prints —
+/// `Plan::summary`, `finished_recap`, and the resources column's own title
+/// (`tui::app::App::selection_size_display`). It is subtle in both
+/// directions, which is why it lives in one place: an empty set is *not*
+/// sizeless (nothing was selected, and "0 o" says exactly that), and a set
+/// holding one sized item still has real bytes to report, however partial.
+///
+/// Three call sites, one predicate: #41 was born of two of them disagreeing
+/// about whether a workflow run had a size.
+pub fn all_sizeless(total: usize, sizeless: usize) -> bool {
+    total > 0 && sizeless == total
+}
+
 /// The "N libérés" fragment of the post-purge recap, shared by the TUI's
 /// status line and the headless `clean` command so the wording never drifts
 /// between the two.
 ///
 /// `deleted_sizeless` — how many of `deleted` were a kind GitHub exposes no
-/// size for at all (`!ResourceKind::has_known_size`: a package version, a
-/// branch or a tag) — is what this needs to say something true: keying the
+/// size for at all (`!ResourceKind::has_known_size`, which is the list;
+/// spelling it out again here is how this comment came to name three
+/// families while the predicate counted four) — is what this needs to say
+/// something true: keying the
 /// decision on `freed == 0` alone, as an earlier version did, cannot tell
 /// "every deleted item's size is unknown" apart from "every deleted item was
 /// genuinely zero bytes" — two real, empty caches deleted would then read
@@ -104,7 +134,7 @@ impl Plan {
 /// nothing about the sizeless items in the mix. Making that case honest too
 /// is a separate concern, out of scope for this fix.
 pub fn finished_recap(freed: u64, deleted: usize, deleted_sizeless: usize) -> String {
-    if deleted > 0 && deleted_sizeless == deleted {
+    if all_sizeless(deleted, deleted_sizeless) {
         format!("{deleted} élément(s) supprimé(s) · taille inconnue")
     } else {
         format!("{} libérés", human_size(freed))
@@ -150,14 +180,15 @@ pub enum Progress {
         freed: u64,
         failures: usize,
         /// How many items were actually deleted. `freed` alone cannot carry
-        /// this: a purge of package versions frees 0 bytes by construction
-        /// (GitHub exposes no size for that family) even when dozens were
+        /// this: a purge of sizeless items frees 0 bytes by construction
+        /// (GitHub exposes no size for their kinds) even when dozens were
         /// deleted, so the recap needs the count to say something true.
         deleted: usize,
-        /// How many of `deleted` were package versions — the resource kind
-        /// GitHub exposes no size for. `finished_recap` needs this, not
-        /// `deleted` alone, to tell "every deletion's size is unknown" apart
-        /// from "every deletion was a real, empty resource."
+        /// How many of `deleted` were a kind `ResourceKind::has_known_size`
+        /// answers `false` for — the predicate is the list, so this comment
+        /// does not copy it. `finished_recap` needs this, not `deleted`
+        /// alone, to tell "every deletion's size is unknown" apart from
+        /// "every deletion was a real, empty resource."
         deleted_sizeless: usize,
         /// `Some(repo)` when the plan that just finished was an archive plan
         /// (`Plan::is_archive`) — the repository it archived. Computed once,
