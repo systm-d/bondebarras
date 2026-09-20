@@ -43,15 +43,36 @@ pub struct Asset {
 }
 
 impl ReleaseInfo {
-    /// The release asset matching a channel's package suffix, if any.
+    /// The release asset matching a channel's package suffix *and* the
+    /// platform it will run on, if any.
+    ///
+    /// `target` — an `<os>-<arch>` token, see [`current_target`] — is a
+    /// parameter rather than something read from `std::env::consts` right
+    /// here, and that is the whole of the fix for #49. The two *Unix*
+    /// archives a release publishes both end in `.tar.gz` — Windows ships a
+    /// `.zip` and a bare `.exe`, which this suffix never matches — so
+    /// matching on the suffix alone returned whichever of those two GitHub
+    /// happened to list first: a macOS user was offered
+    /// `bondebarras-linux-x86_64.tar.gz`, a download that passes its
+    /// checksum and then cannot execute. Injecting the target is also
+    /// what makes that testable — CI builds on five platforms, so a test
+    /// keyed on the host's own target would assert something different on
+    /// each one.
     ///
     /// `None` is a named, testable outcome — not a panic — for a channel
     /// this release genuinely ships nothing for (Cargo never publishes a
-    /// package asset; an incomplete release might be missing one platform's
-    /// build).
-    pub fn asset_for(&self, channel: InstallChannel) -> Option<&Asset> {
+    /// package asset; a release can be missing one platform's build). The
+    /// caller refuses on it, and says which platform it looked for, rather
+    /// than falling back on another one's archive — see
+    /// [`no_asset_for_target`] and `commands::update::apply`.
+    pub fn asset_for(&self, channel: InstallChannel, target: &str) -> Option<&Asset> {
         let suffix = channel.package_suffix()?;
-        self.assets.iter().find(|a| a.name.ends_with(suffix))
+        let wanted = if channel.asset_name_carries_target() {
+            format!("-{target}{suffix}")
+        } else {
+            suffix.to_string()
+        };
+        self.assets.iter().find(|a| a.name.ends_with(&wanted))
     }
 
     /// The published `.sha256` companion for an asset, if one was uploaded.
@@ -251,6 +272,63 @@ impl InstallChannel {
             | InstallChannel::Unknown => None,
         }
     }
+
+    /// Whether bondebarras downloads a release asset for this channel at
+    /// all. The four hands-off channels never do — their update is a
+    /// command the user runs, which [`install_plan`] spells out — so "no
+    /// asset matched" means something else entirely for them than for the
+    /// three that do, and must not borrow the same refusal.
+    pub fn downloads_an_asset(self) -> bool {
+        self.package_suffix().is_some()
+    }
+
+    /// Whether this channel's release assets carry the `<os>-<arch>` token
+    /// in their filename. The `binaries` matrix in
+    /// `.github/workflows/release.yml` packages each build as
+    /// `bondebarras-<matrix.name>.tar.gz` (`.zip`/`.exe` on Windows), so a
+    /// `.tar.gz` is only ever *this* machine's archive when that token
+    /// matches [`current_target`].
+    ///
+    /// The `.deb` and `.rpm` are the exception, deliberately: their names
+    /// are produced by `cargo-deb` and `cargo-generate-rpm`
+    /// (`bondebarras_1.0.0-1_amd64.deb`, `bondebarras-1.0.0-1.x86_64.rpm`),
+    /// in each tool's own architecture vocabulary rather than
+    /// `matrix.name`'s, and the workflow builds exactly one of each, on
+    /// `ubuntu-latest`. There is nothing to disambiguate, and no naming rule
+    /// in the workflow to key on if there ever were: publishing an arm64
+    /// `.deb` would mean flipping this to `true` *and* mapping
+    /// `x86_64`/`aarch64` onto `amd64`/`arm64` first.
+    ///
+    /// Matched exhaustively, like `model::risk_tier`: a channel added
+    /// without an answer here does not compile.
+    fn asset_name_carries_target(self) -> bool {
+        match self {
+            InstallChannel::Tarball => true,
+            InstallChannel::Deb | InstallChannel::Rpm => false,
+            InstallChannel::Pacman
+            | InstallChannel::Cargo
+            | InstallChannel::Homebrew
+            | InstallChannel::Nix
+            | InstallChannel::Unknown => false,
+        }
+    }
+}
+
+/// The `<os>-<arch>` token the release workflow stamps into every archive
+/// name — `matrix.name` in `.github/workflows/release.yml`, which builds
+/// `linux-x86_64`, `windows-x86_64` and `macos-aarch64`, then packages each
+/// as `bondebarras-<name>.tar.gz` / `.zip` / `.exe`.
+///
+/// That workflow spells both halves exactly as Rust spells them (`macos`,
+/// not `darwin`; `x86_64`, not `amd64`; `aarch64`, not `arm64`), so the
+/// correspondence needs no lookup table: `std::env::consts::OS` and
+/// `std::env::consts::ARCH` *are* the two halves, resolved for the target
+/// this binary was compiled for. A platform the workflow does not build —
+/// a Linux aarch64 machine, say — composes a token no asset carries, and
+/// [`ReleaseInfo::asset_for`] then matches nothing, which is the honest
+/// answer rather than a usable-looking archive for another machine.
+pub fn current_target() -> String {
+    format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH)
 }
 
 /// Best-effort detection of how the running binary was installed.
@@ -390,6 +468,59 @@ pub fn install_plan(channel: InstallChannel, package: &Path) -> InstallPlan {
     }
 }
 
+/// What to tell a user whose platform this release publishes nothing for.
+///
+/// Names the platform that was detected instead of saying "votre
+/// plateforme": it is the one fact the user cannot check for themselves,
+/// and the one that explains an empty-handed `update` standing in front of
+/// a release page visibly full of archives. Refusing here is the point of
+/// #49 — a download that verifies its checksum and then cannot execute is a
+/// worse outcome than a refusal that says why.
+pub fn no_asset_for_target(channel: InstallChannel, target: &str, html_url: &str) -> String {
+    // `parse_release` defaults `html_url` to empty when GitHub's payload
+    // omits it; the message must still point somewhere.
+    let page = if html_url.is_empty() {
+        format!("https://github.com/{REPO}/releases/latest")
+    } else {
+        html_url.to_string()
+    };
+    // Naming the detected platform is only honest when the platform is what
+    // ruled the asset out. A `.deb` or an `.rpm` carries no target in its
+    // name (`asset_name_carries_target`), so the filter never looked at the
+    // platform for those: landing here means the release published no such
+    // package at all. Blaming the running platform would accuse it of a gap
+    // it did not cause, and calling the missing file an "archive" would name
+    // the wrong thing on top of that — a Fedora user reading "aucune archive
+    // pour votre plateforme" would go hunting for a portability problem that
+    // does not exist.
+    // "aucune archive pour elle" would be false on Windows, where a release
+    // publishes a `.zip` and a bare `.exe` — but this branch cannot reach a
+    // Windows user: `detect_channel_for` recognises no Windows install path,
+    // so the channel is `Unknown` there and `downloads_an_asset` stops the
+    // caller two steps earlier. `asset_for_refuses_when_no_archive_matches_
+    // the_platform` pins `Tarball + WINDOWS -> None` at the `asset_for`
+    // level, which is a different claim: no `.tar.gz` for Windows, true.
+    // Serving those two Windows assets is #55; if it lands, this sentence
+    // has to be revisited before the channel becomes reachable.
+    if channel.asset_name_carries_target() {
+        format!(
+            "Plateforme détectée : {target}. Cette release ne publie aucune archive pour elle — \
+             rien n'est téléchargé, une archive d'une autre plateforme ne s'exécuterait pas chez \
+             vous. Consultez {page}"
+        )
+    } else {
+        // `downloads_an_asset` is what gates the caller, and every channel
+        // it lets through has a suffix — but the fallback keeps the sentence
+        // grammatical rather than trusting that from a distance.
+        let kind = channel.package_suffix().unwrap_or("installable");
+        format!(
+            "Cette release ne publie aucun paquet {kind} — rien n'est téléchargé : bondebarras \
+             ne substitue pas un autre format à celui par lequel il a été installé. Consultez \
+             {page}"
+        )
+    }
+}
+
 // --- Checksum ----------------------------------------------------------------
 
 /// Compute the lowercase hex SHA-256 of a file.
@@ -489,6 +620,12 @@ mod tests {
     use super::*;
     use std::path::Path;
 
+    // A real release's asset list: one `.deb`, one `.rpm`, and one archive
+    // per platform the `binaries` matrix builds — each with its `.sha256`
+    // sidecar. The macOS archive is listed *before* the Linux one on
+    // purpose: picking the first `.tar.gz`, which is what `asset_for` used
+    // to do (#49), then hands a Linux user the macOS build, so a test can
+    // fail on the ordering alone.
     const SAMPLE: &str = r#"{
         "tag_name": "v0.6.0",
         "html_url": "https://github.com/systm-d/bondebarras/releases/tag/v0.6.0",
@@ -496,17 +633,25 @@ mod tests {
         "assets": [
             {"name": "bondebarras_0.6.0-1_amd64.deb", "browser_download_url": "https://example/deb", "size": 10},
             {"name": "bondebarras-0.6.0-1.x86_64.rpm", "browser_download_url": "https://example/rpm", "size": 20},
+            {"name": "bondebarras-macos-aarch64.tar.gz", "browser_download_url": "https://example/mac-tgz", "size": 25},
+            {"name": "bondebarras-macos-aarch64.tar.gz.sha256", "browser_download_url": "https://example/mac-tgz.sha256", "size": 1},
             {"name": "bondebarras-linux-x86_64.tar.gz", "browser_download_url": "https://example/tgz", "size": 30},
             {"name": "bondebarras-linux-x86_64.tar.gz.sha256", "browser_download_url": "https://example/tgz.sha256", "size": 1}
         ]
     }"#;
+
+    // The three `matrix.name` values in `.github/workflows/release.yml`,
+    // spelled as it spells them — and as `current_target` composes them.
+    const LINUX: &str = "linux-x86_64";
+    const MACOS: &str = "macos-aarch64";
+    const WINDOWS: &str = "windows-x86_64";
 
     #[test]
     fn parse_release_extracts_version_and_assets() {
         let r = parse_release(SAMPLE).unwrap();
         assert_eq!(r.tag, "v0.6.0");
         assert_eq!(r.version, "0.6.0");
-        assert_eq!(r.assets.len(), 4);
+        assert_eq!(r.assets.len(), 6);
     }
 
     // The test that matters most: this machine's real state today is 0.5.0
@@ -557,30 +702,84 @@ mod tests {
     }
 
     #[test]
-    fn asset_for_matches_by_suffix() {
+    fn asset_for_matches_the_suffix_and_the_platform() {
         let r = parse_release(SAMPLE).unwrap();
         assert_eq!(
-            r.asset_for(InstallChannel::Deb).unwrap().name,
+            r.asset_for(InstallChannel::Deb, LINUX).unwrap().name,
             "bondebarras_0.6.0-1_amd64.deb"
         );
         assert_eq!(
-            r.asset_for(InstallChannel::Rpm).unwrap().name,
+            r.asset_for(InstallChannel::Rpm, LINUX).unwrap().name,
             "bondebarras-0.6.0-1.x86_64.rpm"
         );
         assert_eq!(
-            r.asset_for(InstallChannel::Tarball).unwrap().name,
+            r.asset_for(InstallChannel::Tarball, LINUX).unwrap().name,
             "bondebarras-linux-x86_64.tar.gz"
         );
         // Named outcome, not a panic: a release genuinely missing this
         // platform's asset (Cargo never ships one) must resolve to `None`,
         // distinguishable from "the release is unparsable".
-        assert!(r.asset_for(InstallChannel::Cargo).is_none());
+        assert!(r.asset_for(InstallChannel::Cargo, LINUX).is_none());
+    }
+
+    // The regression test for #49. Both archives end in `.tar.gz`, so the
+    // suffix alone cannot tell them apart, and taking the first match — what
+    // `asset_for` used to do — offers a Linux user the macOS build: a
+    // download that passes its checksum and then refuses to execute. The
+    // target is a parameter precisely so this can name a platform other than
+    // the one CI happens to run on, of which there are five.
+    #[test]
+    fn asset_for_picks_the_archive_of_the_running_platform_not_the_first_listed() {
+        let r = parse_release(SAMPLE).unwrap();
+        for (target, expected) in [
+            (LINUX, "bondebarras-linux-x86_64.tar.gz"),
+            (MACOS, "bondebarras-macos-aarch64.tar.gz"),
+        ] {
+            assert_eq!(
+                r.asset_for(InstallChannel::Tarball, target).unwrap().name,
+                expected,
+                "target {target}"
+            );
+        }
+    }
+
+    // The other half of the fix: when nothing matches, refuse. A `None`,
+    // not a panic and not a substitute — this sample publishes no Windows
+    // archive, and an `aarch64` Linux machine is a platform the workflow
+    // does not build at all.
+    #[test]
+    fn asset_for_refuses_when_no_archive_matches_the_platform() {
+        let r = parse_release(SAMPLE).unwrap();
+        assert!(r.asset_for(InstallChannel::Tarball, WINDOWS).is_none());
+        assert!(
+            r.asset_for(InstallChannel::Tarball, "linux-aarch64")
+                .is_none()
+        );
+    }
+
+    // `.deb` and `.rpm` names carry no `<os>-<arch>` token (see
+    // `asset_name_carries_target`), so the platform filter must not reach
+    // them: one of each is published, and filtering on a token their names
+    // never contain would refuse every single one.
+    #[test]
+    fn deb_and_rpm_are_not_filtered_on_the_platform_token() {
+        let r = parse_release(SAMPLE).unwrap();
+        for target in [LINUX, MACOS, WINDOWS] {
+            assert!(
+                r.asset_for(InstallChannel::Deb, target).is_some(),
+                "deb, target {target}"
+            );
+            assert!(
+                r.asset_for(InstallChannel::Rpm, target).is_some(),
+                "rpm, target {target}"
+            );
+        }
     }
 
     #[test]
     fn deb_asset_is_not_its_own_sha256_sidecar() {
         let r = parse_release(SAMPLE).unwrap();
-        let tgz = r.asset_for(InstallChannel::Tarball).unwrap();
+        let tgz = r.asset_for(InstallChannel::Tarball, LINUX).unwrap();
         assert!(!tgz.name.ends_with(".sha256"));
         assert_eq!(
             r.checksum_for(tgz).unwrap().name,
@@ -588,11 +787,107 @@ mod tests {
         );
     }
 
+    // The sidecar follows the archive by full name, so it inherits the
+    // platform fix rather than needing its own: picking the right `.tar.gz`
+    // would be undone by checking it against the other platform's digest,
+    // which fails closed (`Integrity::Mismatch`) and installs nothing.
+    #[test]
+    fn the_checksum_follows_the_platform_of_its_own_archive() {
+        let r = parse_release(SAMPLE).unwrap();
+        // Keyed on LINUX, not MACOS: `SAMPLE` lists the macOS archive
+        // first, so a version of `asset_for` that took the first `.tar.gz`
+        // would answer this correctly for MACOS and the test would pass
+        // against the very defect it illustrates (#49, review finding).
+        let linux = r.asset_for(InstallChannel::Tarball, LINUX).unwrap();
+        assert_eq!(
+            r.checksum_for(linux).unwrap().name,
+            "bondebarras-linux-x86_64.tar.gz.sha256"
+        );
+    }
+
     #[test]
     fn checksum_for_is_none_when_no_sidecar_was_published() {
         let r = parse_release(SAMPLE).unwrap();
-        let deb = r.asset_for(InstallChannel::Deb).unwrap();
+        let deb = r.asset_for(InstallChannel::Deb, LINUX).unwrap();
         assert!(r.checksum_for(deb).is_none());
+    }
+
+    // Whichever of the five CI platforms this runs on, the token must be
+    // spelled the way `release.yml` spells its `matrix.name` — that identity
+    // is the entire mapping, and the reason no lookup table exists.
+    #[test]
+    fn current_target_spells_the_platform_as_the_release_workflow_does() {
+        let t = current_target();
+        if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+            assert_eq!(t, LINUX);
+        } else if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+            assert_eq!(t, MACOS);
+        } else if cfg!(all(target_os = "windows", target_arch = "x86_64")) {
+            assert_eq!(t, WINDOWS);
+        } else {
+            // A host the workflow builds nothing for still composes an
+            // `os-arch` token; it simply matches no published archive.
+            assert!(t.contains('-'), "expected an os-arch token, got {t}");
+        }
+    }
+
+    // Only the three downloading channels can be told "nothing for your
+    // platform"; the other five never download anything, and get their own
+    // install plan instead — `commands::update::apply` branches on this.
+    #[test]
+    fn only_the_downloading_channels_ever_claim_an_asset() {
+        for channel in [
+            InstallChannel::Deb,
+            InstallChannel::Rpm,
+            InstallChannel::Tarball,
+        ] {
+            assert!(channel.downloads_an_asset(), "{channel:?}");
+        }
+        for channel in [
+            InstallChannel::Pacman,
+            InstallChannel::Homebrew,
+            InstallChannel::Nix,
+            InstallChannel::Cargo,
+            InstallChannel::Unknown,
+        ] {
+            assert!(!channel.downloads_an_asset(), "{channel:?}");
+        }
+    }
+
+    // The refusal names the platform it detected: "aucun paquet pour votre
+    // plateforme" leaves the user guessing which platform bondebarras thinks
+    // they are on, and that guess is exactly what was wrong (#49).
+    #[test]
+    fn the_refusal_message_names_the_detected_platform() {
+        let msg = no_asset_for_target(InstallChannel::Tarball, MACOS, "https://example/release");
+        assert!(msg.contains(MACOS), "{msg}");
+        assert!(msg.contains("https://example/release"), "{msg}");
+    }
+
+    // `html_url` is empty whenever GitHub's payload omitted it
+    // (`parse_release` defaults it), and the message must still point
+    // somewhere rather than trail off after "Consultez ".
+    #[test]
+    fn the_refusal_message_falls_back_on_the_releases_page() {
+        let msg = no_asset_for_target(InstallChannel::Tarball, MACOS, "");
+        assert!(
+            msg.contains("github.com/systm-d/bondebarras/releases/latest"),
+            "{msg}"
+        );
+    }
+
+    // A `.deb` or `.rpm` name carries no target, so the platform filter
+    // never ruled it out: the refusal must not pin the gap on the platform,
+    // nor call a missing package an "archive".
+    #[test]
+    fn the_refusal_blames_the_release_not_the_platform_for_a_package() {
+        for (channel, kind) in [(InstallChannel::Deb, ".deb"), (InstallChannel::Rpm, ".rpm")] {
+            let msg = no_asset_for_target(channel, LINUX, "https://example/release");
+            assert!(msg.contains(kind), "{msg}");
+            assert!(!msg.contains("Plateforme détectée"), "{msg}");
+            assert!(!msg.contains("archive"), "{msg}");
+            assert!(msg.contains("https://example/release"), "{msg}");
+        }
     }
 
     #[test]

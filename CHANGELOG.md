@@ -9,6 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`update` no longer offers another platform's archive** (#49).
+  `ReleaseInfo::asset_for` matched a release asset on the install channel's
+  suffix alone, and a release publishes two `.tar.gz` — `linux-x86_64` and
+  `macos-aarch64`. Whichever GitHub listed first won, so a macOS user on a
+  manual install could be handed the Linux archive: a download that passes
+  its checksum and then cannot execute. The asset is now filtered on the
+  running target as well, spelled exactly as `release.yml` spells it
+  (`linux-x86_64`, `macos-aarch64`, `windows-x86_64`) — the workflow already
+  names its targets the way Rust does, so `std::env::consts` composes the
+  token with no translation table to drift. When nothing matches,
+  `update` **refuses and says so** rather than falling back on another
+  build: naming the detected platform is the one fact the user cannot check
+  for themselves in front of a release page visibly full of archives. The
+  refusal is worded per channel — a `.deb` or `.rpm` carries no target in
+  its name, so for those it says the release publishes no such package,
+  instead of accusing the platform of a gap it did not cause. Injecting the
+  target also makes the rule testable: CI builds on five platforms, and a
+  test keyed on the host's own target would assert something different on
+  each.
 - **A workflow run no longer reads `0 o`** (#41). `api::runs::list` hardcodes
   `size_bytes: 0` because GitHub reports no size for a run anywhere — no size
   field on the run object under any name, billable *milliseconds* (not bytes)
