@@ -227,52 +227,132 @@ jobs:
           prerelease: ${{ contains(github.ref_name, '-') }}
 
   # ---------------------------------------------------------------------------
-  # Homebrew (macOS) : rend Formula/bondebarras.rb sur la branche par défaut à
-  # partir du gabarit packaging/homebrew/bondebarras.rb (source de vérité unique,
-  # même sed que le rendu de l'asset de release ci-dessus). Installation
-  # côté utilisateur :
+  # Homebrew (macOS) : ce dépôt est son propre tap. Installation côté
+  # utilisateur :
   #   brew tap systm-d/bondebarras https://github.com/systm-d/bondebarras
   #   brew install bondebarras
+  # `brew` lit donc Formula/bondebarras.rb sur la branche par défaut de ce
+  # dépôt-ci — laquelle n'accepte aucune poussée directe (règle « main
+  # protégée », sans acteur de dérogation). Le job rend la formule à partir du
+  # gabarit packaging/homebrew/bondebarras.rb (source de vérité unique, même
+  # sed que le rendu de l'asset de release ci-dessus) et l'ouvre en pull
+  # request : une release qui part de travers propose une modification
+  # relisible, au lieu d'écrire sans relecture ni recours dans le fichier que
+  # `brew install` sert.
   # ---------------------------------------------------------------------------
   homebrew:
-    name: Mettre à jour la formule Homebrew
+    name: Proposer la mise à jour de la formule Homebrew
     needs: release
     runs-on: ubuntu-latest
     # Jamais sur une préversion (même critère que la release : un `-` dans le
-    # tag) : commiter une release candidate dans Formula/ la servirait comme
-    # version stable à tout `brew install bondebarras`.
+    # tag) : proposer une release candidate dans Formula/ la servirait, une
+    # fois la pull request fusionnée, comme version stable à tout
+    # `brew install bondebarras`.
     if: startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-')
+    # Le tap étant ce dépôt-ci, le GITHUB_TOKEN du job suffit : aucun jeton
+    # personnel à créer ni à faire tourner. `contents: write` pousse la
+    # branche, `pull-requests: write` ouvre la pull request — les permissions
+    # par défaut du dépôt étant en lecture seule, ce bloc est ce qui les
+    # accorde.
     permissions:
       contents: write
+      pull-requests: write
     steps:
       - uses: actions/checkout@v7
         with:
           ref: main
           fetch-depth: 0
 
-      - name: Mettre à jour la formule
+      - name: Ouvrir la pull request de mise à jour de la formule
         env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
           TAG: ${{ github.ref_name }}
         run: |
+          set -euo pipefail
+
           if [ ! -f packaging/homebrew/bondebarras.rb ]; then
             echo "packaging/homebrew/bondebarras.rb absent sur main (branche pas encore mergée) — étape ignorée."
             exit 0
           fi
+
           version="${TAG#v}"
           url="https://github.com/${GH_REPO}/archive/refs/tags/${TAG}.tar.gz"
           sha=$(curl -fsSL "$url" | sha256sum | cut -d' ' -f1)
+
           mkdir -p Formula
           sed \
             -e "s|url \".*\"|url \"${url}\"|" \
             -e "s|sha256 \"[0-9a-f]*\"|sha256 \"${sha}\"|" \
             -e "/# Placeholder: release.yml/d" \
             packaging/homebrew/bondebarras.rb > Formula/bondebarras.rb
+
+          # `git status` plutôt que `git diff` : aujourd'hui Formula/ n'existe
+          # pas sur main (#21), la formule rendue y est donc un fichier non
+          # suivi — invisible pour `git diff`, qui conclurait à tort « déjà à
+          # jour » et ne proposerait jamais la première formule.
+          if [ -z "$(git status --porcelain -- Formula/bondebarras.rb)" ]; then
+            echo "Formule identique à celle de main — aucune pull request à ouvrir."
+            exit 0
+          fi
+
+          # Une branche par tag, jamais une branche fixe : si une v1.0.1 sort
+          # avant que la pull request de la v1.0.0 soit fusionnée, les deux
+          # doivent coexister. Sur une branche partagée, la seconde release
+          # réécrirait la première — y compris la pull request restée ouverte,
+          # dont le contenu changerait sous les yeux du relecteur.
+          branch="homebrew/${TAG}"
+
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+          git switch -c "$branch"
           git add Formula/bondebarras.rb
-          git commit -m "homebrew: bondebarras ${version}" || { echo "Formule déjà à jour"; exit 0; }
-          git push
+          git commit -m "homebrew: bondebarras ${version}"
+          # --force : la branche porte le tag, et un tag est immuable. Relancer
+          # la même release y réécrit donc un contenu identique, jamais celui
+          # d'une autre version.
+          git push --force origin "$branch"
+
+          body="${RUNNER_TEMP}/homebrew-pr-body.md"
+          cat > "$body" <<EOF
+          Formule rendue pour le tag \`${TAG}\` à partir de
+          \`packaging/homebrew/bondebarras.rb\`, avec l'URL et la somme sha256 de
+          l'archive source de ce tag.
+
+          | | |
+          |---|---|
+          | version | \`${version}\` |
+          | archive | ${url} |
+          | sha256 | \`${sha}\` |
+
+          Ouverte par le job \`homebrew\` de \`.github/workflows/release.yml\`. La
+          fusion reste une décision humaine : c'est ce fichier que
+          \`brew install bondebarras\` sert.
+
+          **Les contrôles requis ne démarreront pas seuls.** GitHub ne déclenche
+          aucun workflow sur une pull request ouverte avec \`GITHUB_TOKEN\`. Pour
+          les obtenir : fermer puis rouvrir cette pull request, ou lancer le
+          workflow \`CI\` à la main sur la branche \`${branch}\`.
+          EOF
+
+          # Relance d'une release déjà passée : la pull request existe déjà, on
+          # la signale au lieu de laisser `gh pr create` échouer dessus.
+          existing=$(gh pr list --head "$branch" --state open --json url --jq '.[0].url // empty')
+          if [ -n "$existing" ]; then
+            echo "Pull request déjà ouverte pour ${branch} : ${existing}"
+            exit 0
+          fi
+
+          # Échec bruyant assumé : la release elle-même est déjà publiée (ce job
+          # en dépend), il n'y a donc rien à rétracter ici. Sortir en succès
+          # laisserait seulement invisible le fait que le tap n'a pas bougé — et
+          # `brew install` continuerait à servir la version précédente sans que
+          # personne l'apprenne.
+          gh pr create \
+            --base main \
+            --head "$branch" \
+            --title "homebrew : bondebarras ${version}" \
+            --body-file "$body"
 
   # ---------------------------------------------------------------------------
   # winget (Windows) : génère les manifestes pointant sur le .exe autonome.
