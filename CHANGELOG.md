@@ -22,7 +22,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   every screen shows `—` — the resources column and the headless `clean`
   dry-run listing alike — a plan made only of runs summarises as `taille
   inconnue` instead of `0 o`, and a purge of only runs reports its count
-  rather than `0 o libérés`. Deleting a run still frees space, since its logs
+  rather than `0 o libérés`. The resources column's own title follows the same
+  rule: ticking runs alone reads `cochés —` rather than summing their
+  placeholder zeros into a `cochés 0 o` that stood above a column of `—` and
+  contradicted the confirmation modal on the same screen; a selection holding
+  one sized row still shows the bytes it does know.
+  Deleting a run still frees space, since its logs
   and artifacts go with it; GitHub simply never says how much, and the
   artifacts it drops are listed and sized in their own right. Consequence
   worth stating plainly: a listing holding runs — nearly every repository —
@@ -54,8 +59,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   against `.github/workflows/ci.yml` on the way past, since the workflow is
   what actually gates a merge: `CONVENTIONS.md` now records that CI runs
   `cargo test --workspace --locked` across a five-target matrix, that the
-  release build lives in `release.yml` rather than `ci.yml`, and that CI also
-  runs `cargo audit` and `cargo deny check`.
+  release build lives in `release.yml` rather than `ci.yml` — per target and
+  per binary, so the workspace-wide release build stays a local-only check —
+  and that CI also runs `cargo audit` and `cargo deny check`.
+  `.github/PULL_REQUEST_TEMPLATE.md` held the third copy, and the most harmful
+  one since it is ticked at every PR: its clippy box also lacked
+  `--all-targets`. It now links to the same section instead of restating two
+  commands.
 
 ## [1.0.0-rc.2] - 2026-09-17
 
