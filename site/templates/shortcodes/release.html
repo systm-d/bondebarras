@@ -1,0 +1,11 @@
+{#- The release this page announces, spelled as its git tag.
+
+    The version is declared once per language, in that page's own front
+    matter (`extra.release`), and never repeated in the prose. It stays in
+    the content file rather than moving to `config.toml` because
+    `crates/bondebarras/tests/cli.rs`'s
+    `every_document_that_names_a_release_names_this_one` reads these two
+    files and fails when they do not name the current version — the guard
+    that caught the half-applied rc.1 → rc.2 pass. One mention per page is
+    the floor that keeps that guard working. -#}
+{%- if section -%}v{{ section.extra.release }}{%- endif -%}

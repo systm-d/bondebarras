@@ -6,8 +6,12 @@ lede = "See what GitHub accumulates. Clean it up without surprises — bondebarr
 cta = "View on GitHub"
 cta2 = "Install"
 cta3 = "Read the documentation"
-status = "v1.0.0-rc.3 — pre-release"
-status_url = "https://github.com/systm-d/bondebarras/releases/tag/v1.0.0-rc.3"
+# The one place this page spells the release. The status pill, its
+# link and the install section all derive from it — see
+# templates/shortcodes/release.html for why it lives here rather
+# than in config.toml.
+release = "1.0.0-rc.3"
+status_label = "pre-release"
 status_note = "No stable release yet: feature-complete and safe to run — nothing is ever deleted without a confirmation — but the CLI flags and the JSON schema may still change before v1.0.0, and Homebrew, the AUR and winget are not published."
 +++
 
@@ -94,8 +98,8 @@ status_note = "No stable release yet: feature-complete and safe to run — nothi
 <section id="install" class="install">
 <h2>Install</h2>
 <p class="section-lede">Reads and writes only the GitHub API — no account of its own, no telemetry, no cloud storage.</p>
-<h3>Available now — v1.0.0-rc.3</h3>
-<p>Binaries and packages are attached to <a href="https://github.com/systm-d/bondebarras/releases/tag/v1.0.0-rc.3">v1.0.0-rc.3</a>, each with its own <code>.sha256</code> sidecar. Download the one for your platform, then follow the installation guide.</p>
+<h3>Available now — {{ release() }}</h3>
+<p>Binaries and packages are attached to {{ release_link() }}, each with its own <code>.sha256</code> sidecar. Download the one for your platform, then follow the installation guide.</p>
 <table class="platforms">
 <thead><tr><th>Platform</th><th>Architecture</th><th>Format</th></tr></thead>
 <tbody>

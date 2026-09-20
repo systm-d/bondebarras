@@ -6,8 +6,12 @@ lede = "Voyez ce que GitHub accumule. Nettoyez sans mauvaise surprise — bondeb
 cta = "Voir sur GitHub"
 cta2 = "Installer"
 cta3 = "Lire la documentation"
-status = "v1.0.0-rc.3 — préversion"
-status_url = "https://github.com/systm-d/bondebarras/releases/tag/v1.0.0-rc.3"
+# The one place this page spells the release. The status pill, its
+# link and the install section all derive from it — see
+# templates/shortcodes/release.html for why it lives here rather
+# than in config.toml.
+release = "1.0.0-rc.3"
+status_label = "préversion"
 status_note = "Pas encore de version stable : complet et sûr à l'usage — rien n'est jamais supprimé sans confirmation — mais les drapeaux de la CLI et le schéma JSON peuvent encore changer avant la v1.0.0, et Homebrew, l'AUR et winget ne sont pas publiés."
 +++
 
@@ -94,8 +98,8 @@ status_note = "Pas encore de version stable : complet et sûr à l'usage — rie
 <section id="install" class="install">
 <h2>Installation</h2>
 <p class="section-lede">Ne lit et n'écrit que l'API GitHub — pas de compte propre, pas de télémétrie, pas de stockage cloud.</p>
-<h3>Disponible maintenant — v1.0.0-rc.3</h3>
-<p>Les binaires et paquets sont joints à <a href="https://github.com/systm-d/bondebarras/releases/tag/v1.0.0-rc.3">v1.0.0-rc.3</a>, chacun avec son fichier <code>.sha256</code>. Télécharge celui de ta plateforme, puis suis le guide d'installation.</p>
+<h3>Disponible maintenant — {{ release() }}</h3>
+<p>Les binaires et paquets sont joints à {{ release_link() }}, chacun avec son fichier <code>.sha256</code>. Télécharge celui de ta plateforme, puis suis le guide d'installation.</p>
 <table class="platforms">
 <thead><tr><th>Plateforme</th><th>Architecture</th><th>Format</th></tr></thead>
 <tbody>
