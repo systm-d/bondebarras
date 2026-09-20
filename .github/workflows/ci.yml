@@ -35,6 +35,22 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
+      # Pas de linter ni de formateur Markdown ici, et ce n'est pas un oubli.
+      # `docs/cli.md` cite les quatre écrans d'aide du binaire mot pour mot,
+      # et `docs_cli_md_quotes_the_binarys_own_help` les compare ligne à ligne
+      # à ce que `bondebarras --help` imprime. L'une de ces lignes fait 213
+      # caractères : clap ne la replie pas — le projet n'active pas
+      # `wrap_help` —, donc la page ne le peut pas davantage. Un formateur à
+      # repli de prose (prettier, markdownlint avec `--prose-wrap`, ou
+      # équivalent) replierait ce bloc et rendrait ce test rouge sans que
+      # l'auteur puisse comprendre pourquoi : il comparerait la page au
+      # binaire, qui lui ne replie rien.
+      #
+      # Si un linter Markdown est ajouté un jour : qu'il épargne les blocs
+      # clôturés, ou qu'il épargne `docs/cli.md`, et que cette raison soit
+      # recopiée à l'endroit de l'exclusion pour qu'elle survive à qui l'a
+      # posée. La page a le droit d'être moins jolie que le linter le
+      # voudrait ; elle n'a pas le droit d'être fausse.
 
   test:
     name: test (${{ matrix.name }})
@@ -74,6 +90,18 @@ jobs:
         if: matrix.container == ''
         with:
           key: ${{ matrix.name }}
+      # Les garde-fous de documentation (#33) sont ici, et pas dans une étape
+      # à eux : recensement des pages qui nomment la release, plancher de
+      # hauteur de l'onglet Billing, liens et ancres relatifs. Ce sont des
+      # tests Rust, donc ils tombent dans la porte locale — `cargo test
+      # --workspace` — avant d'atteindre la CI, et l'auteur voit l'assertion
+      # plutôt qu'un journal de manche.
+      #
+      # Aucun ne touche au réseau : les liens externes ne sont délibérément
+      # pas suivis (la raison est écrite sur
+      # `every_relative_link_and_anchor_in_the_documentation_resolves`, dans
+      # `crates/bondebarras/tests/cli.rs`), pour qu'une panne chez un tiers ne
+      # puisse pas rougir une manche qu'on apprendrait alors à ignorer.
       - run: cargo test --workspace --locked
         env:
           # aws-lc-sys — tiré par le backend JWT d'octocrab, qui ne signe
