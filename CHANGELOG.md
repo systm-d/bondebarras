@@ -45,6 +45,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   paid only by a gauge that was already warning: 5 rows to 7 at the resources
   column's 58-cell inner width, 7 to 10 at its narrowest 38.
 
+### Changed
+
+- **`CONTRIBUTING.md` no longer restates the quality gate** (#28). It links
+  to `CONVENTIONS.md`, the single source of truth. The two copies had
+  drifted — the clippy command in `CONTRIBUTING.md` had lost `--all-targets`,
+  so a contributor following it ran a narrower lint than CI does. Checked
+  against `.github/workflows/ci.yml` on the way past, since the workflow is
+  what actually gates a merge: `CONVENTIONS.md` now records that CI runs
+  `cargo test --workspace --locked` across a five-target matrix, that the
+  release build lives in `release.yml` rather than `ci.yml`, and that CI also
+  runs `cargo audit` and `cargo deny check`.
+
 ## [1.0.0-rc.2] - 2026-09-17
 
 ### Fixed
