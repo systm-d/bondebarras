@@ -156,7 +156,7 @@ status_note = "No stable release yet: feature-complete and safe to run — nothi
 <div class="tui-panels">
 <div class="tui-col"><div class="col-title">ORGS</div><div class="row sel">systm-d      37.2 Go</div><div class="row dim">SecondBrain  13.9 Go</div></div>
 <div class="tui-col"><div class="col-title">DÉPÔTS</div><div class="row">[ ] another-r… 775 j          9.8 Go</div><div class="row sel">[ ] ci-heavy   2 j         ⚠ 11.1 Go</div><div class="row">    repolens   déjà archivé      0 o</div></div>
-<div class="tui-col grow"><div class="col-title">RESSOURCES · 69 éléments · cochés 522.0 Mo</div><div class="row dim">Cache   ████████████   111 %   11.1 Go / 10 Go</div><div class="row dim">  (seuil inclus ; limite réelle non exposée par l'API)</div><div class="row">  ⚠ dépasse le seuil inclus : le stockage en excès est facturé ; l'éviction, elle, attend la limite configurée du dépôt</div><div class="row dim">Minutes ████            33 %   1 004 / 3 000</div><div class="row sel">[x]⛑ cache  coverage-linux-x64               261Mo  <span class="stale">PR#32 ⚑</span></div><div class="row">[x]⛑ cache  coverage-linux-x64               261Mo  <span class="stale">PR#25 ⚑</span></div><div class="row">[ ]  cache  ubuntu-22.04-test                257Mo  12j</div><div class="row">[ ]• artif  build-output                     1.1Mo  45j</div></div>
+<div class="tui-col grow"><div class="col-title">RESSOURCES · 69 éléments · cochés 522.0 Mo</div><div class="row dim">Cache   ████████████████████  111 %   11.1 Go / 10 Go</div><div class="row dim">  (seuil inclus ; limite réelle non exposée par l'API)</div><div class="row">  ⚠ dépasse le seuil inclus : le stockage en excès est facturé ;</div><div class="row">  l'éviction pour faire de la place, elle, attend la limite</div><div class="row">  configurée du dépôt ; et, indépendamment de toute limite,</div><div class="row">  toute entrée non lue depuis plus de 7 jours est supprimée</div><div class="row dim">Minutes ██████   33 %   1 004 / 3 000</div><div class="row sel">[x]⛑ cache coverage-linux-x64                   261Mo <span class="stale">PR#32 ⚑</span></div><div class="row">[x]⛑ cache coverage-linux-x64                   261Mo <span class="stale">PR#25 ⚑</span></div><div class="row">[ ]  cache ubuntu-22.04-test                    257Mo 12j</div><div class="row">[ ]• artif build-output                         1.1Mo 45j</div></div>
 </div>
 <div class="tui-foot"><span class="key">←/→</span> col.<span class="key">↑/↓</span> ligne<span class="key">espace</span> cocher<span class="key">A</span> sûrs<span class="key">V</span> +à vérifier<span class="key">d</span> supprimer<span class="key">f</span> filtrer<span class="key">s</span> trier<span class="key">b</span> billing<span class="key">q</span> quitter</div>
 </div>
@@ -188,8 +188,8 @@ status_note = "No stable release yet: feature-complete and safe to run — nothi
 <div class="line"><span class="prompt">$</span>bondebarras</div>
 <div class="out">→ opens the interactive TUI</div>
 <div class="line"><span class="prompt">$</span>bondebarras scan</div>
-<div class="out">systm-d                    37.2 Go  (132 caches)</div>
-<div class="out">SecondBrain-io             13.9 Go   (43 caches)</div>
+<div class="out">systm-d                     37.2 Go  (132 caches)</div>
+<div class="out">SecondBrain-io              13.9 Go  (43 caches)</div>
 <div class="line"><span class="prompt">$</span>bondebarras scan <span class="flag">--org</span> systm-d <span class="flag">--json</span></div>
 <div class="out">[ { "org": "systm-d", "cache_bytes": 37200000000, "cache_count": 132, … } ]</div>
 <div class="line"><span class="prompt">$</span>bondebarras clean <span class="flag">--org</span> systm-d <span class="flag">--repo</span> josephine <span class="flag">--caches</span> <span class="flag">--stale-pr</span> <span class="flag">--yes</span></div>
