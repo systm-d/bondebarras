@@ -5,6 +5,68 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **A workflow run no longer reads `0 o`** (#41). `api::runs::list` hardcodes
+  `size_bytes: 0` because GitHub reports no size for a run anywhere — no size
+  field on the run object under any name, billable *milliseconds* (not bytes)
+  from `GET .../actions/runs/{id}/timing`, and a bare redirect from
+  `.../logs` — but `ResourceKind::WorkflowRun.has_known_size()` still
+  answered `true`, so the size column printed a confident `0 o` over a figure
+  nobody ever measured, and `model`'s own doc comment promised "a real
+  GitHub-reported number" for the family. The same fault as the cache ceiling
+  fixed in rc.2: an invented value presented as a measured one. The run now
+  joins the package version, the branch and the tag as a sizeless kind:
+  every screen shows `—` — the resources column and the headless `clean`
+  dry-run listing alike — a plan made only of runs summarises as `taille
+  inconnue` instead of `0 o`, and a purge of only runs reports its count
+  rather than `0 o libérés`. The resources column's own title follows the same
+  rule: ticking runs alone reads `cochés —` rather than summing their
+  placeholder zeros into a `cochés 0 o` that stood above a column of `—` and
+  contradicted the confirmation modal on the same screen; a selection holding
+  one sized row still shows the bytes it does know.
+  Deleting a run still frees space, since its logs
+  and artifacts go with it; GitHub simply never says how much, and the
+  artifacts it drops are listed and sized in their own right. Consequence
+  worth stating plainly: a listing holding runs — nearly every repository —
+  now carries the `⚠ GitHub n'expose pas la taille de certaines ressources`
+  banner that has always accompanied `—`.
+- **The TUI states GitHub's seven-day cache rule** (#37). Every cache entry
+  not read for over 7 days is deleted regardless of any limit. That rule was
+  in the README, both landing pages, the CHANGELOG and the code's own
+  comments, and nowhere in the interface — so the over-threshold warning's
+  clause about eviction waiting for the repository's configured limit read,
+  out of context, as a universal statement about eviction. It is not: the
+  configured limit governs eviction *to make room*, not the age sweep, which
+  waits for nothing. The warning now names which eviction the limit governs
+  and states the rule that ignores it: `⚠ dépasse le seuil inclus : le
+  stockage en excès est facturé ; l'éviction pour faire de la place, elle,
+  attend la limite configurée du dépôt ; et, indépendamment de toute limite,
+  toute entrée non lue depuis plus de 7 jours est supprimée`. It rides on the
+  line drawn only past the threshold, never on the caveat drawn at every
+  usage, so **the banner at rest is unchanged, row for row** — the price is
+  paid only by a gauge that was already warning: 5 rows to 7 at the resources
+  column's 58-cell inner width, 7 to 10 at its narrowest 38.
+
+### Changed
+
+- **`CONTRIBUTING.md` no longer restates the quality gate** (#28). It links
+  to `CONVENTIONS.md`, the single source of truth. The two copies had
+  drifted — the clippy command in `CONTRIBUTING.md` had lost `--all-targets`,
+  so a contributor following it ran a narrower lint than CI does. Checked
+  against `.github/workflows/ci.yml` on the way past, since the workflow is
+  what actually gates a merge: `CONVENTIONS.md` now records that CI runs
+  `cargo test --workspace --locked` across a five-target matrix, that the
+  release build lives in `release.yml` rather than `ci.yml` — per target and
+  per binary, so the workspace-wide release build stays a local-only check —
+  and that CI also runs `cargo audit` and `cargo deny check`.
+  `.github/PULL_REQUEST_TEMPLATE.md` held the third copy, and the most harmful
+  one since it is ticked at every PR: its clippy box also lacked
+  `--all-targets`. It now links to the same section instead of restating two
+  commands.
+
 ## [1.0.0-rc.2] - 2026-09-17
 
 ### Fixed

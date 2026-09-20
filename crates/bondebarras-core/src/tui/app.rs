@@ -4,8 +4,8 @@
 //! and nothing is persisted. There is no rules engine and no config file:
 //! the user decides, every time.
 
-use crate::clean::Plan;
-use crate::model::{OrgSummary, RepoSummary, Resource, ResourceKind};
+use crate::clean::{Plan, all_sizeless};
+use crate::model::{OrgSummary, RepoSummary, Resource, ResourceKind, human_size};
 use crate::safety::Safety;
 use crate::tui::views::progress::{self, Work};
 use ratatui::widgets::ListState;
@@ -1109,6 +1109,37 @@ impl App {
             .sum()
     }
 
+    /// The ticked rows' size as the resources column's title says it
+    /// (`tui::views::repo::list_title`): `—` when every ticked row is a
+    /// kind GitHub exposes no size for, the summed bytes otherwise.
+    ///
+    /// #41's own thesis, applied to the one figure on screen that still
+    /// contradicted it: `selection_bytes` sums `size_bytes` whatever the
+    /// kind, so ticking workflow runs alone added up hardcoded zeros and
+    /// the title announced `cochés 0 o` above a column of `—`, next to a
+    /// confirmation modal already saying "taille inconnue" for that exact
+    /// selection. One screen cannot hold a claim and its denial.
+    ///
+    /// The rule is `clean::all_sizeless` — the same one `Plan::summary` and
+    /// `clean::finished_recap` apply — not a second copy of it. A mixed
+    /// selection still sums, because the bytes it shows are real as far as
+    /// they go; an empty selection still reads `0 o`, because nothing is
+    /// ticked and that zero is true (smoke S3's `cochés` label).
+    pub fn selection_size_display(&self) -> String {
+        let (ticked, sizeless) = self
+            .resources
+            .iter()
+            .filter(|r| self.selected.contains(&(r.kind, r.id)))
+            .fold((0usize, 0usize), |(ticked, sizeless), r| {
+                (ticked + 1, sizeless + usize::from(!r.kind.has_known_size()))
+            });
+        if all_sizeless(ticked, sizeless) {
+            "—".to_string()
+        } else {
+            human_size(self.selection_bytes())
+        }
+    }
+
     /// `(org, repo)` under the cursor, as owned strings.
     ///
     /// Owned rather than borrowed on purpose: every caller goes on to mutate
@@ -1562,6 +1593,60 @@ mod tests {
         assert_eq!(a.selection_bytes(), 200);
         a.toggle_selected();
         assert_eq!(a.selection_bytes(), 0);
+    }
+
+    /// #41, on the last screen that still summed a run's hardcoded zero as
+    /// if it were a measurement. The three cases are asserted together
+    /// because the rule is only right if it holds in all three: runs alone
+    /// read unknown, a mix keeps its real bytes, and an empty selection
+    /// keeps the true zero it has shown since smoke S3.
+    #[test]
+    fn the_ticked_size_reads_unknown_only_when_every_ticked_row_is_sizeless() {
+        let mut a = App::new(vec![]);
+        a.resources = vec![
+            Resource {
+                kind: ResourceKind::WorkflowRun,
+                id: 128,
+                label: "CI #128".into(),
+                // Exactly what `api::runs::list` writes: a placeholder, not
+                // a measurement.
+                size_bytes: 0,
+                age_days: 100,
+                git_ref: None,
+                stale_pr: false,
+                protected: false,
+                branch_class: None,
+                safety: crate::safety::Safety::Safe,
+            },
+            Resource {
+                kind: ResourceKind::Cache,
+                id: 5,
+                label: "cache-5".into(),
+                size_bytes: 200,
+                age_days: 1,
+                git_ref: None,
+                stale_pr: false,
+                protected: false,
+                branch_class: None,
+                safety: crate::safety::Safety::Keep,
+            },
+        ];
+
+        assert_eq!(a.selection_size_display(), "0 o");
+
+        a.selected.insert((ResourceKind::WorkflowRun, 128));
+        assert_eq!(
+            a.selection_size_display(),
+            "—",
+            "a run-only selection still sums its hardcoded zeros"
+        );
+
+        a.selected.insert((ResourceKind::Cache, 5));
+        assert_eq!(
+            a.selection_size_display(),
+            "200 o",
+            "a mixed selection stopped reporting the bytes it does know"
+        );
     }
 
     /// `protected: class != BranchClass::Merged` and `branch_class:

@@ -98,9 +98,10 @@ again by anything.
   administrator, and storage above it is billed. Eviction *to make room*
   starts only at the repository's **configured** limit, which no endpoint
   exposes; separately from any limit, GitHub removes every cache entry not
-  accessed in over 7 days. Past 100 % the gauge states both facts apart —
-  the excess is billed, and eviction waits on that configured limit —
-  rather than guessing between them. The threshold is the decimal 10 GB
+  accessed in over 7 days. Past 100 % the gauge states those three facts
+  apart — the excess is billed, eviction *to make room* waits on that
+  configured limit, and the seven-day sweep waits on nothing — rather than
+  guessing between them. The threshold is the decimal 10 GB
   GitHub bills on, not 10 GiB, so a repository at 10.5 GB is flagged
   instead of reading 98 %. Beside it, Actions minutes against the allowance
   of the organization's plan (`formule inconnue`, with no percentage, when

@@ -28,8 +28,15 @@ pub async fn list(client: &Client, owner: &str, repo: &str) -> Result<Vec<Resour
                             item["name"].as_str().unwrap_or("workflow"),
                             item["run_number"].as_u64().unwrap_or(0)
                         ),
-                        // The API reports no size for a run. The reclaimed space
-                        // comes from the logs and artifacts deleted alongside it.
+                        // GitHub reports no size for a run, anywhere: no
+                        // field on the run object, billable milliseconds
+                        // (not bytes) from `/timing`, and a bare redirect
+                        // from `/logs`. A placeholder, never a measurement
+                        // — which is why `ResourceKind::WorkflowRun::
+                        // has_known_size` is `false` and every screen shows
+                        // `—` rather than this zero (#41). The reclaimed
+                        // space is real — the logs and artifacts go with
+                        // the run — GitHub just never says how much.
                         size_bytes: 0,
                         age_days: age_days(item["created_at"].as_str()),
                         git_ref: item["head_branch"]
@@ -85,6 +92,15 @@ mod tests {
         // The runs endpoint reports no size; the gain comes from the logs and
         // artifacts GitHub drops along with the run.
         assert_eq!(items[0].size_bytes, 0);
+        // #41: the zero is a placeholder, and the kind has to say so.
+        // Without this second assertion the hardcoded zero reads as a
+        // measured emptiness — which is exactly the defect that shipped,
+        // this file's own comment contradicting `has_known_size` for two
+        // releases while every test stayed green.
+        assert!(
+            !items[0].kind.has_known_size(),
+            "a run's size is unknown, not zero"
+        );
     }
 
     #[tokio::test]

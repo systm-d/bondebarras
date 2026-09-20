@@ -14,20 +14,19 @@ environment, code conventions, and the contribution process.
 
 ## Build & test
 
-```sh
-# Build the workspace
-cargo build --workspace
+The quality gate — formatting, lints, tests, release build — is defined once,
+in **[CONVENTIONS.md § Quality gate](CONVENTIONS.md#quality-gate-run-before-every-pr)**.
+Run it before every commit you intend to push.
 
-# Run all tests
-cargo test --workspace
+This guide deliberately does not restate those commands. It used to, and the
+two copies drifted: the clippy line here had lost `--all-targets`, so a
+contributor following this file ran a narrower lint than CI does and than
+CONVENTIONS.md asks for (#28). One source of truth is the fix; a second copy
+kept in sync by hand is not.
 
-# Lint (zero warnings required)
-cargo clippy --workspace --all-targets -- -D warnings
-```
-
-> **Important:** this project applies `rustfmt` consistently.
-> Run `cargo fmt` before every commit — CI checks `cargo fmt --check`
-> and fails if the code isn't formatted.
+> **Important:** this project applies `rustfmt` consistently. Run `cargo fmt`
+> before every commit — CI checks `cargo fmt --check` and fails if the code
+> isn't formatted.
 
 ---
 
@@ -63,12 +62,9 @@ Common types: `feat`, `fix`, `refactor`, `test`, `docs`, `chore`, `build`.
    the TUI itself, all unit- and integration-tested; `bondebarras` is the
    thin binary shim plus the CLI integration tests).
 
-3. Before opening a PR, verify:
-
-   ```sh
-   cargo test --workspace                    # all tests pass
-   cargo clippy --workspace -- -D warnings   # zero warnings
-   ```
+3. Before opening a PR, run the whole quality gate from
+   [CONVENTIONS.md](CONVENTIONS.md#quality-gate-run-before-every-pr) — every
+   command in it, each one passing on its own.
 
 4. Open a PR against `main`. Describe the change, its motivation, and the
    tests added.
