@@ -18,8 +18,11 @@ history**, which records how it came to behave that way.
 | [Troubleshooting](troubleshooting.md) | Common symptoms, their causes, and how to resolve them |
 | [Releases and versioning](releases.md) | Stable releases versus pre-releases, published formats, checksums, and versioning policy |
 
-Pages not yet written say so explicitly, at the top, and name the issue that
-will fill them. A page in this folder never looks finished when it is not.
+Every page above is written, and every claim in them is verified against the
+code rather than against the README — the rules that matter cite the named
+test that enforces them. Where something could not be settled, the page says
+so instead of guessing: a page that admits an uncertainty is worth more than a
+confident, wrong one.
 
 ## Design history
 
