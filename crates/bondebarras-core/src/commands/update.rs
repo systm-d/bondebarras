@@ -126,7 +126,7 @@ fn apply(release: &ReleaseInfo) -> Result<()> {
         None if channel.downloads_an_asset() => {
             println!(
                 "{}",
-                update::no_asset_for_target(&target, &release.html_url)
+                update::no_asset_for_target(channel, &target, &release.html_url)
             );
             return Ok(());
         }

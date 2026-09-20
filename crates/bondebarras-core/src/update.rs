@@ -48,11 +48,13 @@ impl ReleaseInfo {
     ///
     /// `target` — an `<os>-<arch>` token, see [`current_target`] — is a
     /// parameter rather than something read from `std::env::consts` right
-    /// here, and that is the whole of the fix for #49. Every archive a
-    /// release publishes ends in `.tar.gz`, so matching on the suffix alone
-    /// returned whichever one GitHub happened to list first: a macOS user
-    /// was offered `bondebarras-linux-x86_64.tar.gz`, a download that passes
-    /// its checksum and then cannot execute. Injecting the target is also
+    /// here, and that is the whole of the fix for #49. The two *Unix*
+    /// archives a release publishes both end in `.tar.gz` — Windows ships a
+    /// `.zip` and a bare `.exe`, which this suffix never matches — so
+    /// matching on the suffix alone returned whichever of those two GitHub
+    /// happened to list first: a macOS user was offered
+    /// `bondebarras-linux-x86_64.tar.gz`, a download that passes its
+    /// checksum and then cannot execute. Injecting the target is also
     /// what makes that testable — CI builds on five platforms, so a test
     /// keyed on the host's own target would assert something different on
     /// each one.
@@ -474,7 +476,7 @@ pub fn install_plan(channel: InstallChannel, package: &Path) -> InstallPlan {
 /// a release page visibly full of archives. Refusing here is the point of
 /// #49 — a download that verifies its checksum and then cannot execute is a
 /// worse outcome than a refusal that says why.
-pub fn no_asset_for_target(target: &str, html_url: &str) -> String {
+pub fn no_asset_for_target(channel: InstallChannel, target: &str, html_url: &str) -> String {
     // `parse_release` defaults `html_url` to empty when GitHub's payload
     // omits it; the message must still point somewhere.
     let page = if html_url.is_empty() {
@@ -482,11 +484,31 @@ pub fn no_asset_for_target(target: &str, html_url: &str) -> String {
     } else {
         html_url.to_string()
     };
-    format!(
-        "Plateforme détectée : {target}. Cette release ne publie aucune archive pour elle — \
-         rien n'est téléchargé, une archive d'une autre plateforme ne s'exécuterait pas chez \
-         vous. Consultez {page}"
-    )
+    // Naming the detected platform is only honest when the platform is what
+    // ruled the asset out. A `.deb` or an `.rpm` carries no target in its
+    // name (`asset_name_carries_target`), so the filter never looked at the
+    // platform for those: landing here means the release published no such
+    // package at all. Blaming the running platform would accuse it of a gap
+    // it did not cause, and calling the missing file an "archive" would name
+    // the wrong thing on top of that — a Fedora user reading "aucune archive
+    // pour votre plateforme" would go hunting for a portability problem that
+    // does not exist.
+    if channel.asset_name_carries_target() {
+        format!(
+            "Plateforme détectée : {target}. Cette release ne publie aucune archive pour elle — \
+             rien n'est téléchargé, une archive d'une autre plateforme ne s'exécuterait pas chez \
+             vous. Consultez {page}"
+        )
+    } else {
+        // `downloads_an_asset` is what gates the caller, and every channel
+        // it lets through has a suffix — but the fallback keeps the sentence
+        // grammatical rather than trusting that from a distance.
+        let kind = channel.package_suffix().unwrap_or("installable");
+        format!(
+            "Cette release ne publie aucun paquet {kind} — rien n'est téléchargé, et bondebarras \
+             ne remplace pas un paquet par un autre format. Consultez {page}"
+        )
+    }
 }
 
 // --- Checksum ----------------------------------------------------------------
@@ -762,10 +784,14 @@ mod tests {
     #[test]
     fn the_checksum_follows_the_platform_of_its_own_archive() {
         let r = parse_release(SAMPLE).unwrap();
-        let mac = r.asset_for(InstallChannel::Tarball, MACOS).unwrap();
+        // Keyed on LINUX, not MACOS: `SAMPLE` lists the macOS archive
+        // first, so a version of `asset_for` that took the first `.tar.gz`
+        // would answer this correctly for MACOS and the test would pass
+        // against the very defect it illustrates (#49, review finding).
+        let linux = r.asset_for(InstallChannel::Tarball, LINUX).unwrap();
         assert_eq!(
-            r.checksum_for(mac).unwrap().name,
-            "bondebarras-macos-aarch64.tar.gz.sha256"
+            r.checksum_for(linux).unwrap().name,
+            "bondebarras-linux-x86_64.tar.gz.sha256"
         );
     }
 
@@ -823,7 +849,7 @@ mod tests {
     // they are on, and that guess is exactly what was wrong (#49).
     #[test]
     fn the_refusal_message_names_the_detected_platform() {
-        let msg = no_asset_for_target(MACOS, "https://example/release");
+        let msg = no_asset_for_target(InstallChannel::Tarball, MACOS, "https://example/release");
         assert!(msg.contains(MACOS), "{msg}");
         assert!(msg.contains("https://example/release"), "{msg}");
     }
@@ -833,11 +859,25 @@ mod tests {
     // somewhere rather than trail off after "Consultez ".
     #[test]
     fn the_refusal_message_falls_back_on_the_releases_page() {
-        let msg = no_asset_for_target(MACOS, "");
+        let msg = no_asset_for_target(InstallChannel::Tarball, MACOS, "");
         assert!(
             msg.contains("github.com/systm-d/bondebarras/releases/latest"),
             "{msg}"
         );
+    }
+
+    // A `.deb` or `.rpm` name carries no target, so the platform filter
+    // never ruled it out: the refusal must not pin the gap on the platform,
+    // nor call a missing package an "archive".
+    #[test]
+    fn the_refusal_blames_the_release_not_the_platform_for_a_package() {
+        for (channel, kind) in [(InstallChannel::Deb, ".deb"), (InstallChannel::Rpm, ".rpm")] {
+            let msg = no_asset_for_target(channel, LINUX, "https://example/release");
+            assert!(msg.contains(kind), "{msg}");
+            assert!(!msg.contains("Plateforme détectée"), "{msg}");
+            assert!(!msg.contains("archive"), "{msg}");
+            assert!(msg.contains("https://example/release"), "{msg}");
+        }
     }
 
     #[test]
