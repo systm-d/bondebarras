@@ -294,10 +294,12 @@ its own message. Tests: `verify_outcome_proceeds_only_when_verified`,
 `verify_outcome_refuses_to_install_when_no_checksum_was_published`,
 `the_three_refusal_messages_are_distinct`.
 
-> **`update` always exits 0.** A version check that could not reach GitHub, a
-> refused checksum, and an install that did not complete are all reported on
-> stdout and still exit successfully. Do not use `update`'s exit code as a
-> signal in a script; read its output instead.
+> **`update` exits 0 even when it gives up.** A version check that could not
+> reach GitHub, a refused checksum, and an install that did not complete are
+> all reported on stdout and still exit successfully. Other failures do exit
+> `1` — a staging directory that could not be created, a download cut short or
+> refused, a `sudo` that could not be launched. Either way, do not use
+> `update`'s exit code as a signal in a script; read its output instead.
 
 Details of each channel, and the one case where the archive offered may not
 match your platform, are in [installation](installation.md#updating).
@@ -306,8 +308,8 @@ match your platform, are in [installation](installation.md#updating).
 
 | Code | When |
 | --- | --- |
-| `0` | Success — including a `scan`, a dry-run `clean`, a `clean --yes` in which every deletion succeeded, `Rien à supprimer.`, and **every** `update` outcome |
-| `1` | Any error: no token found, a failed scan, a tier-3 refusal, or a `clean --yes` in which **at least one** deletion failed |
+| `0` | Success — including a `scan`, a dry-run `clean`, a `clean --yes` in which every deletion succeeded, `Rien à supprimer.`, and an `update` that gave up for one of the three reasons noted above |
+| `1` | Any error: no token found, a failed scan, a tier-3 refusal, a `clean --yes` in which **at least one** deletion failed, or an `update` whose download or installation could not be carried out |
 
 A `clean --yes` that fails partway exits `1` and has still deleted whatever
 succeeded before the failure. There is no rollback — there is nothing to roll

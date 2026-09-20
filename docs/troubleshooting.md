@@ -208,7 +208,7 @@ undo.
 
 ## A package version shows no size
 
-**Symptom.** Package rows show `—` where every other family shows bytes, and
+**Symptom.** Package rows show `—` where the sized families show bytes, and
 the column header carries a warning.
 
 **Cause.** **GitHub exposes no size for a package version, under any field

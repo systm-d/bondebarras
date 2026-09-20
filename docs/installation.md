@@ -240,8 +240,9 @@ each with its own message, and **all three refuse**.
 
 Two limitations worth knowing before you rely on it:
 
-> **`update` always exits 0**, even when it could not reach GitHub or refused
-> a checksum. Read its output; do not test its exit code.
+> **`update` exits 0 even when it gives up** — when it could not reach GitHub,
+> or refused a checksum. A download or an installation that fails outright does
+> exit `1`. Read its output; do not test its exit code.
 
 > **On a manually installed binary, `update` picks the first `.tar.gz` asset
 > of the release, without considering your platform.** The current release

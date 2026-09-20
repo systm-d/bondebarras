@@ -40,7 +40,7 @@ On every `v*` tag:
 | `bondebarras-windows-x86_64.exe` | same build | Standalone executable, for direct download and winget |
 | `bondebarras_<version>-1_amd64.deb` | `cargo deb` | |
 | `bondebarras-<version>-1.x86_64.rpm` | `cargo generate-rpm` | Version translated, see below |
-| `<artifact>.sha256` | — | **One per artifact**, in `sha256sum` format |
+| `<artifact>.sha256` | — | **One per binary artifact above** — not `PKGBUILD`, not `bondebarras.rb` — in `sha256sum` format |
 | `PKGBUILD` | `packaging/aur/PKGBUILD` | Version and source checksum filled in |
 | `bondebarras.rb` | `packaging/homebrew/bondebarras.rb` | Formula, rendered for this tag |
 
@@ -74,9 +74,9 @@ version stays the source of truth; the workflow only translates it.
 
 ## Checksums
 
-**Every artifact of every release gets a `.sha256` sidecar**, computed in the
-artifact's own directory so the second field is a bare filename, in the format
-`sha256sum -c` reads directly.
+**Every binary artifact of every release gets a `.sha256` sidecar**, computed in
+the artifact's own directory so the second field is a bare filename, in the
+format `sha256sum -c` reads directly.
 
 This is not decoration. `bondebarras update` verifies a downloaded asset
 against its sidecar and **refuses to install on all three failure modes** —
@@ -88,6 +88,15 @@ otherwise look exactly like a release that never published one. Tests:
 `verify_outcome_proceeds_only_when_verified`,
 `verify_outcome_refuses_to_install_when_the_checksum_could_not_be_fetched`,
 `the_three_refusal_messages_are_distinct`.
+
+**The rendered packaging recipes get none.** `PKGBUILD` and `bondebarras.rb`
+are written at the repository root *after* the step that checksums the
+downloaded build artifacts, so they fall outside it: of the fourteen assets
+on `v1.0.0-rc.2`, six are sidecars covering the six binary artifacts, and
+those two have none. `winget-manifests.tar.gz`, attached by a separate job on
+stable tags, would not have one either. Each recipe does embed the source
+tarball's own `sha256` — which is what `makepkg` and `brew` verify — but the
+recipe file itself is not covered, so read it before you run it.
 
 Verification commands for a manual download are in
 [installation](installation.md#verify-what-you-downloaded).
