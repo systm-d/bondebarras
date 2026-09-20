@@ -105,7 +105,7 @@ status_note = "No stable release yet: feature-complete and safe to run — nothi
 <li>Runs in the background, TUI stays responsive</li>
 <li>A progress row with a real, counted done/total — never an estimate</li>
 <li>Spaced out and retried on GitHub's rate limit</li>
-<li>A deletion GitHub confirms takes its row off the list and moves the bar on; one it refuses leaves the row where it is and names it on the status line — <code>Erreur : suppression de 9 — 404</code> — and a run that ends with failures says so instead of hiding it, closing on <code>, 2 échec(s).</code></li>
+<li>A deletion GitHub confirms takes its row off the list; one it refuses leaves the row where it is and names it on the status line — <code>Erreur : suppression de 9 — 404</code>. Either way the bar moves on — a refused item has been processed, not left waiting — and a run that ends with failures says so instead of hiding it, closing on <code>, 2 échec(s).</code></li>
 <li>No trash, no undo: nothing GitHub lets us delete comes back, and the tool never pretends otherwise</li>
 </ul>
 </div>

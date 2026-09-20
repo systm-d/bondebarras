@@ -105,7 +105,7 @@ status_note = "Pas encore de version stable : complet et sûr à l'usage — rie
 <li>S'exécute en tâche de fond, le TUI reste réactif</li>
 <li>Une ligne de progression au compte réel, fait/total — jamais une estimation</li>
 <li>Espacé et retenté face à la limite de débit de GitHub</li>
-<li>Une suppression confirmée par GitHub retire sa ligne de la liste et fait avancer la barre ; une suppression refusée laisse la ligne en place et se nomme en ligne d'état — <code>Erreur : suppression de 9 — 404</code> — et une passe qui finit sur des échecs le dit au lieu de le cacher, en terminant par <code>, 2 échec(s).</code></li>
+<li>Une suppression confirmée par GitHub retire sa ligne de la liste ; une suppression refusée laisse la ligne en place et se nomme en ligne d'état — <code>Erreur : suppression de 9 — 404</code>. Dans les deux cas la barre avance — un élément refusé est traité, pas en attente — et une passe qui finit sur des échecs le dit au lieu de le cacher, en terminant par <code>, 2 échec(s).</code></li>
 <li>Pas de corbeille, pas d'annulation : rien de ce que GitHub laisse supprimer ne revient, et l'outil ne fait jamais semblant du contraire</li>
 </ul>
 </div>
