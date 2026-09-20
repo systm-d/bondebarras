@@ -122,6 +122,12 @@ fn release_spellings(version: &str) -> Vec<String> {
 /// and a test that guards against drift should not itself drift behind a
 /// dependency. Derived from the text rather than from the current version,
 /// so it still sees a stale `1.0.0-rc.3` once the crate is at `1.0.1`.
+///
+/// What it cannot see is a stale *stable* release — a page still naming
+/// `1.0.0` when the crate ships `1.0.1` — because the shape it looks for is
+/// anchored on the literal `rc.`. That limit is deliberate, and
+/// `the_census_can_still_recognise_this_crates_own_version` below is what
+/// keeps it from going quiet.
 fn release_tokens(text: &str) -> Vec<&str> {
     let b = text.as_bytes();
     let mut out = Vec::new();
@@ -150,6 +156,47 @@ fn release_tokens(text: &str) -> Vec<&str> {
     out
 }
 
+/// The census has two halves, and only one of them survives the 1.0.0
+/// release on its own.
+///
+/// "The version pass never reached this page" works off `CARGO_PKG_VERSION`
+/// and keeps working forever. "This page still names an older release" works
+/// off `release_tokens`, which recognises exactly one shape:
+/// `<x>.<y>.<z><sep>rc.<n>`. The day this crate ships `1.0.1`, that function
+/// returns nothing for every page, every `stale` list is empty, every
+/// `Names::Current(0)` passes for free, and a landing page still advertising
+/// `1.0.0` sails through — silently, and exactly the way #57's first guard
+/// failed before it was widened.
+///
+/// So the extinction is made loud rather than guessed at: this test fails on
+/// the very release that retires the `rc.` shape, and says what to do.
+///
+/// Widening `release_tokens` to any bare `<x>.<y>.<z>` was tried and
+/// rejected on the evidence. Measured against the documentation as it
+/// stands, it matches `keepachangelog.com/en/1.1.0/` and
+/// `semver.org/spec/v2.0.0.html` in `docs/releases.md`, the `0.5.9` /
+/// `0.5.10` pair that same page uses to explain that ordering is numeric and
+/// not lexical, the `v1.2.0` tag in `docs/tui.md`'s mock-up of the TUI, and
+/// the promise carried by four pages that the `scan --json` schema may still
+/// change "before `v1.0.0`". Seven of the thirteen censused pages would fail
+/// on prose that is not a release this repository has ever shipped — and a
+/// guard that cries wolf seven times is one nobody reads.
+#[test]
+fn the_census_can_still_recognise_this_crates_own_version() {
+    const CURRENT: &str = env!("CARGO_PKG_VERSION");
+    for spelling in release_spellings(CURRENT) {
+        assert_eq!(
+            release_tokens(&spelling),
+            vec![spelling.as_str()],
+            "`release_tokens` no longer recognises {spelling}, this crate's own version. \
+             It only knows the `<x>.<y>.<z><sep>rc.<n>` shape, so the half of the census \
+             that catches a *stale* release is now blind and passes everything. Teach it \
+             the shape {CURRENT} is written in — deriving the tokens from the page's text, \
+             as it does now, so that a page naming a previous release is still caught."
+        );
+    }
+}
+
 /// The repository root, from this test's own manifest directory.
 ///
 /// `include_str!` is the sharper tool for a page named in the source, and
@@ -171,29 +218,63 @@ fn read(root: &Path, page: &str) -> String {
     fs::read_to_string(root.join(page)).unwrap_or_else(|e| panic!("{page} cannot be read: {e}"))
 }
 
-/// The Markdown files directly inside `dir`, repository-relative and sorted.
-/// One level only: what sits in a subdirectory is classified by its own
-/// caller, never swept in by accident.
-fn markdown_in(root: &Path, dir: &str) -> Vec<String> {
-    let mut pages: Vec<String> = fs::read_dir(root.join(dir))
-        .unwrap_or_else(|e| panic!("{dir} cannot be listed: {e}"))
-        .map(|entry| entry.expect("a readable directory entry").file_name())
-        .filter_map(|name| {
-            let name = name.into_string().expect("a UTF-8 file name");
-            name.ends_with(".md").then(|| format!("{dir}/{name}"))
-        })
-        .collect();
-    pages.sort();
-    pages
+/// Every Markdown file below `start` — a repository-relative directory, or
+/// the empty string for the repository itself — repository-relative, sorted,
+/// minus whatever `skip` refuses. `skip` is handed each entry's
+/// repository-relative path and its own file name; refusing a directory
+/// prunes it whole.
+fn markdown_below(root: &Path, start: &str, skip: impl Fn(&str, &str) -> bool) -> Vec<String> {
+    let mut found = Vec::new();
+    let mut directories = vec![start.to_string()];
+    while let Some(directory) = directories.pop() {
+        let entries = fs::read_dir(root.join(&directory))
+            .unwrap_or_else(|e| panic!("{directory:?} cannot be listed: {e}"));
+        for entry in entries {
+            let entry = entry.expect("a readable directory entry");
+            let name = entry.file_name().into_string().expect("a UTF-8 file name");
+            let path = if directory.is_empty() {
+                name.clone()
+            } else {
+                format!("{directory}/{name}")
+            };
+            if skip(&path, &name) {
+                continue;
+            }
+            // Not `metadata()`: a symlink to a directory stays a symlink
+            // here, so the walk cannot be sent round in a circle.
+            if entry.file_type().expect("a readable file type").is_dir() {
+                directories.push(path);
+            } else if path.ends_with(".md") {
+                found.push(path);
+            }
+        }
+    }
+    found.sort();
+    found
 }
 
-/// The pages a version pass has to reach: the README, every page of `docs/`,
-/// and the site's two landing pages.
+/// The two frozen subtrees of `docs/`: a published audit, and the design
+/// history. Naming the release they were written against is their job — the
+/// same reason `CHANGELOG.md` is out of the census — so no version pass has
+/// to reach them.
+const FROZEN: [&str; 2] = ["docs/audits", "docs/superpowers"];
+
+/// The Markdown files under `dir`, **at any depth**, repository-relative and
+/// sorted, minus the frozen subtrees.
 ///
-/// `docs/` is read one level deep on purpose. `docs/audits/` and
-/// `docs/superpowers/` sit below it and are frozen records — an audit, and
-/// the design history — whose job is to name the release they were written
-/// against, the same reason `CHANGELOG.md` is out of the census too.
+/// At any depth, and that is a correction. This read one level only, which
+/// made the claim below — a page added tomorrow is caught — true of
+/// `docs/foo.md` and false of `docs/adr/0001.md`: a new subdirectory is the
+/// likeliest shape for a batch of new pages, and it was the one shape the
+/// census could not see. The exclusions are now named rather than implied by
+/// a depth limit: a subtree escapes this test because it is on `FROZEN`, not
+/// because of how deep it happens to sit.
+fn markdown_in(root: &Path, dir: &str) -> Vec<String> {
+    markdown_below(root, dir, |path, _| FROZEN.contains(&path))
+}
+
+/// The pages a version pass has to reach: the README, every page under
+/// `docs/` bar the frozen subtrees, and the site's landing pages.
 fn documented_pages(root: &Path) -> Vec<String> {
     let mut pages = vec!["README.md".to_string()];
     pages.extend(markdown_in(root, "docs"));
@@ -342,9 +423,27 @@ fn slug(heading: &str) -> String {
     anchor
 }
 
-/// Every anchor `md`'s headings answer to, deduplicated the way GitHub
-/// deduplicates them: the second heading that slugs to `changed` answers to
-/// `changed-1`, as `CHANGELOG.md`'s do.
+/// Every anchor `md`'s headings answer to, deduplicated *almost* the way
+/// GitHub deduplicates them: the second heading that slugs to `changed`
+/// answers to `changed-1`, as `CHANGELOG.md`'s do.
+///
+/// Almost, and here is the gap. This counts occurrences per base slug;
+/// GitHub also keeps a registry of the anchors it has already handed out,
+/// and skips a candidate that is taken. On `Dup`, `Dup`, `Dup-1`, `Dup` this
+/// yields `{dup, dup-1, dup-2}` while GitHub yields
+/// `{dup, dup-1, dup-1-1, dup-2}`: the third heading is given `dup-1` here,
+/// an anchor the second already holds, instead of stepping aside to
+/// `dup-1-1`.
+///
+/// It is left alone on two grounds. The error points the noisy way: this set
+/// is the smaller one, so the failure mode is rejecting a link that GitHub
+/// would honour — an assertion somebody reads — and never accepting one that
+/// leads nowhere. And it is unreachable today: every heading this test
+/// reads, across the whole repository, gets the same anchor under both
+/// algorithms, measured, with no divergence at all. A collision needs a
+/// heading whose own text ends in `-1` sitting beside repeated siblings;
+/// the day one is written, this rejects a valid link and the reader lands
+/// here.
 fn heading_anchors(md: &str) -> BTreeSet<String> {
     let mut seen: BTreeMap<String, usize> = BTreeMap::new();
     let mut anchors = BTreeSet::new();
@@ -373,6 +472,24 @@ fn heading_anchors(md: &str) -> BTreeSet<String> {
 
 /// `line` with its inline code spans removed, the survivors held apart by a
 /// space so that nothing is glued into a `](` that was never written.
+///
+/// Three kinds of link get past everything downstream of here, and none of
+/// them is a fenced block — the exclusion stated on `prose_lines`. Worth
+/// naming, in a guard whose whole subject is claims nobody verified:
+///
+/// 1. **An unpaired backtick swallows the rest of its line.** The split
+///    keeps the even-numbered halves, so an odd count leaves the tail on an
+///    odd index and it is dropped — links written after it included.
+/// 2. **Raw HTML is invisible.** `<a href="page.md">` carries no `](`, so no
+///    target is ever read out of it.
+/// 3. **Reference *usage* is unchecked, only reference *definitions* are.**
+///    `[label]: target` is read by `reference_definition`; `[label][ref]`
+///    and the shortcut `[ref]` are not, so a reference pointing at a label
+///    that was never defined resolves to nothing and this test says nothing.
+///
+/// All three are silent, which is the wrong direction for this file — they
+/// are listed rather than fixed because none has ever occurred here, and a
+/// parser grown to catch them is a parser that itself needs a guard.
 fn outside_code_spans(line: &str) -> String {
     line.split('`').step_by(2).collect::<Vec<_>>().join(" ")
 }
@@ -437,44 +554,48 @@ fn resolve(page: &str, target: &str) -> Option<String> {
 
 /// Every Markdown file in the repository, repository-relative and sorted.
 ///
-/// Four directories are stepped over, for four different reasons. `.git` and
-/// `target` are written by tools, not by authors. `.worktrees` holds other
-/// checkouts of this same repository, whose pages belong to their own branch
-/// and are none of this one's business. And `docs/audits/` is a frozen
-/// record that quotes the prose it recommends for *other* files: its
-/// `[Billing and GitHub limits](docs/billing.md)` is a line proposed for the
-/// README, correct from the README and meaningless from where it is quoted.
-/// Checking those links would be checking them against the wrong base, and
-/// the fix would be to edit an audit — which would make it stop being one.
+/// This walks the **working tree**, not the tracked tree, so it also meets
+/// whatever a build has left lying about. Two kinds of directory are stepped
+/// over, and the distinction is the point.
+///
+/// **By name, at any depth**: four directories written by tools rather than
+/// by authors. `.git` and `target` have always been here; `vendor` and
+/// `node_modules` are the correction. `cargo vendor` is a legitimate way to
+/// build offline, and it writes one `README.md` per dependency whose links
+/// are somebody else's to keep — so the local gate went red over a third
+/// party's prose, and a guard that does that is a guard that gets switched
+/// off. By name rather than by path because neither belongs to a fixed
+/// place: `cargo vendor` takes a directory argument, and a workspace can
+/// hold more than one `target`.
+///
+/// **By path**: three that belong to this repository but not to this check.
+/// `.worktrees` holds other checkouts of this same repository, whose pages
+/// answer to their own branch. `site/public` is whatever Zola last rendered.
+/// And `docs/audits/` is a frozen record that quotes the prose it recommends
+/// for *other* files: its `[Billing and GitHub limits](docs/billing.md)` is
+/// a line proposed for the README, correct from the README and meaningless
+/// from where it is quoted. Checking those links would be checking them
+/// against the wrong base, and the fix would be to edit an audit — which
+/// would make it stop being one; the exclusion is on the directory, so a
+/// *future* audit filed there is skipped for that same reason without
+/// anybody having to remember this.
+///
+/// A list, deliberately, rather than asking git what it ignores — and this
+/// repository's own `.gitignore` is the argument. It names `/target`,
+/// `**/*.rs.bk` and `site/public/`: not `.worktrees`, which this walk has
+/// always had to skip anyway, and not `vendor`, which `cargo vendor` does
+/// not add for you. "What git ignores" would have fixed neither of the two
+/// cases that actually bite. It would also tie the local gate to a git
+/// repository, when this tree is read from a release tarball and a
+/// downloaded zip as well. The cost is the honest one, and it is the smaller
+/// one: this list ages, and the day a tool writes somewhere new, somebody
+/// adds a line to it.
 fn all_markdown(root: &Path) -> Vec<String> {
-    const SKIPPED: [&str; 4] = [".git", "target", ".worktrees", "docs/audits"];
-    let mut found = Vec::new();
-    let mut directories = vec![String::new()];
-    while let Some(directory) = directories.pop() {
-        let entries = fs::read_dir(root.join(&directory))
-            .unwrap_or_else(|e| panic!("{directory:?} cannot be listed: {e}"));
-        for entry in entries {
-            let entry = entry.expect("a readable directory entry");
-            let name = entry.file_name().into_string().expect("a UTF-8 file name");
-            let path = if directory.is_empty() {
-                name
-            } else {
-                format!("{directory}/{name}")
-            };
-            if SKIPPED.contains(&path.as_str()) {
-                continue;
-            }
-            // Not `metadata()`: a symlink to a directory stays a symlink
-            // here, so the walk cannot be sent round in a circle.
-            if entry.file_type().expect("a readable file type").is_dir() {
-                directories.push(path);
-            } else if path.ends_with(".md") {
-                found.push(path);
-            }
-        }
-    }
-    found.sort();
-    found
+    const SKIPPED_NAMES: [&str; 4] = [".git", "target", "vendor", "node_modules"];
+    const SKIPPED_PATHS: [&str; 3] = [".worktrees", "site/public", "docs/audits"];
+    markdown_below(root, "", |path, name| {
+        SKIPPED_NAMES.contains(&name) || SKIPPED_PATHS.contains(&path)
+    })
 }
 
 /// #33's guard, and the reason it exists: the links and anchors of three
