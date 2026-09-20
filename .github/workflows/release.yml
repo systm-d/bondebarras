@@ -14,6 +14,18 @@ on:
 permissions:
   contents: write
 
+# Deux exécutions d'un même tag ne se croisent plus : la seconde attend la
+# première, au lieu de lire « aucune pull request » en même temps qu'elle.
+# Le groupe porte la ref, pas le workflow : deux tags différents ont chacun
+# leur branche `homebrew/<tag>` et sont faits pour coexister (une v1.0.1 ne
+# doit pas attendre la v1.0.0), et un groupe partagé annulerait purement et
+# simplement la release restée en attente si un troisième tag arrivait —
+# perdre une release vaut moins cher à personne. `cancel-in-progress: false` :
+# une release en cours de publication ne s'interrompt pas.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 env:
   CARGO_TERM_COLOR: always
 
@@ -190,6 +202,27 @@ jobs:
           # partaient en release avec ce checksum-là, et le job sortait vert.
           set -euo pipefail
 
+          # Le nom de tag est contraint ici, avant tout rendu — plutôt
+          # qu'échappé destination par destination. `git` accepte dans un nom
+          # de tag tout ce qu'il ne refuse pas nommément (l'espace, `~^:?*[`,
+          # `\`) : il accepte donc `` ` ``, `$`, `;`, `"` et `#{}`. Un tag
+          # `v1.0.0#{...}` rend une ligne `url` que `grep -cxF` compte, que
+          # `ruby -c` valide — et que Ruby interpole à l'évaluation, c'est-à-
+          # dire chez l'utilisateur qui lance `brew install` ; un tag
+          # `v1.0.0;id` rend un `pkgver=1.0.0;id` que `bash -n` accepte et que
+          # `makepkg` exécute. Ces valeurs partent dans du Ruby, du shell et
+          # (côté winget) du YAML : échapper pour l'une laisserait la suivante
+          # découverte, et la prochaine destination ajoutée avec elle.
+          # La forme retenue est celle que ce dépôt emploie réellement — `v`
+          # suivi d'un SemVer, sans métadonnée de build : `v1.0.0`,
+          # `v1.0.0-rc.3`. Elle rend par la même occasion exact le critère de
+          # préversion employé plus bas (« le tag contient un `-` ») : avec
+          # cette forme, un `-` ne peut plus être autre chose.
+          if ! printf '%s' "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+            echo "::error::nom de tag refusé : « ${TAG} ». Forme attendue : v<majeur>.<mineur>.<correctif>, préversion facultative (v1.0.0, v1.0.0-rc.3). Rien n'a été rendu."
+            exit 1
+          fi
+
           version="${TAG#v}"
           url="https://github.com/${GH_REPO}/archive/refs/tags/${TAG}.tar.gz"
           sha=$(curl -fsSL "$url" | sha256sum | cut -d' ' -f1)
@@ -223,11 +256,17 @@ jobs:
               || { echo "::error::formule : ligne sha256 absente, fausse ou en double"; fautes=1; }
             [ "$(grep -cF 'Placeholder: release.yml' bondebarras.rb)" = 0 ] \
               || { echo "::error::formule : commentaire Placeholder resté en place"; fautes=1; }
+            # `ruby` absent fait échouer le job, il ne rend pas la main à un
+            # `fautes=0`. Un contrôle qui s'éteint en silence est pire que pas
+            # de contrôle : il fabrique la confiance qu'une formule a été
+            # relue. Le PKGBUILD n'a pas ce défaut — `bash -n` tourne sous le
+            # bash qui exécute déjà cette étape, il ne peut pas manquer.
             if command -v ruby > /dev/null; then
               ruby -c bondebarras.rb > /dev/null \
                 || { echo "::error::formule : rejetée par ruby -c"; fautes=1; }
             else
-              echo "ruby absent de ce runner : syntaxe non contrôlée (les contrôles de champs, eux, ont tourné)."
+              echo "::error::formule : ruby absent de ce runner — la syntaxe ne peut pas être contrôlée, et une formule non contrôlée ne part pas en release."
+              fautes=1
             fi
             [ "$fautes" = 0 ] || exit 1
 
@@ -284,11 +323,11 @@ jobs:
   # `brew` lit donc Formula/bondebarras.rb sur la branche par défaut de ce
   # dépôt-ci — laquelle n'accepte aucune poussée directe (règle « main
   # protégée », sans acteur de dérogation). Le job rend la formule à partir du
-  # gabarit packaging/homebrew/bondebarras.rb (source de vérité unique, même
-  # sed que le rendu de l'asset de release ci-dessus) et l'ouvre en pull
-  # request : une release qui part de travers propose une modification
-  # relisible, au lieu d'écrire sans relecture ni recours dans le fichier que
-  # `brew install` sert.
+  # gabarit packaging/homebrew/bondebarras.rb (source de vérité unique, rendu
+  # ligne à ligne, au caractère près comme l'asset de release ci-dessus) et
+  # l'ouvre en pull request : une release qui part de travers propose une
+  # modification relisible, au lieu d'écrire sans relecture ni recours dans le
+  # fichier que `brew install` sert.
   # Et il ne défait aucun geste humain : il ne réécrit pas une branche qu'il
   # pourrait ne pas avoir laissée telle quelle, et ne rouvre pas une pull
   # request qu'on a fermée sans la fusionner. Ce job tourne sans surveillance,
@@ -324,6 +363,17 @@ jobs:
           TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
+
+          # Même contrainte, au caractère près, qu'au rendu de l'asset de
+          # release ci-dessus — et pour la même raison, détaillée là-haut :
+          # un nom de tag que `git` accepte peut porter du Ruby (`#{...}`)
+          # qui s'interpole chez qui lance `brew install`. On contraint
+          # l'entrée une fois, avant tout rendu, plutôt que d'échapper à
+          # chaque sortie.
+          if ! printf '%s' "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+            echo "::error::nom de tag refusé : « ${TAG} ». Forme attendue : v<majeur>.<mineur>.<correctif>, préversion facultative (v1.0.0, v1.0.0-rc.3). Rien n'a été rendu, rien n'a été poussé."
+            exit 1
+          fi
 
           if [ ! -f packaging/homebrew/bondebarras.rb ]; then
             echo "packaging/homebrew/bondebarras.rb absent sur main (branche pas encore mergée) — étape ignorée."
@@ -362,11 +412,15 @@ jobs:
             || { echo "::error::formule : ligne sha256 absente, fausse ou en double"; fautes=1; }
           [ "$(grep -cF 'Placeholder: release.yml' Formula/bondebarras.rb)" = 0 ] \
             || { echo "::error::formule : commentaire Placeholder resté en place"; fautes=1; }
+          # `ruby` absent fait échouer le job. Ce contrôle est le seul à voir
+          # la formule avant qu'un relecteur la voie : s'il ne tourne pas, il
+          # ne doit pas se lire comme s'il avait tourné.
           if command -v ruby > /dev/null; then
             ruby -c Formula/bondebarras.rb > /dev/null \
               || { echo "::error::formule : rejetée par ruby -c"; fautes=1; }
           else
-            echo "ruby absent de ce runner : syntaxe non contrôlée (les contrôles de champs, eux, ont tourné)."
+            echo "::error::formule : ruby absent de ce runner — la syntaxe ne peut pas être contrôlée, et une formule non contrôlée ne part pas en pull request."
+            fautes=1
           fi
           [ "$fautes" = 0 ] || { echo "::error::formule rendue invalide — rien ne sera proposé."; exit 1; }
 
@@ -501,6 +555,21 @@ jobs:
           GH_REPO: ${{ github.repository }}
           TAG: ${{ github.ref_name }}
         run: |
+          # `pipefail` manquait ici comme il manquait au rendu de l'asset de
+          # release : un `curl` en échec laissait `sha256sum` lire un flux
+          # vide et en tirer une somme parfaitement bien formée, celle de zéro
+          # octet, qui partait dans `InstallerSha256`.
+          set -euo pipefail
+
+          # Même contrainte de nom de tag qu'aux deux rendus ci-dessus : ici
+          # la valeur part dans du YAML et dans une URL de téléchargement.
+          # C'est la troisième destination, et la raison de contraindre
+          # l'entrée plutôt que d'échapper chaque sortie.
+          if ! printf '%s' "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+            echo "::error::nom de tag refusé : « ${TAG} ». Forme attendue : v<majeur>.<mineur>.<correctif>, préversion facultative (v1.0.0, v1.0.0-rc.3). Aucun manifeste n'a été généré."
+            exit 1
+          fi
+
           version="${TAG#v}"
           url="https://github.com/${GH_REPO}/releases/download/${TAG}/bondebarras-windows-x86_64.exe"
           sha=$(curl -fsSL "$url" | sha256sum | cut -d' ' -f1 | tr 'a-f' 'A-F')
