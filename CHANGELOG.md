@@ -7,24 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
-
-- **The CLI reference is held to the binary's own `--help`** (#61).
-  `docs/cli.md` opened on a claim about its own provenance — every flag below
-  is taken from what the binary prints — and nothing checked it. It had
-  already been false: the `clean --help` block dropped the second sentence of
-  four flag descriptions, and those sentences are the ones carrying the
-  product's guarantees, that a package version has no size GitHub will state,
-  that a live branch is never taken in bulk, that a tag is never preselected,
-  that a release itself is never deleted. `docs_cli_md_quotes_the_binarys_own_help`
-  now runs the binary and compares every quoted block to its output, line by
-  line. It found a second drift on its first run: the synopsis block wrapped
-  `update`'s description over three lines by hand, a shape no terminal ever
-  produced. A companion test pins the premise the comparison rests on —
-  `the_quoted_help_is_the_same_at_any_terminal_width` — because clap without
-  `wrap_help` is width-invariant, and the day that stops being true the guard
-  should say so rather than quietly compare against the wrong rendering.
-
 ### Changed
 
 - **`--help` names the binary `bondebarras` on all three platforms** (#55,
@@ -38,44 +20,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   was global and anchored on nothing, so forcing the suffix to `" [COMMAND]"`
   and deleting that token from the page left the test green. A guard that
   patches the binary's output into the shape the page expects is not a guard.
-- **Sizeless families leave the size ranking instead of being ranked last by
-  a placeholder** (#51). Sorting by size — the default, because size is why
-  the user opened the tool — read `size_bytes` whatever the kind, so a
-  workflow run, whose zero is a placeholder and not a measurement, was filed
-  among the lightest rows while its own cell said `—`. The families GitHub
-  states no size for now form a group of their own at the end of the
-  ordering. Ranked last, not first: three hundred runs at the top would push
-  the answer off screen. The boundary earns its keep in the other direction
-  too — a cache genuinely measured at zero now sorts *above* them, where the
-  old tie on `Reverse(0)` buried it among things nobody ever weighed. Within
-  each group the listing's own order survives, `sort_by_key` being stable and
-  the key a pure function of the row.
-
 ### Fixed
 
-- **A mixed plan no longer passes its measured half off as the whole**
-  (#51). `Plan::total_bytes` and the ticked figure summed across every kind,
-  so a purge holding both caches and runs announced a total that said nothing
-  about the runs in it — a case that went from rare to routine once `[A]`
-  began preselecting runs whose pull request had merged. Where there is room
-  the wording says what was not counted: `4.1 Go libérés + 37 de taille
-  inconnue`, in the confirmation and in the recap, which wrap rather than
-  clip. The resources column's title has 38 cells at its narrowest and cannot
-  hold that sentence whole, so it states the bound it can write entire —
-  `cochés ≥ 4.1 Go`. Two renderings, one rule: both ask `has_known_size`
-  through `clean::all_sizeless`, the same function `Plan::summary` and
-  `finished_recap` already used.
-- **Two things the documentation knew and no page carried** (#52, #59).
-  GitHub deletes any cache entry unread for more than seven days whatever
-  limit is configured, and the TUI states it only on the over-threshold
-  warning — so it never reaches the repositories that do not exceed the
-  threshold, which are exactly the ones for whom it explains why a cache
-  vanished on its own. It is in [the TUI guide](docs/tui.md) now, derived
-  from the code that draws the gauge rather than copied from the README. And
-  the Billing tab's order of degradation — what goes first when the terminal
-  is too short, which tells a reader what an absence does *not* mean — came
-  back into [the billing guide](docs/billing.md) with the measured example
-  that had survived only in this file.
+- **A placeholder zero no longer passes for a measurement, in the ordering
+  or in the totals** (#51). Sorting by size — the default, because size is
+  why the user opened the tool — read `size_bytes` whatever the kind, so a
+  workflow run, whose zero `api::runs::list` writes as a placeholder, was
+  filed among the lightest rows while its own cell said `—`. The families
+  GitHub states no size for now form a group at the end of that ordering;
+  ranked last rather than first, because three hundred runs at the top would
+  push the answer off screen. The boundary earns its keep in the other
+  direction too: a cache genuinely measured at zero now sorts *above* them,
+  where the old tie on `Reverse(0)` buried it among things nobody weighed.
+  Within a group the listing's own order survives, `sort_by_key` being
+  stable and `size_rank` a pure function of the row.
+  The same zero was being summed. A purge holding both caches and runs
+  announced a total that said nothing about the runs in it — rare until
+  `[A]` began preselecting runs whose pull request had merged, routine
+  after. The confirmation now reads `40 élément(s) · 4.1 Go + 37 de taille
+  inconnue` and the post-purge recap `4.1 Go + 37 de taille inconnue
+  libérés`. The resources column has 38 cells at its narrowest and cannot
+  hold that clause, so its title states the bound it can write whole —
+  `cochés ≥ 4.1 Go`. One rule behind all three: `clean::all_sizeless`, the
+  function `Plan::summary` and `finished_recap` already shared.
+- **The CLI reference is held to the binary's own `--help`** (#61).
+  `docs/cli.md` opens on a claim about its own provenance — every flag below
+  is taken from what the binary prints — and nothing checked it. It had been
+  false: the `clean --help` block dropped the second sentence of four flag
+  descriptions, the sentences carrying the guarantees that a package version
+  has no size GitHub will state, that a live branch is never taken in bulk,
+  that a tag is never preselected, that a release itself is never deleted.
+  That one was corrected by hand in rc.3.
+  `docs_cli_md_quotes_the_binarys_own_help` now runs the binary and compares
+  every quoted **help** block — those holding a `Usage: bondebarras` line,
+  and it fails unless they are exactly the four screens it names — against
+  that screen's output, line by line. It found a drift of its own on the
+  first run: the synopsis block wrapped `update`'s description over three
+  lines by hand, a shape no terminal ever produced. A companion test pins
+  the premise the comparison rests on, `the_quoted_help_is_the_same_at_any_
+  terminal_width`, because clap without `wrap_help` is width-invariant — and
+  the day that stops being true the guard should say so rather than quietly
+  compare against the wrong rendering.
+- **The seven-day rule reaches the page a TUI user reads** (#52, #59). The
+  README and the billing guide both carried GitHub's rule — any cache entry
+  unread for more than seven days is deleted, whatever limit is configured —
+  but the TUI guide did not, and the interface itself states it only on the
+  over-threshold warning. It therefore never reached the repositories that
+  stay under the threshold, which are exactly the ones for whom it explains
+  why a cache vanished on its own. It is in [the TUI guide](docs/tui.md)
+  now, derived from the code that draws the gauge. The Billing tab's order
+  of degradation — what goes first when the terminal is too short, which is
+  what tells a reader that an absence is not a zero — came back into [the
+  billing guide](docs/billing.md), with the measured example that had
+  survived only in a test fixture and this file.
 - **Windows is tested, and `update` knows how to serve it** (#55). Windows was
   the only one of the three platforms `CLAUDE.md` promises that nothing
   verified and that `update` could not serve. CI now runs the test matrix on
