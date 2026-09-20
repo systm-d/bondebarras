@@ -17,7 +17,7 @@ status_note = "No stable release yet: feature-complete and safe to run — nothi
 
 <section id="demo" class="preview">
 <h2>One screen, entirely at the keyboard</h2>
-<p class="section-lede">Three columns, always on screen — organizations, this org's repositories, and the selected one's resources — flagged caches stand out at a glance.</p>
+<p class="section-lede">Three columns from 100 columns up — organizations, this org's repositories, and the selected one's resources — folding to two below that and to one below 78. Flagged caches stand out at a glance.</p>
 <!-- #30: a real TUI screenshot belongs here, ahead of the sketch
      below. Deliberately left empty until that capture exists: no
      stand-in, no redrawn sketch, no description of an image nobody
@@ -99,7 +99,7 @@ status_note = "No stable release yet: feature-complete and safe to run — nothi
 <h2>Install</h2>
 <p class="section-lede">Reads and writes only the GitHub API — no account of its own, no telemetry, no cloud storage.</p>
 <h3>Available now — {{ release() }}</h3>
-<p>Binaries and packages are attached to {{ release_link() }}, each with its own <code>.sha256</code> sidecar. Download the one for your platform, then follow the installation guide.</p>
+<p>Binaries and packages are attached to {{ release_link() }}, every binary artifact with its own <code>.sha256</code> sidecar — the <code>PKGBUILD</code> and the Homebrew formula are rendered afterwards and carry none. Download the one for your platform, then follow the installation guide.</p>
 <table class="platforms">
 <thead><tr><th>Platform</th><th>Architecture</th><th>Format</th></tr></thead>
 <tbody>

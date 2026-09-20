@@ -17,7 +17,7 @@ status_note = "Pas encore de version stable : complet et sûr à l'usage — rie
 
 <section id="demo" class="preview">
 <h2>Un seul écran, entièrement au clavier</h2>
-<p class="section-lede">Trois colonnes, toujours à l'écran — les organisations, les dépôts de l'org courante et les ressources du dépôt sélectionné — les caches marqués sautent aux yeux.</p>
+<p class="section-lede">Trois colonnes à partir de 100 colonnes — les organisations, les dépôts de l'org courante et les ressources du dépôt sélectionné — repliées à deux en dessous, à une sous 78. Les caches marqués sautent aux yeux.</p>
 <!-- #30: a real TUI screenshot belongs here, ahead of the sketch
      below. Deliberately left empty until that capture exists: no
      stand-in, no redrawn sketch, no description of an image nobody
@@ -99,7 +99,7 @@ status_note = "Pas encore de version stable : complet et sûr à l'usage — rie
 <h2>Installation</h2>
 <p class="section-lede">Ne lit et n'écrit que l'API GitHub — pas de compte propre, pas de télémétrie, pas de stockage cloud.</p>
 <h3>Disponible maintenant — {{ release() }}</h3>
-<p>Les binaires et paquets sont joints à {{ release_link() }}, chacun avec son fichier <code>.sha256</code>. Télécharge celui de ta plateforme, puis suis le guide d'installation.</p>
+<p>Les binaires et paquets sont joints à {{ release_link() }}, chaque artefact binaire avec son fichier <code>.sha256</code> — le <code>PKGBUILD</code> et la formule Homebrew sont rendus ensuite et n'en ont pas. Télécharge celui de ta plateforme, puis suis le guide d'installation.</p>
 <table class="platforms">
 <thead><tr><th>Plateforme</th><th>Architecture</th><th>Format</th></tr></thead>
 <tbody>
