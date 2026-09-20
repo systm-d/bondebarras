@@ -5,6 +5,57 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **Windows is tested, and `update` knows how to serve it** (#55). Windows was
+  the only one of the three platforms `CLAUDE.md` promises that nothing
+  verified and that `update` could not serve. CI now runs the test matrix on
+  `windows-latest` too — **six targets, not five** — so the `windows-x86_64`
+  branch of `current_target_spells_the_platform_as_the_release_workflow_does`
+  is finally executed rather than merely green. And `detect_channel_for` now
+  recognises a Windows install instead of answering `Unknown`: separators are
+  normalised before any pattern is matched, so `C:\Users\…\.cargo\bin\` reads
+  as Cargo; a winget install reads as winget in **both** scopes; and anything
+  else on Windows reads as the manual-archive channel, served the
+  `bondebarras-windows-x86_64.zip` every release has published all along. A
+  Windows user was previously told `Impossible de déterminer comment
+  bondebarras a été installé` while standing in front of a release page
+  holding an archive for their exact machine — the same class of lie #49
+  corrected for platforms: saying "I don't know" when the information is
+  right there.
+- **A machine-scope winget install no longer escapes that detection** (#55,
+  review). `%PROGRAMFILES%\WinGet\` carries no `Microsoft\` segment —
+  winget's `portablePackageMachineRoot` default is
+  `%PROGRAMFILES%/WinGet/Packages/`, against
+  `%LOCALAPPDATA%/Microsoft/WinGet/Packages/` for the user scope — so
+  matching `Microsoft/WinGet/` alone classified every machine-wide install as
+  a manual archive. That invited the user to swap the `.exe` by hand while
+  winget's database went on naming the version it installed: the exact
+  desynchronisation detecting winget at all exists to prevent, arrived at
+  from the other side. Both the package root and the `Links` shim directory
+  are now matched, in either scope.
+- **The update messages are held by tests, not only the classification that
+  produces them** (#55, review). Three messages could be rewritten into
+  falsehoods with the whole suite staying green: the winget note could
+  promise `winget upgrade`, a command that finds nothing; the Windows archive
+  note could lose the reserve that a running `.exe` cannot be overwritten;
+  and the packageless archive arm could borrow the `Impossible de déterminer`
+  sentence. Each is pinned now — the last as an equivalence over every
+  channel at once, so no arm can borrow that sentence back. `Tarball` had in
+  fact borrowed it, and now says what it knows. It also gained the Unix
+  counterpart of the Windows reserve, worded for the fact that actually holds
+  there: a `cp` over a running binary fails on `ETXTBSY`, while a rename over
+  it succeeds. Reusing the Windows sentence would have been false, and saying
+  nothing left that failure unexplained.
+- **A Windows path is no longer classified by a Unix-only pattern** (#55,
+  review). `linuxbrew` and `Cellar` were matched ahead of the platform
+  branch, so `C:\Cellar\…` answered `Homebrew` and would have pointed a
+  Windows user at a tap that publishes nothing. Those two patterns are gated
+  on the operating system now; cargo's and winget's directories stay ungated,
+  being spelled the same wherever they appear.
+
 ## [1.0.0-rc.3] - 2026-09-20
 
 ### Fixed

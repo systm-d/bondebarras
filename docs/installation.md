@@ -230,28 +230,28 @@ the binary blindly:
 | --- | --- |
 | `.deb` | Downloads, verifies, then `sudo apt install <file>` |
 | `.rpm` | Downloads, verifies, then `sudo dnf install <file>` |
-| Homebrew, AUR / pacman, Nix, `cargo install` | Prints the right instruction and touches nothing — overwriting a package manager's file would desynchronize its database |
-| A manually installed binary | Downloads and verifies the archive, then tells you where it is for you to replace the binary yourself |
+| Homebrew, AUR / pacman, Nix, `cargo install`, winget | Prints the right instruction and touches nothing — overwriting a package manager's file would desynchronize its database |
+| A manually installed binary | Downloads and verifies the archive built for your own platform — the `.tar.gz`, or the `.zip` on Windows — then tells you where it is for you to replace the binary yourself |
 
 **Verification fails closed.** Nothing is installed unless the published
 checksum matches: a release with no checksum, a checksum that could not be
 fetched or parsed, and a checksum that disagrees are three distinct refusals,
 each with its own message, and **all three refuse**.
 
-Two limitations worth knowing before you rely on it:
+One limitation worth knowing before you rely on it:
 
 > **`update` exits 0 even when it gives up** — when it could not reach GitHub,
 > or refused a checksum. A download or an installation that fails outright does
 > exit `1`. Read its output; do not test its exit code.
 
-> **On a manually installed binary, `update` picks the first `.tar.gz` asset
-> of the release, without considering your platform.** The current release
-> publishes two — Linux and macOS — so the archive it downloads and verifies
-> may not be the one for the machine you are on. Check the filename it prints
-> before replacing your binary, or download the archive yourself from the
-> [release page](https://github.com/systm-d/bondebarras/releases/latest). The
-> `.deb` and `.rpm` channels are unaffected: each release publishes exactly one
-> of each.
+**`update` refuses rather than guess your platform.** On a manually installed
+binary it downloads only the archive whose name carries your own
+`<os>-<arch>` token — `linux-x86_64`, `macos-aarch64` or `windows-x86_64` —
+and when the release publishes none for it, it names the platform it detected
+and downloads nothing, rather than falling back on another machine's build.
+The `.deb` and `.rpm` channels carry no such token in their filenames, so
+neither is filtered on the platform: each release publishes exactly one of
+each.
 
 Once installed, start with [authentication](authentication.md) — bondebarras
 needs a GitHub token before it can show you anything.

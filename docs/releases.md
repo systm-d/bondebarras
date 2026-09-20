@@ -111,8 +111,13 @@ Verification commands for a manual download are in
 | **AUR** | **No job exists**, and no package was ever submitted. A rendered `PKGBUILD` is attached to every release instead | Not published. `yay -S bondebarras` does not work, and never has |
 
 `bondebarras update` reflects this honestly: on Arch it names the release's
-`PKGBUILD` and `makepkg -si`, and on macOS it points at the release page — it
-never prints a command that could not succeed.
+`PKGBUILD` and `makepkg -si`, on macOS it points at the release page, and on a
+winget install it says in as many words that `winget upgrade` would find
+nothing — it never prints a command that could not succeed. The one command it
+does name there, `winget uninstall systm-d.bondebarras`, is reachable for the
+only reader who can ever see it: that branch is taken only when winget
+installed bondebarras in the first place, so winget's database already holds
+the identifier `release.yml` writes into the manifests it attaches.
 
 ## Versioning
 
