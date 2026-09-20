@@ -380,6 +380,10 @@ bottom, that is the order in which things go:
 | 5th | The retention line itself, with the reason under it |
 | 6th | The deletion notice — `Supprimer des artefacts arrête l'accumulation…` |
 
+The blank line separating the cost block from the retention block is a
+passage of its own, and goes between the 2nd and the 3rd. It is invisible
+on screen, which is exactly why it is easy to leave out of the count.
+
 A note is one sentence across two rows, and counts as **one** passage, so it
 is shown whole or not at all. That rule was bought by a real defect: at 80×24
 the tab used to end on `Note : retention-days, dans un workflow, fixe la
@@ -409,15 +413,18 @@ organization, and three real shapes were measured:
 | The organization | What 80×24 holds |
 | --- | --- |
 | A readable tab, quiet 7-day retention, no budget warning | Everything down to **both** retention notes |
-| `team`, a blocking budget warning under *both* gauges, a flagged 90-day retention | Down to the **first** note; the second note and the cost line do not fit |
+| `team`, a blocking budget warning under the **minutes** gauge, a flagged 90-day retention | Down to the **first** note; the second note and the cost line do not fit |
 | `SecondBrain-io` in September — `enterprise`, no budget at all, flagged retention | **Neither** note |
+| `densest_org` — the shape the 33-row floor is measured on | Down to the **deletion notice**, which lands on row 19; the retention block overflows |
 
-The middle case is arithmetic rather than bad luck: its fixed content alone
+The `team` case is arithmetic rather than bad luck: its fixed content alone
 is 21 rows against a 19-row body, and even with both breakdowns reduced to
 their one-line summary it still needs 23. Neither breakdown can give back a
 row it does not have. That combination fits at **80×28** — the fallback the
 design ruling names in as many words, "accepting the gap with a documented
-minimum height". Tests:
+minimum height". The `densest_org` row is derived from `tab_passages`
+rather than measured by a test — the floor test walks that shape at its own
+floor, not at 80×24. Tests:
 `the_retention_notes_fit_an_eighty_by_twenty_four_terminal`,
 `both_breakdowns_yield_to_the_fixed_content_at_eighty_by_twenty_four`,
 `the_blocking_budget_case_fits_at_eighty_by_twenty_eight`.

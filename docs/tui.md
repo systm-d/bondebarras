@@ -143,9 +143,12 @@ that the rule is stated and that it is stated as independent of any limit.
 > rows high where it needed 17, so heights 17 to 19 no longer show it at all;
 > at 60 columns the same shift lost heights 13 and 14. Recorded rather than
 > reshaped — giving that sentence its own rank in the head is a design
-> question, not a wording one. Tests:
-> `the_cache_banner_stays_within_its_line_budget`,
-> `the_column_head_keeps_each_part_whole_or_drops_it_across_swept_heights`.
+> question, not a wording one. The band itself is recorded in the
+> documentation of `the_cache_banner_stays_within_its_line_budget`, which
+> asserts the row counts on either side of it and not the band; what
+> `the_column_head_keeps_each_part_whole_or_drops_it_across_swept_heights`
+> guarantees is the other half — that a part is drawn whole or dropped, never
+> clipped.
 
 A row:
 
