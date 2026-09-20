@@ -100,6 +100,29 @@ Tests: `a_private_repo_within_its_allowance_still_consumes_it`,
 These three figures are **hardcoded from GitHub's published table**, not read
 from any response. GitHub exposes no allowance field.
 
+### A real reading
+
+`SecondBrain-io/monolith-back` burnt **24 632 private Linux-equivalent
+minutes in July 2026** — exactly the kind of runaway usage this tab exists to
+surface, since minutes cannot be reclaimed after the fact. That organization
+is on `enterprise`, so those minutes are **49 %** of the 50 000 above.
+
+This is a measurement taken on the author's own account, not an illustration,
+and it is still in the code: the figure is the fixture of
+`a_private_repo_within_its_allowance_still_consumes_it` and
+`minute_lines_includes_a_private_repo_within_its_allowance`, the two tests
+that pin a private repository *inside* its allowance still being counted.
+That was a real bug — GitHub discounts such a repository exactly as it
+discounts a public one, so a filter on the discount fields made
+`included_minutes` read `0` right up until GitHub started billing. Both tests
+fail against that filter — the gauge reading 0 where 24 632 is true, and the
+breakdown listing no line at all for the repository it exists to name.
+
+**And 49 % is a floor, not a measurement.** An `enterprise` allowance belongs
+to the enterprise account and is shared across its organizations, and
+bondebarras only ever sees the one — the same caveat the tab prints for
+itself, [below](#enterprise-organizations-share-their-quota).
+
 ## Actions storage, in GB-hours
 
 Storage is billed by the hour a gigabyte exists — not by peak, not by month's
@@ -319,6 +342,96 @@ Without `admin:org` the line reads `Rétention artefacts et journaux :
 illisible`, and `scan --json` reports `artifact_retention_days: null`. GitHub's
 90-day default is **never assumed** in its place. Test:
 `retention_fetch_never_assumes_a_default`.
+
+## What a short terminal drops, and in what order
+
+The tab is a `Paragraph` with **no scroll**, so a body shorter than its
+content loses the tail. What it loses is decided rather than accidental, and
+the order is worth knowing: a figure missing for want of a row and a figure
+missing because GitHub never exposed it look identical on screen and mean
+entirely different things. Everything on this page about unknown values
+assumes you can tell the two apart.
+
+Degradation happens in two stages, both in `tui::views::billing`.
+
+**First, the two per-repository breakdowns yield.** Everything else is fixed
+— the header, the month line, the enterprise note, both gauges, any budget
+line and warning, the deletion notice, the retention line and its two notes,
+the cost block. `tab_passages` sizes those first and gives what is left of
+the body to the breakdowns, the minutes taking the odd row. Each is capped so
+that its `… et N autre(s)` line always survives (`breakdown_cap`): a
+breakdown squeezed to nothing still shows that one line, one row over its own
+budget, because a truncation leaving no trace would bury the count of what it
+hid. Tests: `both_breakdowns_yield_to_the_fixed_content_at_eighty_by_twenty_four`,
+`the_et_n_autres_line_survives_whatever_the_breakdowns_show`.
+
+**Then, and only then, the tab drops content from the bottom** — whole
+passages, in order, never half a sentence. `passages_within` stops at the
+first passage that will not fit rather than skipping it and carrying on, so
+nothing further down is ever promoted over what was dropped. Read from the
+bottom, that is the order in which things go:
+
+| Goes | What |
+| --- | --- |
+| 1st | `⚠ SKU inconnu, compté ×1 : <sku>` — one line per unknown runner family |
+| 2nd | The cost line — `Coûts   brut …   couvert …   facturé …` |
+| 3rd | The **second** retention note, whole |
+| 4th | The **first** retention note, whole |
+| 5th | The retention line itself, with the reason under it |
+| 6th | The deletion notice — `Supprimer des artefacts arrête l'accumulation…` |
+
+The blank line separating the cost block from the retention block is a
+passage of its own, and goes between the 2nd and the 3rd. It is invisible
+on screen, which is exactly why it is easy to leave out of the count.
+
+A note is one sentence across two rows, and counts as **one** passage, so it
+is shown whole or not at all. That rule was bought by a real defect: at 80×24
+the tab used to end on `Note : retention-days, dans un workflow, fixe la
+durée`, with the rest of the sentence gone. Test:
+`a_retention_note_is_shown_whole_or_not_at_all_at_eighty_by_twenty_four`.
+
+### The heights this was measured at
+
+**The densest tab this code can build is whole from a 33-row terminal.** The
+figure is measured, not typed beside the code:
+`the_documented_height_floor_is_the_densest_tab_the_code_can_build` walks
+every combination the tab can render — five plan variants, four budget
+states, three retention states, each gauge near its quota or not, with and
+without an unknown SKU, with the month's minutes public or private — takes
+the maximum, and then fails unless the README and the CHANGELOG carry that
+very number. It also checks the floor is *tight*: one row short, the
+`⚠ SKU inconnu` line is the first thing gone, which is the table above
+asserted rather than described.
+
+A per-SKU budget sits outside that floor deliberately: it adds two rows, and
+GitHub allows any number of them, as it does of unknown SKUs past the first.
+A floor over an unbounded list would be a different promise.
+
+**At 80×24** — the size every terminal still has — what fits depends on the
+organization, and three real shapes were measured:
+
+| The organization | What 80×24 holds |
+| --- | --- |
+| A readable tab, quiet 7-day retention, no budget warning | Everything down to **both** retention notes |
+| `team`, a blocking budget warning under the **minutes** gauge, a flagged 90-day retention | Down to the **first** note; the second note and the cost line do not fit |
+| `SecondBrain-io` in September — `enterprise`, no budget at all, flagged retention | **Neither** note |
+| `densest_org` — the shape the 33-row floor is measured on | Down to the **deletion notice**, which lands on row 19; the retention block overflows |
+
+The `team` case is arithmetic rather than bad luck: its fixed content alone
+is 21 rows against a 19-row body, and even with both breakdowns reduced to
+their one-line summary it still needs 23. Neither breakdown can give back a
+row it does not have. That combination fits at **80×28** — the fallback the
+design ruling names in as many words, "accepting the gap with a documented
+minimum height". The `densest_org` row is derived from `tab_passages`
+rather than measured by a test — the floor test walks that shape at its own
+floor, not at 80×24. Tests:
+`the_retention_notes_fit_an_eighty_by_twenty_four_terminal`,
+`both_breakdowns_yield_to_the_fixed_content_at_eighty_by_twenty_four`,
+`the_blocking_budget_case_fits_at_eighty_by_twenty_eight`.
+
+Nothing that already fits is ever pushed back off as the terminal grows:
+`breakdown_cap` only ever gives the breakdowns more room. Test:
+`the_load_bearing_lines_that_fit_never_disappear_as_height_grows`.
 
 ## Which month, and what the figures are worth
 
