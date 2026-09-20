@@ -55,9 +55,9 @@ impl ReleaseInfo {
     /// happened to list first: a macOS user was offered
     /// `bondebarras-linux-x86_64.tar.gz`, a download that passes its
     /// checksum and then cannot execute. Injecting the target is also
-    /// what makes that testable — CI builds on five platforms, so a test
-    /// keyed on the host's own target would assert something different on
-    /// each one.
+    /// what makes that testable — CI runs on six platforms since #55, so a
+    /// test keyed on the host's own target would assert something different
+    /// on each one.
     ///
     /// `None` is a named, testable outcome — not a panic — for a channel
     /// this release genuinely ships nothing for (Cargo never publishes a
@@ -371,16 +371,24 @@ pub fn detect_channel() -> InstallChannel {
 /// reading `std::env::consts::OS` in here would make the Windows branch
 /// assertable only *on* Windows, which is the hole #55 was filed for.
 ///
-/// Three signals, in order: the path first (`.cargo/`, `Microsoft/WinGet/`,
-/// `linuxbrew`/`Cellar`, `/nix/store/` are unambiguous — no manager is ever
-/// consulted for them), then the operating system, then the package manager
-/// asked directly about the resolved path. A bare system path like
-/// `/usr/bin` proves nothing on its own, so only the manager's answer
-/// decides there.
+/// Three signals, in order: the path first (`.cargo/` and winget's own
+/// directories are unambiguous — no manager is ever consulted for them),
+/// then the operating system, then the package manager asked directly about
+/// the resolved path. A bare system path like `/usr/bin` proves nothing on
+/// its own, so only the manager's answer decides there.
+///
+/// The path signal is itself platform-aware, which is why `os` reaches
+/// [`channel_from_path`] instead of only gating the branch below it.
+/// `linuxbrew`, `Cellar` and `/nix/store/` are Unix facts; a Windows path
+/// that happens to contain one of them — `C:\Cellar\…` — is not a Homebrew
+/// install, and reading those patterns ahead of the `windows` branch let a
+/// spurious `Homebrew` outrank the `Zip` answer #55 exists to give. Cargo
+/// and winget stay ungated: both spell their directories the same way
+/// wherever they appear.
 fn detect_channel_for(exe: &Path, os: &str, owns: impl Fn(&str, &Path) -> bool) -> InstallChannel {
     let path = exe.to_string_lossy();
 
-    if let Some(channel) = channel_from_path(&path) {
+    if let Some(channel) = channel_from_path(&path, os) {
         return channel;
     }
     // Windows has no `dpkg` to ask and no `/usr` to recognise: a path that
@@ -410,6 +418,36 @@ fn detect_channel_for(exe: &Path, os: &str, owns: impl Fn(&str, &Path) -> bool) 
     InstallChannel::Unknown
 }
 
+/// The directories a winget-managed bondebarras can sit in, lowercased and
+/// spelled with `/` — the form [`channel_from_path`] normalises a path into
+/// before matching.
+///
+/// bondebarras' winget manifests declare `InstallerType: portable` (the
+/// `winget` job in `.github/workflows/release.yml`), so the two directories
+/// that matter are winget's portable package root and the `Links` directory
+/// holding the shim that lands on `PATH`. Each exists once per install
+/// scope:
+///
+/// | | user scope | machine scope |
+/// | --- | --- | --- |
+/// | package | `%LOCALAPPDATA%\Microsoft\WinGet\Packages\` | `%PROGRAMFILES%\WinGet\Packages\` |
+/// | shim | `%LOCALAPPDATA%\Microsoft\WinGet\Links\` | `%PROGRAMFILES%\WinGet\Links\` |
+///
+/// **The machine-scope pair carries no `Microsoft\` segment.** winget's own
+/// defaults say so: `portablePackageMachineRoot` is
+/// `%PROGRAMFILES%/WinGet/Packages/` against `portablePackageUserRoot`'s
+/// `%LOCALAPPDATA%/Microsoft/WinGet/Packages/`. Matching `Microsoft/WinGet/`
+/// alone — all #55 first shipped — therefore sent every machine-scope
+/// install to `Zip`, and that is the one misclassification here with a real
+/// cost: `Zip` invites the user to swap the `.exe` by hand while winget's
+/// database goes on describing the version it installed, which is the exact
+/// desynchronisation detecting winget at all exists to prevent.
+///
+/// `%PROGRAMFILES%` widens to `C:\Program Files (x86)\` for an x86 package;
+/// that path holds `/winget/packages/` just the same, so it needs no fourth
+/// entry.
+const WINGET_DIRECTORIES: [&str; 3] = ["/microsoft/winget/", "/winget/packages/", "/winget/links/"];
+
 /// The path-only part of channel detection (no system calls) — unit-testable
 /// on its own.
 ///
@@ -418,19 +456,21 @@ fn detect_channel_for(exe: &Path, os: &str, owns: impl Fn(&str, &Path) -> bool) 
 /// enough to send `C:\Users\…\.cargo\bin\bondebarras.exe` to `Unknown`
 /// before #55 — a cargo install that bondebarras could see and still claimed
 /// not to recognise.
-fn channel_from_path(path: &str) -> Option<InstallChannel> {
+///
+/// `os` gates the patterns that are Unix facts rather than universal ones —
+/// see [`detect_channel_for`] for why that gate belongs here and not after
+/// the call.
+fn channel_from_path(path: &str, os: &str) -> Option<InstallChannel> {
     let path = path.replace('\\', "/");
+    // Matched case-insensitively, as Windows itself compares paths.
+    let lower = path.to_ascii_lowercase();
     if path.contains("/.cargo/") {
         Some(InstallChannel::Cargo)
-    } else if path.to_ascii_lowercase().contains("/microsoft/winget/") {
-        // `%LOCALAPPDATA%\Microsoft\WinGet\` holds both `Packages\` (the
-        // installed file) and `Links\` (the shim that lands on `PATH`);
-        // their shared parent catches whichever one `current_exe` resolved
-        // to. Matched case-insensitively, as Windows itself compares paths.
+    } else if WINGET_DIRECTORIES.iter().any(|dir| lower.contains(dir)) {
         Some(InstallChannel::Winget)
-    } else if path.contains("linuxbrew") || path.contains("/Cellar/") {
+    } else if os != WINDOWS_OS && (path.contains("linuxbrew") || path.contains("/Cellar/")) {
         Some(InstallChannel::Homebrew)
-    } else if path.starts_with("/nix/store/") {
+    } else if os != WINDOWS_OS && path.starts_with("/nix/store/") {
         Some(InstallChannel::Nix)
     } else {
         None
@@ -474,9 +514,17 @@ pub enum InstallPlan {
 /// on why bondebarras doesn't extract the archive itself. That holds on
 /// every platform, Windows included: bondebarras has never replaced its own
 /// binary anywhere, so the Windows message asks for the same hand swap a
-/// Linux user is asked for, plus the one caveat that really is Windows's —
-/// a running `.exe` cannot be overwritten in place. Every channel owned by a
-/// package manager (`Deb`, `Rpm`) or fenced off from one (`Pacman`,
+/// Linux user is asked for.
+///
+/// Both archive channels carry a caveat about swapping a binary that is
+/// still running, worded per platform because the underlying fact is not the
+/// same one. Windows refuses outright: an executable with a live image
+/// cannot be overwritten at all. Unix refuses only the *overwrite* — a `cp`
+/// over a running binary fails on `ETXTBSY`, « Text file busy » — while a
+/// rename over it still succeeds. Reusing the Windows sentence on Unix would
+/// be false, and `Tarball` saying nothing at all, which is what it did until
+/// the #55 review, leaves that `cp` failure unexplained. Every channel owned
+/// by a package manager (`Deb`, `Rpm`) or fenced off from one (`Pacman`,
 /// `Homebrew`, `Nix`, `Cargo`, `Winget`) is handled without ever touching
 /// the binary directly.
 pub fn install_plan(channel: InstallChannel, package: &Path) -> InstallPlan {
@@ -527,24 +575,37 @@ pub fn install_plan(channel: InstallChannel, package: &Path) -> InstallPlan {
              base de winget resterait sur l'ancienne version."
         )),
         InstallChannel::Tarball if !pkg.is_empty() => InstallPlan::Manual(format!(
-            "L'archive a été téléchargée et son empreinte vérifiée : {pkg}. \
-             Extrayez-la et remplacez votre binaire par celui qu'elle contient."
+            "L'archive a été téléchargée et son empreinte vérifiée : {pkg}. Extrayez-la et \
+             remplacez votre binaire par celui qu'elle contient — fermez-le d'abord si vous \
+             l'écrasez sur place, un exécutable en cours d'exécution ne peut pas être réécrit \
+             (« Text file busy »)."
         )),
         InstallChannel::Zip if !pkg.is_empty() => InstallPlan::Manual(format!(
             "L'archive a été téléchargée et son empreinte vérifiée : {pkg}. Extrayez-la et \
              remplacez votre bondebarras.exe par celui qu'elle contient — fermez-le d'abord, \
              Windows refuse d'écraser un exécutable en cours d'exécution."
         )),
-        // Unreachable from `commands::update::apply`, which only passes an
-        // empty path for a channel that downloads nothing — but `Zip` must
-        // not borrow the "impossible de déterminer" sentence below, which
-        // would be false for it in any case.
+        // The two empty-package arms below are unreachable from
+        // `commands::update::apply`: it only reaches `install_plan` with an
+        // empty path on a channel whose `downloads_an_asset()` is false, and
+        // both archive channels download one. They are kept rather than
+        // folded into `Unknown`, and pinned by tests of their own, because
+        // the sentence in that last arm is true of exactly one channel. A
+        // future caller that hands an archive channel an empty path must
+        // come out with a message about an archive, not with a claim that
+        // bondebarras cannot tell how it was installed — which it can, or it
+        // would not be in this arm. `Tarball` shared that false sentence
+        // until the #55 review; `Zip` never did, and now neither does.
         InstallChannel::Zip => InstallPlan::Manual(format!(
             "Récupérez la dernière archive Windows sur \
              https://github.com/{REPO}/releases/latest, extrayez-la et remplacez votre \
              bondebarras.exe."
         )),
-        InstallChannel::Tarball | InstallChannel::Unknown => InstallPlan::Manual(format!(
+        InstallChannel::Tarball => InstallPlan::Manual(format!(
+            "Récupérez la dernière archive sur https://github.com/{REPO}/releases/latest, \
+             extrayez-la et remplacez votre binaire."
+        )),
+        InstallChannel::Unknown => InstallPlan::Manual(format!(
             "Impossible de déterminer comment bondebarras a été installé. Récupérez la \
              dernière archive sur https://github.com/{REPO}/releases/latest et remplacez \
              votre binaire."
@@ -828,7 +889,7 @@ mod tests {
     // `asset_for` used to do — offers a Linux user the macOS build: a
     // download that passes its checksum and then refuses to execute. The
     // target is a parameter precisely so this can name a platform other than
-    // the one CI happens to run on, of which there are five.
+    // the one CI happens to run on, of which there are six since #55.
     #[test]
     fn asset_for_picks_the_archive_of_the_running_platform_not_the_first_listed() {
         let r = parse_release(SAMPLE).unwrap();
@@ -913,7 +974,7 @@ mod tests {
         assert!(r.checksum_for(deb).is_none());
     }
 
-    // Whichever of the five CI platforms this runs on, the token must be
+    // Whichever of the six CI platforms this runs on, the token must be
     // spelled the way `release.yml` spells its `matrix.name` — that identity
     // is the entire mapping, and the reason no lookup table exists.
     #[test]
@@ -996,25 +1057,31 @@ mod tests {
     #[test]
     fn channel_from_path_spots_cargo_brew_and_nix() {
         assert_eq!(
-            channel_from_path("/home/x/.cargo/bin/bondebarras"),
+            channel_from_path("/home/x/.cargo/bin/bondebarras", LINUX_OS),
             Some(InstallChannel::Cargo)
         );
         assert_eq!(
-            channel_from_path("/home/linuxbrew/.linuxbrew/bin/bondebarras"),
+            channel_from_path("/home/linuxbrew/.linuxbrew/bin/bondebarras", LINUX_OS),
             Some(InstallChannel::Homebrew)
         );
         assert_eq!(
-            channel_from_path("/opt/homebrew/Cellar/bondebarras/0.5.0/bin/bondebarras"),
+            channel_from_path(
+                "/opt/homebrew/Cellar/bondebarras/0.5.0/bin/bondebarras",
+                MACOS_OS
+            ),
             Some(InstallChannel::Homebrew)
         );
         assert_eq!(
-            channel_from_path("/nix/store/abcd1234-bondebarras-0.5.0/bin/bondebarras"),
+            channel_from_path(
+                "/nix/store/abcd1234-bondebarras-0.5.0/bin/bondebarras",
+                LINUX_OS
+            ),
             Some(InstallChannel::Nix)
         );
         // A bare system path proves nothing on its own — this is the seam
         // where channel detection must fall through to asking a package
         // manager instead of guessing from the path alone.
-        assert_eq!(channel_from_path("/usr/bin/bondebarras"), None);
+        assert_eq!(channel_from_path("/usr/bin/bondebarras", LINUX_OS), None);
     }
 
     // The test that matters most, alongside `Ahead`: a wrong implementation
@@ -1125,7 +1192,7 @@ mod tests {
     fn a_windows_cargo_install_is_still_a_cargo_install() {
         let exe = Path::new(r"C:\Users\x\.cargo\bin\bondebarras.exe");
         assert_eq!(
-            channel_from_path(&exe.to_string_lossy()),
+            channel_from_path(&exe.to_string_lossy(), WINDOWS_OS),
             Some(InstallChannel::Cargo)
         );
         assert_eq!(
@@ -1149,10 +1216,190 @@ mod tests {
         // The shim that actually lands on `PATH` sits one directory over,
         // under the same parent — `current_exe` may resolve to either.
         assert_eq!(
-            channel_from_path(r"C:\Users\x\AppData\Local\Microsoft\WinGet\Links\bondebarras.exe"),
+            channel_from_path(
+                r"C:\Users\x\AppData\Local\Microsoft\WinGet\Links\bondebarras.exe",
+                WINDOWS_OS
+            ),
             Some(InstallChannel::Winget)
         );
         assert!(!InstallChannel::Winget.downloads_an_asset());
+    }
+
+    // Machine-scope winget (#55, review finding). `%PROGRAMFILES%\WinGet\`
+    // carries no `Microsoft\` segment — winget's own `portablePackage`
+    // `MachineRoot` default is `%PROGRAMFILES%/WinGet/Packages/`, against
+    // `%LOCALAPPDATA%/Microsoft/WinGet/Packages/` for the user scope — so
+    // matching `Microsoft/WinGet/` alone classified every machine-wide
+    // install as `Zip`. That invited a hand swap of the `.exe` while
+    // winget's database went on naming the version it installed: the very
+    // desynchronisation this detection exists to prevent, reached from the
+    // other side.
+    #[test]
+    fn a_machine_scope_winget_install_is_detected_like_a_user_scope_one() {
+        for path in [
+            r"C:\Program Files\WinGet\Packages\systm-d.bondebarras\bondebarras.exe",
+            r"C:\Program Files\WinGet\Links\bondebarras.exe",
+            // An x86 package widens `%PROGRAMFILES%` and changes nothing else.
+            r"C:\Program Files (x86)\WinGet\Packages\systm-d.bondebarras\bondebarras.exe",
+        ] {
+            assert_eq!(
+                detect_channel_for(Path::new(path), WINDOWS_OS, |_bin, _exe| false),
+                InstallChannel::Winget,
+                "{path}"
+            );
+        }
+    }
+
+    // Detection order (#55, review finding). `linuxbrew` and `Cellar` are
+    // Unix facts, and `channel_from_path` ran before the `windows` branch,
+    // so `C:\Cellar\…` answered `Homebrew` — implausible, but inverted with
+    // respect to the intent, and it would have handed a Windows user a note
+    // about a tap that publishes nothing instead of the archive waiting for
+    // them. Gating those two patterns on the OS is what fixes the order
+    // without moving cargo and winget, which are unambiguous everywhere.
+    #[test]
+    fn a_windows_path_is_never_classified_by_a_unix_only_pattern() {
+        for path in [
+            r"C:\Cellar\bondebarras\bondebarras.exe",
+            r"C:\tools\linuxbrew\bondebarras.exe",
+        ] {
+            assert_eq!(
+                detect_channel_for(Path::new(path), WINDOWS_OS, |_bin, _exe| false),
+                InstallChannel::Zip,
+                "{path}"
+            );
+        }
+        // And the same shapes still mean Homebrew where they mean anything.
+        assert_eq!(
+            channel_from_path(
+                "/opt/homebrew/Cellar/bondebarras/1.0.0/bin/bondebarras",
+                MACOS_OS
+            ),
+            Some(InstallChannel::Homebrew)
+        );
+    }
+
+    // --- The messages, not just the classification (#55, review) --------
+    //
+    // The proof shipped with #55 covered which channel a path resolves to
+    // and never a word of what the user is then told — and the text was the
+    // lie #55 existed to correct. The review demonstrated the hole by
+    // rewriting the winget message into « Lancez `winget upgrade
+    // systm-d.bondebarras` », a command that cannot succeed, and watching
+    // every test stay green. Each test below is keyed on the claim its
+    // message must keep making, so that mutation and the two beside it now
+    // fail.
+
+    // Every variant of `InstallChannel`. Kept complete by hand: the
+    // module's own exhaustive `match`es are what refuse to compile for a
+    // channel with no plan, and this list is what stops one escaping the
+    // text assertions — the two are updated together.
+    const EVERY_CHANNEL: [InstallChannel; 10] = [
+        InstallChannel::Deb,
+        InstallChannel::Rpm,
+        InstallChannel::Pacman,
+        InstallChannel::Cargo,
+        InstallChannel::Homebrew,
+        InstallChannel::Nix,
+        InstallChannel::Winget,
+        InstallChannel::Tarball,
+        InstallChannel::Zip,
+        InstallChannel::Unknown,
+    ];
+
+    // No manifest has reached `microsoft/winget-pkgs`, and `release.yml`
+    // renders them on a stable tag only, so `winget upgrade` finds nothing.
+    // The message has to say that rather than hand out the command — the
+    // exact mutation the review planted and nothing caught.
+    #[test]
+    fn the_winget_message_says_winget_upgrade_would_find_nothing() {
+        let InstallPlan::Manual(msg) = install_plan(InstallChannel::Winget, Path::new("")) else {
+            panic!("expected Manual");
+        };
+        assert!(
+            msg.contains("Aucun paquet winget n'est encore publié"),
+            "{msg}"
+        );
+        assert!(msg.contains("ne trouverait rien"), "{msg}");
+        // The one command it does name *is* reachable: this branch is taken
+        // only when winget installed bondebarras, so winget's database holds
+        // the identifier `release.yml` writes into the manifests.
+        assert!(
+            msg.contains("winget uninstall systm-d.bondebarras"),
+            "{msg}"
+        );
+        assert!(msg.contains("releases/latest"), "{msg}");
+    }
+
+    // The reserve the review deleted and watched nothing notice. It is the
+    // one thing that genuinely differs on Windows, and dropping it leaves
+    // an instruction the user cannot carry out: the swap fails, with no
+    // hint as to why.
+    #[test]
+    fn the_windows_plan_keeps_the_reserve_about_a_running_executable() {
+        let package = Path::new(r"C:\Temp\bondebarras-update-a1b2\bondebarras-windows-x86_64.zip");
+        let InstallPlan::Manual(msg) = install_plan(InstallChannel::Zip, package) else {
+            panic!("expected Manual");
+        };
+        assert!(msg.contains("fermez-le d'abord"), "{msg}");
+        assert!(msg.contains("en cours d'exécution"), "{msg}");
+    }
+
+    // The same reserve on the Unix side, worded for the fact that actually
+    // holds there: a `cp` over a running binary fails on `ETXTBSY`, while a
+    // rename over it succeeds. `Tarball` said nothing at all until the #55
+    // review — the real gap the Windows reserve exposed by contrast.
+    #[test]
+    fn the_tarball_plan_warns_about_overwriting_a_running_binary() {
+        let package = Path::new("/tmp/bondebarras-update-a1b2/bondebarras-linux-x86_64.tar.gz");
+        let InstallPlan::Manual(msg) = install_plan(InstallChannel::Tarball, package) else {
+            panic!("expected Manual");
+        };
+        assert!(msg.contains("fermez-le d'abord"), "{msg}");
+        assert!(msg.contains("Text file busy"), "{msg}");
+        // Windows's absolute refusal must not be transplanted onto Unix,
+        // where a rename over the file still works.
+        assert!(!msg.contains("Windows"), "{msg}");
+    }
+
+    // The sentence #55 exists to stop saying, pinned over every channel and
+    // both shapes of package path at once. The review rewrote the
+    // empty-package `Zip` arm into exactly this sentence and nothing
+    // failed. Stated as an equivalence rather than a spot check, no arm can
+    // borrow it back — and `Tarball` with an empty package, which really
+    // did borrow it, is what this test took it away from.
+    #[test]
+    fn only_an_unknown_install_is_told_bondebarras_cannot_tell_how_it_was_installed() {
+        for channel in EVERY_CHANNEL {
+            for package in [Path::new(""), Path::new("/tmp/staging/bondebarras.pkg")] {
+                let text = match install_plan(channel, package) {
+                    InstallPlan::Manual(msg) => msg,
+                    InstallPlan::Run { command, .. } => command.join(" "),
+                };
+                assert_eq!(
+                    text.contains("Impossible de déterminer"),
+                    channel == InstallChannel::Unknown,
+                    "{channel:?} with {package:?}: {text}"
+                );
+            }
+        }
+    }
+
+    // The empty-package `Zip` arm, unreachable from
+    // `commands::update::apply` — which reaches `install_plan` with an
+    // empty path only on a channel that downloads nothing, and `Zip`
+    // downloads the `.zip`. Pinned rather than deleted: deleting it folds
+    // `Zip` into the `Unknown` arm and hands a Windows user the one
+    // sentence #55 removed, so the guard belongs on the arm rather than on
+    // a caller's discipline.
+    #[test]
+    fn the_windows_plan_without_a_package_still_names_the_windows_archive() {
+        let InstallPlan::Manual(msg) = install_plan(InstallChannel::Zip, Path::new("")) else {
+            panic!("expected Manual");
+        };
+        assert!(msg.contains("archive Windows"), "{msg}");
+        assert!(msg.contains("bondebarras.exe"), "{msg}");
+        assert!(msg.contains("releases/latest"), "{msg}");
     }
 
     // The `.zip` carries its platform token exactly as the `.tar.gz` does,
