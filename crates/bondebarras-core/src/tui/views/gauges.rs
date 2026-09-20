@@ -381,6 +381,21 @@ mod tests {
     /// shows up here immediately, as the quiet figures changing — which is
     /// the whole reason those two cases are pinned beside the warned ones.
     ///
+    /// **What those extra warned rows cost, measured.** A head part is
+    /// never cut, so a taller warned banner is not clipped: past a point
+    /// the whole cache gauge goes, warning included. At inner 38 — the
+    /// narrowest the column is drawn at, and what a 100-column terminal
+    /// gives it in the three-column layout — the warned head needs 13 rows
+    /// where it needed 10 (its name, the wrapped sizeless warning, and the
+    /// gauge itself), and the gauge that used to appear from a terminal
+    /// height of 17 now appears from 20: at heights 17, 18 and 19 the
+    /// warning no longer reaches the screen at all. At inner 58 (a
+    /// 60-column terminal) the same head went from 7 rows to 9, and the
+    /// gauge from height 13 to height 15: heights 13 and 14 lost it.
+    /// Recorded rather than reshaped — teaching `head_within` to prefer a
+    /// shortened warning over dropping the gauge is a design question, not
+    /// a wording one — because #37's price is only worth paying knowingly.
+    ///
     /// The warned banner's extra rows are affordable because the head
     /// yields whole parts rather than truncating any
     /// (`views::repo::head_within`): on a frame too short for it, the cache
