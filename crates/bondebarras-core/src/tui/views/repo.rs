@@ -1,6 +1,6 @@
 //! Column 3: the resources of the loaded repository, under its two gauges.
 
-use crate::model::{Resource, ResourceKind, human_size};
+use crate::model::{Resource, ResourceKind};
 use crate::refs::BranchClass;
 use crate::safety::Safety;
 use crate::stale::pr_number_from_ref;
@@ -292,8 +292,15 @@ fn spans_with_label(r: &Resource, checked: bool, label: String) -> Vec<Span<'sta
 const SIZELESS_WARNING: &str = "⚠ GitHub n'expose pas la taille de certaines ressources";
 
 /// The resources column's title: the column's name, then the item count
-/// and the size of the ticked rows (`App::selection_bytes`) — what `d` would
-/// free — plus `SIZELESS_WARNING` when `with_warning` is true.
+/// and the size of the ticked rows — what `d` would free — plus
+/// `SIZELESS_WARNING` when `with_warning` is true.
+///
+/// `ticked` arrives already formatted, from `App::selection_size_display`,
+/// because whether those rows have a size at all is a question about the
+/// selection, not about the title: a selection of workflow runs reads `—`
+/// here, exactly as each of its rows does and as the confirmation modal
+/// already said (#41). Taking a bare `u64` is what let this line print a
+/// confident `cochés 0 o` over a column of `—`.
 ///
 /// Smoke S3: that size stood bare, and `353 éléments · 0 o` over caches of
 /// about 400 Mo each read as a listing weighing nothing. It says what it
@@ -305,8 +312,7 @@ const SIZELESS_WARNING: &str = "⚠ GitHub n'expose pas la taille de certaines r
 /// were branches or tags carried the same `—` markers with no banner to
 /// explain them. Generalised to whatever `has_known_size` calls sizeless,
 /// the one place that already enumerates every such kind.
-fn list_title(count: usize, ticked_bytes: u64, with_warning: bool) -> String {
-    let ticked = human_size(ticked_bytes);
+fn list_title(count: usize, ticked: &str, with_warning: bool) -> String {
     let items = plural(count, "élément");
     if with_warning {
         format!(" RESSOURCES · {items} · cochés {ticked} · {SIZELESS_WARNING} ")
@@ -334,11 +340,8 @@ fn plural(count: usize, noun: &str) -> String {
 /// ticked size — the figure that matters before `d` — would go first. This
 /// one takes 33 cells and the count's digits, so the column's narrowest
 /// inside, 38 cells, holds it for up to 99 999 rows.
-fn compact_title(count: usize, ticked_bytes: u64) -> String {
-    format!(
-        " RESSOURCES · {count} · cochés {} ",
-        human_size(ticked_bytes)
-    )
+fn compact_title(count: usize, ticked: &str) -> String {
+    format!(" RESSOURCES · {count} · cochés {ticked} ")
 }
 
 /// The column's title, and the lines to draw at the head of the column when
@@ -354,20 +357,20 @@ fn compact_title(count: usize, ticked_bytes: u64) -> String {
 /// (`compact_title`), so the ticked size is never the part clipped.
 fn column_head(
     count: usize,
-    bytes: u64,
+    ticked: &str,
     has_sizeless: bool,
     room: u16,
 ) -> (String, Vec<Line<'static>>) {
     let room = usize::from(room);
-    let with_warning = list_title(count, bytes, true);
+    let with_warning = list_title(count, ticked, true);
     if has_sizeless && views::cells(&with_warning) <= room {
         return (with_warning, Vec::new());
     }
-    let full = list_title(count, bytes, false);
+    let full = list_title(count, ticked, false);
     let title = if views::cells(&full) <= room {
         full
     } else {
-        compact_title(count, bytes)
+        compact_title(count, ticked)
     };
     let lines = if has_sizeless {
         views::wrap_words(SIZELESS_WARNING, room)
@@ -520,7 +523,7 @@ pub fn render(app: &mut App, f: &mut Frame, area: Rect) {
     let (title, warning_lines) = if listing {
         column_head(
             visible.len(),
-            app.selection_bytes(),
+            &app.selection_size_display(),
             has_sizeless,
             inner.width,
         )
@@ -1402,7 +1405,7 @@ mod tests {
     fn the_title_warns_when_the_list_holds_a_package_version() {
         // A wrong implementation that never surfaces the caveat would leave
         // the "—" size column reading as "empty" instead of "unmeasured".
-        let title = list_title(3, 0, true);
+        let title = list_title(3, "0 o", true);
         assert!(title.contains("GitHub"), "got: {title}");
         assert!(title.to_lowercase().contains("taille"), "got: {title}");
     }
@@ -1411,7 +1414,7 @@ mod tests {
     fn the_title_carries_no_warning_without_a_package_version() {
         // A wrong implementation that always shows the caveat would clutter
         // every ordinary cache/artifact/run listing with an irrelevant line.
-        let title = list_title(3, 100, false);
+        let title = list_title(3, "100 o", false);
         assert!(!title.contains("GitHub"), "got: {title}");
         assert!(title.contains("100 o"), "got: {title}");
     }
@@ -1432,10 +1435,10 @@ mod tests {
             (2, "2 éléments ·"),
             (353, "353 éléments ·"),
         ] {
-            let title = list_title(count, 0, false);
+            let title = list_title(count, "0 o", false);
             assert!(title.contains(expected), "got: {title}");
             // The warning variant counts the same rows, and agrees the same.
-            let warned = list_title(count, 0, true);
+            let warned = list_title(count, "0 o", true);
             assert!(warned.contains(expected), "got: {warned}");
         }
     }
@@ -1792,6 +1795,54 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    /// #41, on the last screen that still contradicted it: ticking workflow
+    /// runs alone summed the hardcoded zeros `api::runs::list` writes, and
+    /// the title read `cochés 0 o` over a column of `—`, beside a
+    /// confirmation modal already saying "taille inconnue" for that very
+    /// selection. The figure now reads `—` when every ticked row is
+    /// sizeless (`App::selection_size_display`).
+    ///
+    /// The mixed selection is the discriminating case, and it is asserted
+    /// in the same sweep: an implementation that simply stopped showing
+    /// bytes whenever one sizeless row was ticked would hide the real size
+    /// of the cache beside it. Swept from 60 to 200 so the compact title
+    /// (`compact_title`), which is what a narrow column falls back to, is
+    /// covered too.
+    #[test]
+    fn the_title_says_the_ticked_size_is_unknown_when_every_ticked_row_is_sizeless() {
+        let mut app = App::new(vec![]);
+        app.resources = vec![
+            run_resource(),
+            Resource {
+                id: 7,
+                size_bytes: 467_000_000,
+                ..res(false)
+            },
+        ];
+        for width in 60..=200u16 {
+            app.selected.clear();
+            app.selected.insert((ResourceKind::WorkflowRun, 4471));
+            let (_, column) = views::testing::focused_column(&mut app, Focus::Resources, width, 12);
+            let title = column.lines().next().unwrap_or_default().to_string();
+            assert!(
+                title.contains("cochés —"),
+                "a run-only selection does not read as sizeless at width {width}: {title:?}"
+            );
+            assert!(
+                !title.contains("cochés 0 o"),
+                "a run-only selection sums its hardcoded zeros at width {width}: {title:?}"
+            );
+
+            app.selected.insert((ResourceKind::Cache, 7));
+            let (_, column) = views::testing::focused_column(&mut app, Focus::Resources, width, 12);
+            let title = column.lines().next().unwrap_or_default().to_string();
+            assert!(
+                title.contains("cochés 467.0 Mo"),
+                "a mixed selection lost the bytes it does know at width {width}: {title:?}"
+            );
         }
     }
 
