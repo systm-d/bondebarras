@@ -5,8 +5,8 @@ tagline = "Good riddance."
 lede = "GitHub Actions remplit sans bruit chaque organisation que tu possèdes de caches morts, d'artifacts expirés et de workflow runs que personne ne regardera jamais plus. bondebarras est l'outil terminal qui te montre exactement combien, et qui fait le ménage — en sûreté, une confirmation à la fois."
 cta = "Voir sur GitHub"
 cta2 = "Installer"
-status = "v1.0.0-rc.2 — préversion"
-status_url = "https://github.com/systm-d/bondebarras/releases/tag/v1.0.0-rc.2"
+status = "v1.0.0-rc.3 — préversion"
+status_url = "https://github.com/systm-d/bondebarras/releases/tag/v1.0.0-rc.3"
 status_note = "Pas encore de version stable : complet et sûr à l'usage — rien n'est jamais supprimé sans confirmation — mais les drapeaux de la CLI et le schéma JSON peuvent encore changer avant la v1.0.0, et Homebrew, l'AUR et winget ne sont pas publiés."
 +++
 
@@ -207,8 +207,8 @@ status_note = "Pas encore de version stable : complet et sûr à l'usage — rie
 <section id="install" class="install">
 <h2>Installation</h2>
 <p class="section-lede">Ne lit et n'écrit que l'API GitHub — pas de compte propre, pas de télémétrie, pas de stockage cloud.</p>
-<h3>Disponible maintenant — v1.0.0-rc.2</h3>
-<p>Les binaires et paquets pour Windows x86-64, macOS Apple Silicon, Linux x86-64, Debian/Ubuntu AMD64 et Fedora/RHEL x86-64 sont joints à <a href="https://github.com/systm-d/bondebarras/releases/tag/v1.0.0-rc.2">la release v1.0.0-rc.2</a>. Télécharge d'abord celui de ta plateforme : les commandes de paquet ci-dessous installent un fichier que tu as déjà, elles ne le récupèrent pas.</p>
+<h3>Disponible maintenant — v1.0.0-rc.3</h3>
+<p>Les binaires et paquets pour Windows x86-64, macOS Apple Silicon, Linux x86-64, Debian/Ubuntu AMD64 et Fedora/RHEL x86-64 sont joints à <a href="https://github.com/systm-d/bondebarras/releases/tag/v1.0.0-rc.3">la release v1.0.0-rc.3</a>. Télécharge d'abord celui de ta plateforme : les commandes de paquet ci-dessous installent un fichier que tu as déjà, elles ne le récupèrent pas.</p>
 <div class="term-window">
 <div class="term-bar"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span><span class="term-title">install</span></div>
 <div class="term-body cmds">

@@ -1,7 +1,7 @@
 # CLI reference
 
 The headless surface: `scan`, `clean` and `update`. Every flag below is taken
-from the binary's own `--help` at `1.0.0-rc.2`, and every behaviour is
+from the binary's own `--help` at `1.0.0-rc.3`, and every behaviour is
 verified against the code, with the named tests that enforce it cited inline.
 
 The interactive surface is the [TUI](tui.md). What a headless run is allowed
@@ -141,7 +141,7 @@ can therefore show a real `storage_allowance_gbh` beside a `storage_gbh` of
 ### Schema stability
 
 **The `scan --json` schema is not stable before `1.0.0`.** The current release
-is `1.0.0-rc.2`, a pre-release; its changelog states that the CLI flags and
+is `1.0.0-rc.3`, a pre-release; its changelog states that the CLI flags and
 this schema may still change before `v1.0.0`. Pin a version if you parse it,
 and read [releases and versioning](releases.md) for what the project does and
 does not promise.

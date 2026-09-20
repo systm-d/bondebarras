@@ -5,8 +5,8 @@ tagline = "Good riddance."
 lede = "GitHub Actions quietly fills every organization you own with dead caches, expired artifacts, and workflow runs nobody will ever look at again. bondebarras is the terminal tool that shows you exactly how much, and clears it out — safely, one confirmation at a time."
 cta = "View on GitHub"
 cta2 = "Install"
-status = "v1.0.0-rc.2 — pre-release"
-status_url = "https://github.com/systm-d/bondebarras/releases/tag/v1.0.0-rc.2"
+status = "v1.0.0-rc.3 — pre-release"
+status_url = "https://github.com/systm-d/bondebarras/releases/tag/v1.0.0-rc.3"
 status_note = "No stable release yet: feature-complete and safe to run — nothing is ever deleted without a confirmation — but the CLI flags and the JSON schema may still change before v1.0.0, and Homebrew, the AUR and winget are not published."
 +++
 
@@ -207,8 +207,8 @@ status_note = "No stable release yet: feature-complete and safe to run — nothi
 <section id="install" class="install">
 <h2>Install</h2>
 <p class="section-lede">Reads and writes only the GitHub API — no account of its own, no telemetry, no cloud storage.</p>
-<h3>Available now — v1.0.0-rc.2</h3>
-<p>Binaries and packages for Windows x86-64, macOS Apple Silicon, Linux x86-64, Debian/Ubuntu AMD64 and Fedora/RHEL x86-64 are attached to <a href="https://github.com/systm-d/bondebarras/releases/tag/v1.0.0-rc.2">the v1.0.0-rc.2 release</a>. Download the one for your platform first: the package commands below install a file you already have, they do not fetch one.</p>
+<h3>Available now — v1.0.0-rc.3</h3>
+<p>Binaries and packages for Windows x86-64, macOS Apple Silicon, Linux x86-64, Debian/Ubuntu AMD64 and Fedora/RHEL x86-64 are attached to <a href="https://github.com/systm-d/bondebarras/releases/tag/v1.0.0-rc.3">the v1.0.0-rc.3 release</a>. Download the one for your platform first: the package commands below install a file you already have, they do not fetch one.</p>
 <div class="term-window">
 <div class="term-bar"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span><span class="term-title">install</span></div>
 <div class="term-body cmds">

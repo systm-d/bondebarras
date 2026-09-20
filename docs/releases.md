@@ -17,6 +17,7 @@ such.**
 | Tag | GitHub status | Served as *Latest*? |
 | --- | --- | --- |
 | `v1.0.0-rc.2` | Pre-release | No |
+| `v1.0.0-rc.3` | Pre-release | No |
 | `v1.0.0` | Release | Yes |
 
 This one rule drives everything downstream: a pre-release tag is published with
@@ -25,8 +26,8 @@ its binaries and packages, but the Homebrew and winget jobs are skipped, and
 it. That is deliberate. Committing a release candidate to the Homebrew tap
 would serve it as *the* stable version to every `brew install`.
 
-**Today there is exactly one release, `v1.0.0-rc.2`, and it is a
-pre-release.** No stable release has ever been published.
+**Today there are two releases, `v1.0.0-rc.2` and `v1.0.0-rc.3`, and both
+are pre-releases.** No stable release has ever been published.
 
 ## What the release workflow produces
 
@@ -67,7 +68,7 @@ any of those, [build from source](installation.md#building-from-source).
 ### The RPM version translation
 
 RPM forbids a dash in a version number. The workflow translates it to a tilde
-— `1.0.0-rc.2` becomes `1.0.0~rc.2` — which is RPM's own pre-release
+— `1.0.0-rc.3` becomes `1.0.0~rc.3` — which is RPM's own pre-release
 convention and sorts *before* the final `1.0.0`, so upgrading from a release
 candidate to the stable release works the way you would expect. Cargo's
 version stays the source of truth; the workflow only translates it.
@@ -92,7 +93,7 @@ otherwise look exactly like a release that never published one. Tests:
 **The rendered packaging recipes get none.** `PKGBUILD` and `bondebarras.rb`
 are written at the repository root *after* the step that checksums the
 downloaded build artifacts, so they fall outside it: of the fourteen assets
-on `v1.0.0-rc.2`, six are sidecars covering the six binary artifacts, and
+on `v1.0.0-rc.3`, six are sidecars covering the six binary artifacts, and
 those two have none. `winget-manifests.tar.gz`, attached by a separate job on
 stable tags, would not have one either. Each recipe does embed the source
 tarball's own `sha256` — which is what `makepkg` and `brew` verify — but the
@@ -163,8 +164,8 @@ pulling in a full SemVer implementation, and gets the cases that matter right:
 
 - **numeric, not lexical**: `0.5.10` is newer than `0.5.9`;
 - **a pre-release ranks below its stable version**: `1.0.0` is newer than
-  `1.0.0-rc.2`, and a build of `1.0.0` is reported as *ahead* of a published
-  `1.0.0-rc.2`;
+  `1.0.0-rc.3`, and a build of `1.0.0` is reported as *ahead* of a published
+  `1.0.0-rc.3`;
 - **a local build newer than anything published is reported as such**, never
   as "up to date" and never offered a downgrade — which is the normal state of
   a `cargo install --git` build;
