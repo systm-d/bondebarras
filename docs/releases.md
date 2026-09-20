@@ -23,8 +23,9 @@ such.**
 This one rule drives everything downstream: a pre-release tag is published with
 its binaries and packages, but the Homebrew and winget jobs are skipped, and
 `bondebarras update` — which reads GitHub's `releases/latest` — does not see
-it. That is deliberate. Committing a release candidate to the Homebrew tap
-would serve it as *the* stable version to every `brew install`.
+it. That is deliberate. A release candidate landing in the Homebrew tap would
+be served as *the* stable version to every `brew install` — so the job that
+proposes the formula never runs on a pre-release tag at all.
 
 **Today there are two releases, `v1.0.0-rc.2` and `v1.0.0-rc.3`, and both
 are pre-releases.** No stable release has ever been published.
