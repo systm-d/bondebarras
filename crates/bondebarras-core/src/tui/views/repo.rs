@@ -343,13 +343,20 @@ fn plural(count: usize, noun: &str) -> String {
 
 /// `list_title` without the word `éléments` nor the warning, for a column
 /// too narrow for the whole title: its border clips from the right, and the
-/// ticked size — the figure that matters before `d` — would go first. This
-/// one takes 33 cells and the count's digits, so the column's narrowest
-/// inside, 38 cells, holds it for up to 99 999 rows — or up to 999 when a
-/// mixed selection prefixes the ticked figure with `≥` and its space (#51).
-/// Past either figure the border clips from the right, and the ticked size
-/// sits at that end — the two cells `≥ ` costs are two cells of headroom
-/// spent, on the rung that exists to keep that size whole.
+/// ticked size — the figure that matters before `d` — would go first.
+///
+/// This one takes 33 cells and the count's digits, so the column's narrowest
+/// inside, 38 cells, holds the title *whole* for up to 99 999 rows — or up to
+/// 999 once a mixed selection prefixes the ticked figure with `≥` and its
+/// space (#51).
+///
+/// Those two are the figures for the title *entire*, which is not the same as
+/// the figures for a title that still reads right: with the prefix, 1 000 to
+/// 9 999 rows lose the trailing space alone, and the first character of the
+/// ticked size itself only goes at 10 000. Saying which of the two a number
+/// promises matters here, because the whole point of this rung is to keep
+/// that size legible — the two cells the prefix costs are two cells of
+/// headroom spent on it.
 fn compact_title(count: usize, ticked: &str) -> String {
     format!(" RESSOURCES · {count} · cochés {ticked} ")
 }
