@@ -1,0 +1,5 @@
+{#- The same tag, linked to its release page. The URL is derived from
+    `config.extra.repo_url` and `extra.release`, never written out: the
+    rc.1 → rc.2 pass updated some hand-written copies and missed others,
+    which is how the published page ended up with dead links. -#}
+{%- if section -%}<a href="{{ config.extra.repo_url | safe }}/releases/tag/v{{ section.extra.release }}">v{{ section.extra.release }}</a>{%- endif -%}
