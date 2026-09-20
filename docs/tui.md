@@ -98,6 +98,58 @@ runs short they yield lowest-value first — the minutes gauge, then the cache
 gauge, then the size explanation, then the repository's name
 (`repo::head_within`).
 
+#### The two gauges
+
+`tui::views::gauges` draws the loaded repository's Actions cache against
+GitHub's **default included** 10 GB threshold, and its Actions minutes
+against the allowance of the organization's plan. Neither is ever clamped at
+100 %, and the minutes gauge gives a total with no percentage at all when the
+plan — and so the allowance — could not be read. What the figures are worth,
+and where each comes from, is in
+[billing and GitHub limits](billing.md#the-10-gb-cache-threshold-and-the-limit-nobody-can-read).
+
+**GitHub deletes every cache entry it has not read in over 7 days, whatever
+limit the repository is configured with.** That rule waits for no threshold:
+a repository sitting at 2 GB is billed nothing for its caches and loses them
+all the same. It is the rule that explains a cache entry "disappearing on its
+own", and the reason a cache pinned to a long-closed pull request is dead
+weight rather than a time bomb.
+
+**The interface itself states it in exactly one place: the over-threshold
+warning.** The sentence rides on `gauges::OVER_INCLUDED`, which is drawn only
+past 100 %; the caveat under a gauge at rest (`gauges::CACHE_CAVEAT`) is
+silent about it, deliberately and by test —
+`the_quiet_cache_gauge_stays_silent_about_the_seven_day_rule`. The reason is
+height, and it is measured rather than asserted:
+`the_cache_banner_stays_within_its_line_budget` pins the quiet banner at 2
+rows (3 in the narrowest column the resources column is drawn at), and moving
+the sentence up onto the caveat would cost a row on **every** repository the
+tool ever draws, not only the ones over the threshold. So the gauge you are
+most likely to be looking at — one below the threshold — will not tell you
+this, which is why this page does.
+
+Past the threshold, the warning keeps three facts apart instead of blending
+them into one: the excess storage **is** billed, unconditionally; eviction
+*to make room* waits for the repository's configured limit, which no endpoint
+bondebarras can reach exposes; and the 7-day sweep waits for neither. Test:
+`the_cache_gauge_reports_overshoot_rather_than_capping`, which asserts both
+that the rule is stated and that it is stated as independent of any limit.
+
+> **On a short terminal the warning can be absent rather than shortened.** A
+> head part is shown whole or dropped entirely, so past a point the cache
+> gauge goes with its warning rather than being trimmed. Measured when the
+> seven-day sentence was added: at 100 columns (the narrowest the column is
+> drawn at, three columns on screen) the warned gauge now needs a terminal 20
+> rows high where it needed 17, so heights 17 to 19 no longer show it at all;
+> at 60 columns the same shift lost heights 13 and 14. Recorded rather than
+> reshaped — giving that sentence its own rank in the head is a design
+> question, not a wording one. The band itself is recorded in the
+> documentation of `the_cache_banner_stays_within_its_line_budget`, which
+> asserts the row counts on either side of it and not the band; what
+> `the_column_head_keeps_each_part_whole_or_drops_it_across_swept_heights`
+> guarantees is the other half — that a part is drawn whole or dropped, never
+> clipped.
+
 A row:
 
 ```text
