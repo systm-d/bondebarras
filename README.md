@@ -73,7 +73,7 @@ alike:
 - **A repository is only ever archived from the TUI**, one tick at a time, and
   never headlessly: there is no `--archive` flag, and none is planned.
 
-Every row carries one of three markers: **⛑** safe according to bondebarras'
+Every resource row carries one of three markers: **⛑** safe according to bondebarras'
 documented rules, **•** worth checking, unmarked keep. `[A]` takes every ⛑ row,
 `[V]` adds every • row, and neither ever takes a protected one.
 
@@ -118,9 +118,9 @@ worth knowing first:
 | Key | Action |
 | --- | --- |
 | `←` `→` `↑` `↓` | Move between and within columns |
-| `espace` | Tick the row under the cursor (a resource, or a repository to archive) |
+| `espace` | Tick the row under the cursor: a resource, or a repository to archive. Not in the organizations column |
 | `A` / `V` | Tick every ⛑ row / every ⛑ **and** • row |
-| `d` | Confirm and delete the ticked resources — or archive the ticked repository |
+| `d`, then `y` | Open the confirmation — for the ticked resources, or the ticked repository. Nothing is touched until `y` |
 | `b` | Billing tab, and back; `q` quits |
 
 Every key, every column, the gauges at the head of the resources column and
