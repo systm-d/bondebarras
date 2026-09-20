@@ -38,13 +38,19 @@ jobs:
       # Pas de linter ni de formateur Markdown ici, et ce n'est pas un oubli.
       # `docs/cli.md` cite les quatre écrans d'aide du binaire mot pour mot,
       # et `docs_cli_md_quotes_the_binarys_own_help` les compare ligne à ligne
-      # à ce que `bondebarras --help` imprime. L'une de ces lignes fait 213
-      # caractères : clap ne la replie pas — le projet n'active pas
-      # `wrap_help` —, donc la page ne le peut pas davantage. Un formateur à
-      # repli de prose (prettier, markdownlint avec `--prose-wrap`, ou
-      # équivalent) replierait ce bloc et rendrait ce test rouge sans que
-      # l'auteur puisse comprendre pourquoi : il comparerait la page au
-      # binaire, qui lui ne replie rien.
+      # à ce que `bondebarras --help` imprime. La plus longue ligne de ces
+      # blocs fait aujourd'hui 196 caractères — la description de `update`,
+      # dans le bloc de premier niveau : clap ne la replie pas (le projet
+      # n'active pas `wrap_help`, et
+      # `the_quoted_help_is_the_same_at_any_terminal_width` le vérifie), donc
+      # la page ne le peut pas davantage. Un formateur à repli de prose
+      # (prettier et son `--prose-wrap`, ou équivalent) replierait ce bloc et
+      # rendrait ce test rouge sans que l'auteur puisse comprendre pourquoi :
+      # il comparerait la page au binaire, qui lui ne replie rien.
+      #
+      # Un linter qui ne replie rien pose le problème plus petit : markdownlint
+      # signale ces lignes (MD013) sans pouvoir les corriger, puisque les
+      # raccourcir reviendrait à mentir sur ce qu'imprime le binaire.
       #
       # Si un linter Markdown est ajouté un jour : qu'il épargne les blocs
       # clôturés, ou qu'il épargne `docs/cli.md`, et que cette raison soit
