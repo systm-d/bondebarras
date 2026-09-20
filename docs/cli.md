@@ -18,9 +18,7 @@ Usage: bondebarras [COMMAND]
 Commands:
   scan    Affiche l'état des organisations sans rien supprimer
   clean   Supprime des ressources sans interface. Sans `--yes`, affiche le plan sans rien toucher
-  update  Vérifie s'il existe une version plus récente, et propose ou applique la mise à jour
-          selon la manière dont bondebarras a été installé. Ne requiert aucun jeton GitHub :
-          le dépôt est public
+  update  Vérifie s'il existe une version plus récente, et propose ou applique la mise à jour selon la manière dont bondebarras a été installé. Ne requiert aucun jeton GitHub : le dépôt est public
   help    Print this message or the help of the given subcommand(s)
 
 Options:
