@@ -284,6 +284,15 @@ fn recap(plan: &Plan, kind: ModalKind, budget_rows: u16, inner_width: u16) -> Ve
         return hdr;
     }
 
+    // Measured after #51: a mixed plan's summary carries its `+ N de taille
+    // inconnue` clause, which wraps to two rows at 40 columns. Its item list
+    // therefore appears from height 14 there, where a plan of measured items
+    // alone starts showing one at 13. One row, at the narrowest width this
+    // modal is drawn at, and only for a mixed plan — the `[y/N]` prompt is
+    // never part of this budget, and from 60 columns up the two cases behave
+    // identically. Recorded because a row that moves with the *content*
+    // rather than with the terminal is the kind of thing nobody thinks to
+    // look for later.
     let hdr_rows = wrapped_row_count(&hdr, inner_width);
     if hdr_rows > budget_rows {
         return Vec::new();
