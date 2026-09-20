@@ -44,9 +44,28 @@ instead of restating these rules.
 
 ## Quality gate (run before every PR)
 
+The single source of truth for what must pass. `CONTRIBUTING.md` links here
+rather than restating it — the two copies had already drifted once (#28).
+
 ```sh
 cargo fmt --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 cargo build --release
 ```
+
+`.github/workflows/ci.yml` is what actually gates a merge, and it runs the
+same checks with two differences worth knowing before opening a PR:
+
+- it runs `cargo test --workspace **--locked**`, across a five-target matrix
+  (Ubuntu 22.04/24.04, Fedora 40/41, macOS) — so a `Cargo.lock` left
+  unstaged after a dependency change fails CI while passing locally;
+- it does **not** build the release binary; `release.yml` does, and not with
+  the gate's command either — it builds one binary per target
+  (`cargo build --release --locked --bin bondebarras --target <triple>`),
+  so the workspace-wide release build below is a check nothing in CI ever
+  runs. Keep `cargo build --release` in the local gate for exactly that
+  reason: a broken release build is not something to discover at tag time.
+
+CI also runs `cargo audit` and `cargo deny check` (the `security` job), and
+an informational `cargo tarpaulin` coverage run that cannot fail the build.

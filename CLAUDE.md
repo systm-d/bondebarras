@@ -47,7 +47,7 @@ shim).
   caches, artifacts and workflow runs every other family here cleans up:
   closing the tap rather than mopping the floor forever. `ResourceKind::
   Repository.has_known_size()` is `false`, same as a package version, a
-  branch or a tag.
+  workflow run (since #41), a branch or a tag.
 - **A repository is never auto-selected, and headless never archives one, at
   all.** `pushed_at` alone is not proof of abandonment, so unlike every
   other family, archiving has **no preselection path whatsoever**:
@@ -73,12 +73,17 @@ shim).
   `api::releases::assets` flattens every release's `assets[]` into rows,
   carrying the release's tag along in the label since the release itself
   never becomes a row of its own.
-- **Package versions carry no size, ever.** GitHub's API exposes no size
-  field for a package version, under any name, and no billing SKU covers
-  package storage either. `Resource.size_bytes` is hardcoded to `0` for
-  `ResourceKind::PackageVersion`; never estimate or extrapolate one. The TUI
-  shows `—` instead of formatting that zero, with a header line spelling out
-  why — see `tui::views::repo::column_head`.
+- **Package versions carry no size, ever — and neither does a workflow
+  run.** GitHub's API exposes no size field for a package version, under any
+  name, and no billing SKU covers package storage either. A workflow run is
+  the same case (#41): no size field on the run object, billable
+  *milliseconds* from `.../timing`, a bare redirect from `.../logs`. For
+  both, `Resource.size_bytes` is hardcoded to `0` as a placeholder — never
+  estimate or extrapolate one, and never let that zero reach a screen. The
+  TUI shows `—` instead of formatting it, with a header line spelling out
+  why — see `tui::views::repo::column_head`. Deleting a run *does* free
+  space, through the logs and artifacts that go with it; the amount is what
+  is unknown, which is not the same as zero.
 - **No allowance, no percentage.** An organization's included Actions
   minutes come from `billing::included_minutes_for` — `free`, `team`,
   `enterprise`, nothing else — fed by `OrgSummary.plan`, which GitHub only
