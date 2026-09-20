@@ -2,9 +2,26 @@
 
 use clap::{Parser, Subcommand};
 
+// `bin_name` is pinned, not inferred. Left to itself, clap names the binary
+// after `argv[0]`, which Windows spells `bondebarras.exe` — so `Usage:`
+// carried the suffix there and only there, and `docs/cli.md`, which quotes
+// one rendering and claims it is the binary's own output, was literally true
+// on two platforms out of three. Pinning makes the page true on all three:
+// `bondebarras` is also the invocation that works, under PowerShell as under
+// `cmd`, whatever the file on disk is called.
+//
+// The alternative — normalising the suffix away inside the test that compares
+// the page to the binary — was tried (#55) and removed: it hid the divergence
+// instead of removing it, and the guard in `crates/bondebarras/tests/cli.rs`
+// is the one place that must not be taught to look away.
+//
+// Written with `//` rather than `///` deliberately: a doc comment on this
+// struct is what clap prints as the `about` line, ahead of `Usage:`, and
+// `docs/cli.md` quotes that line. The help guard caught it on the first run.
 #[derive(Parser, Debug)]
 #[command(
     name = "bondebarras",
+    bin_name = "bondebarras",
     version,
     about = "Audit et nettoyage des orgs GitHub"
 )]

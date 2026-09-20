@@ -49,6 +49,14 @@ jobs:
           - { name: fedora-40, os: ubuntu-24.04, container: "fedora:40" }
           - { name: fedora-41, os: ubuntu-24.04, container: "fedora:41" }
           - { name: macos-latest, os: macos-latest, container: "" }
+          # Windows : une seule image, `windows-latest`, comme macOS. Les
+          # deux familles Linux sont épinglées en deux versions parce qu'on
+          # publie un .deb et un .rpm par génération de distribution ; rien
+          # de tel côté Windows, où le binaire MSVC ne dépend pas de la
+          # version de l'image. La matrice `binaries` de release.yml n'y
+          # construit que `windows-x86_64`, sur `windows-latest` : la CI
+          # couvre ce que la release publie, et rien de plus.
+          - { name: windows-latest, os: windows-latest, container: "" }
     steps:
       - name: Install container prerequisites (Fedora)
         if: matrix.container != ''
@@ -67,6 +75,16 @@ jobs:
         with:
           key: ${{ matrix.name }}
       - run: cargo test --workspace --locked
+        env:
+          # aws-lc-sys — tiré par le backend JWT d'octocrab, qui ne signe
+          # jamais rien ici — assemble son code x86-64 Windows avec NASM,
+          # absent de l'image `windows-latest` : sans cette variable le build
+          # s'arrête net sur « Missing dependency: nasm ». La caisse embarque
+          # les objets déjà assemblés pour exactement ce cas, ce qui évite
+          # d'ajouter une action tierce à la chaîne. La variable n'est lue
+          # que pour une cible windows-x86_64 : elle est inerte sur les cinq
+          # autres entrées de la matrice.
+          AWS_LC_SYS_PREBUILT_NASM: "1"
 
   coverage:
     name: coverage (informational)

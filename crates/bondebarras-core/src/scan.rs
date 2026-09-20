@@ -277,7 +277,15 @@ async fn detail(
         item.safety = crate::safety::classify(item, &ctx);
     }
 
-    items.sort_by_key(|i| std::cmp::Reverse(i.size_bytes));
+    // Biggest first, with the families GitHub reports no size for after all
+    // of them rather than ranked among them on the `0` placeholder they
+    // carry (#51) — the same rule, and the same key, as the TUI's own
+    // `tui::app::App::visible_resources`, whose doc comment argues it. This
+    // order is what the headless `clean` dry-run lists and what `scan
+    // --json` emits, so the two screens rank a repository the same way.
+    // `sort_by_key` is stable, so each group keeps the order the families
+    // were assembled in above.
+    items.sort_by_key(crate::clean::size_rank);
     Ok((items, failed))
 }
 
@@ -997,6 +1005,107 @@ mod tests {
         assert_eq!(assets[0].id, 9);
         assert_eq!(assets[0].size_bytes, 2_400_000);
         assert!(!assets[0].protected);
+    }
+
+    /// #51, on the order `repo_detail` hands to the headless dry-run
+    /// listing and to `scan --json`: the families GitHub reports no size for
+    /// used to rank on the `0` placeholder they carry, which filed them as
+    /// the lightest rows in the repository.
+    ///
+    /// The empty release asset is what makes this assertion discriminate.
+    /// Every sizeless row ties at zero with it, so under the old key the
+    /// tie broke on the order the families are assembled in above — runs
+    /// third, assets last — and the asset came out *below* the run. Its
+    /// size is measured, and measured at zero; the run's is not measured at
+    /// all. A fixture without it would sort identically before and after
+    /// this fix, since caches happen to be assembled first.
+    #[tokio::test]
+    async fn repo_detail_ranks_measured_resources_before_the_ones_github_cannot_size() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/tri/actions/caches"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "actions_caches": [
+                    { "id": 1, "key": "coverage-linux", "size_in_bytes": 1000,
+                      "last_accessed_at": "2026-06-01T00:00:00Z" }
+                ]
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/tri/actions/artifacts"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({ "artifacts": [] })),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/tri/actions/runs"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "workflow_runs": [
+                    { "id": 128, "name": "CI", "run_number": 128,
+                      "created_at": "2026-06-01T00:00:00Z", "head_branch": "main" }
+                ]
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/orgs/systm-d/packages/container/tri/versions"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/tri/pulls"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/tri/branches"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/tri/tags"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                { "name": "v0.1.3" }
+            ])))
+            .mount(&server)
+            .await;
+        // A release asset of zero bytes: rare, but a real measurement —
+        // GitHub reports `size` for an asset, and here it says zero.
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/tri/releases"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                { "tag_name": "v0.1.1",
+                  "assets": [
+                      { "id": 9, "name": "empty.tar.gz",
+                        "size": 0, "created_at": "2026-06-01T00:00:00Z" }
+                  ] }
+            ])))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/repos/systm-d/tri"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "default_branch": "main"
+            })))
+            .mount(&server)
+            .await;
+
+        let client = Client::with_base("t0ken", &server.uri()).unwrap();
+        let items = repo_detail(&client, "systm-d", "tri").await.unwrap();
+
+        let order: Vec<(ResourceKind, u64)> = items.iter().map(|r| (r.kind, r.id)).collect();
+        assert_eq!(
+            order,
+            vec![
+                (ResourceKind::Cache, 1),
+                (ResourceKind::ReleaseAsset, 9),
+                (ResourceKind::WorkflowRun, 128),
+                (ResourceKind::Tag, crate::api::refs::resource_id("v0.1.3")),
+            ],
+            "measured rows rank first, biggest first; the unmeasured ones follow"
+        );
     }
 
     /// A failed branches listing must cost only the branch rows — same

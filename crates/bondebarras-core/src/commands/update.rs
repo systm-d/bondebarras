@@ -112,15 +112,17 @@ fn apply(release: &ReleaseInfo) -> Result<()> {
     // Two ways to end up with nothing to download, and they do not share a
     // message.
     //
-    // Deb/Rpm/Tarball do download a package, so landing here means this
+    // Deb/Rpm/Tarball/Zip do download a package, so landing here means this
     // release publishes none for the platform we are running on — worth
     // naming (#49): matching `.tar.gz` alone used to hand a macOS user the
-    // Linux archive rather than admit there was nothing for them.
+    // Linux archive rather than admit there was nothing for them. `Zip` is
+    // the Windows half of the same idea (#55) — the archive it looks for is
+    // the `.zip` the release has been publishing all along.
     //
-    // Pacman/Homebrew/Nix/Cargo have no package suffix at all — bondebarras
-    // never touches those binaries itself — so nothing was ever going to be
-    // downloaded, and their own install plan already says what to run
-    // instead.
+    // Pacman/Homebrew/Nix/Cargo/Winget have no package suffix at all —
+    // bondebarras never touches those binaries itself — so nothing was ever
+    // going to be downloaded, and their own install plan already says what
+    // to run instead.
     let asset = match release.asset_for(channel, &target) {
         Some(asset) => asset,
         None if channel.downloads_an_asset() => {
