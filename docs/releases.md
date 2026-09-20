@@ -47,8 +47,10 @@ On every `v*` tag:
 
 On a **stable** tag only, two more steps run:
 
-- the Homebrew formula is committed to `Formula/bondebarras.rb` on the default
-  branch;
+- the Homebrew formula is rendered and **opened as a pull request** against the
+  default branch, adding `Formula/bondebarras.rb` — on a branch named after the
+  tag, so a second release never overwrites a pull request still open for the
+  first. Nothing is merged automatically;
 - winget manifests are generated and attached as `winget-manifests.tar.gz`.
 
 Publication to crates.io is opt-in: it runs only when the repository variable
@@ -106,7 +108,7 @@ Verification commands for a manual download are in
 
 | Channel | Policy | State today |
 | --- | --- | --- |
-| **Homebrew** | The formula is rendered from `packaging/homebrew/bondebarras.rb` and committed to the default branch — **on a stable tag only** | Planned. `brew install bondebarras` does not work yet |
+| **Homebrew** | The formula is rendered from `packaging/homebrew/bondebarras.rb` and opened as a pull request against the default branch — **on a stable tag only**; merging it is a human decision | Planned. `brew install bondebarras` does not work yet |
 | **winget** | Manifests are generated and attached to the release — **on a stable tag only**. The *first* publication additionally requires a pull request to `microsoft/winget-pkgs` | Planned. `winget install bondebarras` does not work yet |
 | **AUR** | **No job exists**, and no package was ever submitted. A rendered `PKGBUILD` is attached to every release instead | Not published. `yay -S bondebarras` does not work, and never has |
 
