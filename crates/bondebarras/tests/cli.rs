@@ -248,8 +248,13 @@ fn help_output(args: &[&str], columns: &str) -> String {
 /// subcommand its `Usage:` line names.
 ///
 /// Keyed off `Usage:` rather than off a hardcoded list of headings, so a
-/// fifth block added to the page tomorrow is compared too, instead of going
-/// unchecked for as long as nobody thinks to extend this test.
+/// fifth block added to the page tomorrow is *found* — and then fails this
+/// test until `HELP_SCREENS` names it, rather than sitting unchecked for as
+/// long as nobody thinks to extend it. Noisy, not silent.
+///
+/// An earlier wording of this comment promised the new block would simply
+/// be compared, which is not what the code does. Worth correcting in a test
+/// whose whole purpose is to punish claims nothing verifies.
 fn quoted_help_blocks(md: &str) -> Vec<(String, String)> {
     let mut blocks = Vec::new();
     let mut current: Option<String> = None;
