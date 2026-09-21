@@ -13,14 +13,21 @@
   </h1>
   <p class="tagline">{{ section.extra.tagline }}</p>
   <p class="lede">{{ section.extra.lede }}</p>
+  {# The pill's text and its href are both derived from `extra.release`, the
+     one place each page spells the version. Before that, the tag lived in a
+     `status` string, a `status_url`, a heading and two links per language —
+     ten copies, of which the rc.1 → rc.2 pass updated some and missed the
+     rest, leaving dead links on the published page (#34). #}
   <p class="status">
-    <a class="status-pill" href="{{ section.extra.status_url }}">{{ section.extra.status }}</a>
+    <a class="status-pill"
+       href="{{ config.extra.repo_url | safe }}/releases/tag/v{{ section.extra.release }}">v{{ section.extra.release }} — {{ section.extra.status_label }}</a>
     <span class="status-note">{{ section.extra.status_note }}</span>
   </p>
   <div class="cta">
     <a class="btn btn-primary" href="#install">{{ section.extra.cta2 }}</a>
-    <a class="btn" href="{{ config.extra.repo_url }}">{{ section.extra.cta }}</a>
+    <a class="btn" href="{{ config.extra.repo_url | safe }}">{{ section.extra.cta }}</a>
   </div>
+  <p class="cta-tertiary"><a href="{{ config.extra.docs_url | safe }}">{{ section.extra.cta3 }}</a></p>
 </header>
 <main>{{ section.content | safe }}</main>
 {% endblock %}

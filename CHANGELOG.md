@@ -20,9 +20,86 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   was global and anchored on nothing, so forcing the suffix to `" [COMMAND]"`
   and deleting that token from the page left the test green. A guard that
   patches the binary's output into the shape the page expects is not a guard.
+- **The Homebrew formula is proposed, never pushed** (#35). The `homebrew` job
+  committed `Formula/bondebarras.rb` straight onto the default branch — this
+  repository being its own tap, that meant writing without review or recourse
+  into the very file `brew install` serves, and the "main protected" rule
+  having no bypass actor, the push would have failed at the first `v1.0.0`
+  anyway. The formula is now opened as a pull request from a branch named
+  after the tag, so a `v1.0.1` released before `v1.0.0` is merged cannot
+  rewrite a pull request a reviewer is reading. Merging stays a human
+  decision. The job also stopped undoing human gestures on a re-run: the
+  branch is never force-pushed — a hand-pushed correction survives, and a
+  branch that exists without carrying the formula rendered here stops the job
+  rather than being overwritten — and `gh pr list` is read `--state all`, so
+  a pull request closed *without* merging, which is a refusal, is no longer
+  answered with a second one. A re-run finding its pull request open or
+  merged exits green; one finding it refused exits red, that red being the
+  only visible trace that the tap did not move.
+- **Two runs of the same tag no longer cross** (#35, review). The release
+  workflow takes a `concurrency` group keyed on the ref, so a re-run queues
+  behind the run it would otherwise race — both could read "no pull request
+  exists" at the same moment and both push. The group is keyed on the ref
+  rather than on the workflow on purpose: two tags each have their own
+  `homebrew/<tag>` branch and are built to coexist, and a shared group would
+  cancel a queued release outright, which costs more than it saves.
 
 ### Fixed
 
+- **A placeholder zero no longer passes for a measurement, in the ordering
+  or in the totals** (#51). Sorting by size — the default, because size is
+  why the user opened the tool — read `size_bytes` whatever the kind, so a
+  workflow run, whose zero `api::runs::list` writes as a placeholder, was
+  filed among the lightest rows while its own cell said `—`. The families
+  GitHub states no size for now form a group at the end of that ordering;
+  ranked last rather than first, because three hundred runs at the top would
+  push the answer off screen. The boundary earns its keep in the other
+  direction too: a cache genuinely measured at zero now sorts *above* them,
+  where the old tie on `Reverse(0)` buried it among things nobody weighed.
+  Within a group the listing's own order survives, `sort_by_key` being
+  stable and `size_rank` a pure function of the row.
+  The same zero was being summed. A purge holding both caches and runs
+  announced a total that said nothing about the runs in it — rare until
+  `[A]` began preselecting runs whose pull request had merged, routine
+  after. The confirmation now reads `40 élément(s) · 4.1 Go + 37 de taille
+  inconnue`, and the post-purge recap `4.1 Go libérés + 37 de taille
+  inconnue`. The resources column has 38 cells at its narrowest and cannot
+  hold that clause, so its title states the bound it can write whole —
+  `cochés ≥ 4.1 Go`. Each of the three asks `clean::all_sizeless` itself —
+  that rule predates this change, from #41 — and what this one adds beside
+  it is the pair that shapes the mixed case: `sizeless_tail` for the first
+  two, `at_least_size` for the title.
+- **The CLI reference is held to the binary's own `--help`** (#61).
+  `docs/cli.md` opens on a claim about its own provenance — every flag below
+  is taken from what the binary prints — and nothing checked it. It had been
+  false: the `clean --help` block dropped the second sentence of four flag
+  descriptions, the sentences carrying the guarantees that a package version
+  has no size GitHub will state, that a live branch is never taken in bulk,
+  that a tag is never preselected, that a release itself is never deleted.
+  That one was corrected by hand in rc.3.
+  `docs_cli_md_quotes_the_binarys_own_help` now runs the binary and compares
+  every quoted **help** block — those holding a `Usage: bondebarras` line,
+  and it fails unless they are exactly the four screens it names — against
+  that screen's output, line by line. It found a drift of its own on the
+  first run: the synopsis block wrapped `update`'s description over three
+  lines by hand, a shape no terminal ever produced. A companion test pins
+  the premise the comparison rests on —
+  `the_quoted_help_is_the_same_at_any_terminal_width` — because clap without
+  `wrap_help` is width-invariant, and the day that stops being true the
+  guard should say so rather than quietly compare against the wrong
+  rendering.
+- **The seven-day rule reaches the page a TUI user reads** (#52, #59). The
+  README and the billing guide both carried GitHub's rule — any cache entry
+  unread for more than seven days is deleted, whatever limit is configured —
+  but the TUI guide did not, and the interface itself states it only on the
+  over-threshold warning. It therefore never reached the repositories that
+  stay under the threshold, which are exactly the ones for whom it explains
+  why a cache vanished on its own. It is in [the TUI guide](docs/tui.md)
+  now, derived from the code that draws the gauge. The Billing tab's order
+  of degradation — what goes first when the terminal is too short, which is
+  what tells a reader that an absence is not a zero — came back into [the
+  billing guide](docs/billing.md), with the measured example that had
+  survived only in a test fixture and this file.
 - **Windows is tested, and `update` knows how to serve it** (#55). Windows was
   the only one of the three platforms `CLAUDE.md` promises that nothing
   verified and that `update` could not serve. CI now runs the test matrix on
@@ -90,6 +167,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   arm into « Votre bondebarras est déjà à jour ». Each is pinned now, and the
   page cites the tests. Nix stays unpinned on purpose: its message names no
   command at all, only the reader's own flake input or channel.
+- **A release no longer renders a recipe with `sed`, nor checksums an empty
+  stream** (#35). In a `sed` replacement `&` means the matched text and `|`
+  ends the command, and git accepts both in a tag name: the `url` line came
+  out wrong with the job still green. Both recipes are rendered line by line
+  now, the substituted value never being reinterpreted, rather than escaping
+  every metacharacter of every `sed`. And the release-asset render had neither
+  `shell: bash` nor `pipefail`, so a failing `curl` left `sha256sum` reading
+  an empty stream and producing a perfectly well-formed checksum — the one for
+  zero bytes — which shipped in both recipes with the job green. The `winget`
+  job carried that same defect in its `InstallerSha256`, and is closed the
+  same way. Nothing re-read the rendered recipes either: the two substituted
+  fields are now compared exactly *and* counted, and the result passed through
+  `ruby -c` (`bash -n` for the `PKGBUILD`). The two checks catch each other's
+  blind spot — a reindented template yields a formula with its placeholder
+  intact, which is valid Ruby; a tag carrying a quote closes the string while
+  both fields still match.
+
+### Security
+
+- **A tag name can no longer inject code into a rendered recipe** (#35,
+  review). Git accepts in a tag name everything it does not refuse by name,
+  so backticks, `$`, `;`, quotes and `#{…}` are all legal. A tag
+  `v1.0.0#{…}` rendered a formula whose `url` line `grep -cxF` counted and
+  `ruby -c` validated — and which Ruby interpolates when `brew` evaluates it,
+  on the reader's own machine; a tag `v1.0.0;id` rendered a `pkgver=1.0.0;id`
+  that `bash -n` accepts and `makepkg` runs. Escaping per destination was
+  refused as a fix: these values land in Ruby, in shell and in YAML, and the
+  next destination added would start out uncovered. The tag name is
+  constrained on the way in instead, before anything is rendered, to the shape
+  this project actually uses — `v<major>.<minor>.<patch>`, optional
+  `-<pre-release>`, no build metadata — in all three jobs that substitute it.
+  Anything else fails the job loudly and renders nothing. It also makes the
+  pre-release test the workflow already relied on ("the tag contains a `-`")
+  exact rather than approximate.
+- **A missing `ruby` now fails the release instead of waving the formula
+  through** (#35, review). The formula's syntax check sat behind
+  `command -v ruby`, whose else-branch printed a note on stdout and left
+  `fautes=0`: on a runner without ruby, an invalid formula would have gone out
+  green, and been proposed for merge into the file `brew install` serves. A
+  check that silently becomes a non-gesture is worse than no check — it
+  manufactures the confidence that someone looked. The `PKGBUILD` never had
+  the defect: its `bash -n` runs under the bash already executing the step and
+  cannot be missing.
 
 ## [1.0.0-rc.3] - 2026-09-20
 
