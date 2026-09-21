@@ -35,6 +35,39 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
+      # Pas de linter ni de formateur Markdown ici, et ce n'est pas un oubli.
+      # `docs/cli.md` cite les quatre écrans d'aide du binaire mot pour mot,
+      # et `docs_cli_md_quotes_the_binarys_own_help` les compare ligne à ligne
+      # à ce que `bondebarras --help` imprime. Ces blocs portent des lignes
+      # trop longues pour survivre à un repli de prose, et ce n'est pas la
+      # page qui choisit leur longueur : clap ne replie pas sa sortie, faute
+      # d'activer `wrap_help`. Le garde-fou
+      # `the_quoted_help_is_the_same_at_any_terminal_width` ne prouve pas
+      # l'absence de ce drapeau — il en constate la conséquence, la seule qui
+      # compte ici : `--help` rend exactement la même chose à 40 comme à 400
+      # colonnes. La page ne peut donc pas replier ce que le binaire ne replie
+      # pas, sans cesser d'être ce qu'elle dit être. Un formateur à repli de
+      # prose (prettier et son `--prose-wrap`, ou équivalent) replierait ces
+      # blocs et rendrait ce test rouge sans que l'auteur puisse comprendre
+      # pourquoi : il comparerait une page repliée à un binaire qui, lui, ne
+      # replie rien.
+      #
+      # Aucun chiffre ici, et c'est délibéré : la longueur de la ligne la plus
+      # longue change à la prochaine réédition de `docs/cli.md`. Un test qui
+      # rougirait sur une modification parfaitement licite finit désactivé, et
+      # on aurait alors perdu et le test et l'avertissement. La propriété se
+      # suffit ; c'est `docs_cli_md_quotes_the_binarys_own_help` qui la fait
+      # respecter, en comparant la page au binaire plutôt qu'à un gabarit.
+      #
+      # Un linter qui ne replie rien pose le problème plus petit : markdownlint
+      # signale ces lignes (MD013) sans pouvoir les corriger, puisque les
+      # raccourcir reviendrait à mentir sur ce qu'imprime le binaire.
+      #
+      # Si un linter Markdown est ajouté un jour : qu'il épargne les blocs
+      # clôturés, ou qu'il épargne `docs/cli.md`, et que cette raison soit
+      # recopiée à l'endroit de l'exclusion pour qu'elle survive à qui l'a
+      # posée. La page a le droit d'être moins jolie que le linter le
+      # voudrait ; elle n'a pas le droit d'être fausse.
 
   test:
     name: test (${{ matrix.name }})
@@ -74,6 +107,18 @@ jobs:
         if: matrix.container == ''
         with:
           key: ${{ matrix.name }}
+      # Les garde-fous de documentation (#33) sont ici, et pas dans une étape
+      # à eux : recensement des pages qui nomment la release, plancher de
+      # hauteur de l'onglet Billing, liens et ancres relatifs. Ce sont des
+      # tests Rust, donc ils tombent dans la porte locale — `cargo test
+      # --workspace` — avant d'atteindre la CI, et l'auteur voit l'assertion
+      # plutôt qu'un journal de manche.
+      #
+      # Aucun ne touche au réseau : les liens externes ne sont délibérément
+      # pas suivis (la raison est écrite sur
+      # `every_relative_link_and_anchor_in_the_documentation_resolves`, dans
+      # `crates/bondebarras/tests/cli.rs`), pour qu'une panne chez un tiers ne
+      # puisse pas rougir une manche qu'on apprendrait alors à ignorer.
       - run: cargo test --workspace --locked
         env:
           # aws-lc-sys — tiré par le backend JWT d'octocrab, qui ne signe

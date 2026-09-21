@@ -2456,6 +2456,21 @@ mod tests {
             changelog.contains(&format!("needs {needed} rows")),
             "CHANGELOG.md does not say the measured floor of {needed} rows ({densest})"
         );
+        // `docs/billing.md` cites the floor twice — once as the figure, once
+        // as the shape it was measured on — and #33 found both held by
+        // nothing: the page explains how the measurement is taken while
+        // being the one document free to disagree with it. Both spellings
+        // are checked, so neither half can be left behind.
+        let page = include_str!("../../../../../docs/billing.md");
+        for claim in [
+            format!("from a {needed}-row terminal"),
+            format!("the {needed}-row floor"),
+        ] {
+            assert!(
+                page.contains(&claim),
+                "docs/billing.md does not say {claim:?}, the measured floor ({densest})"
+            );
+        }
 
         // And the measurement is true of the real render, not only of
         // `tab_lines`: at that height the densest tab is whole, and one row
