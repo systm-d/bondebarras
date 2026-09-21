@@ -14,6 +14,18 @@ on:
 permissions:
   contents: write
 
+# Deux exécutions d'un même tag ne se croisent plus : la seconde attend la
+# première, au lieu de lire « aucune pull request » en même temps qu'elle.
+# Le groupe porte la ref, pas le workflow : deux tags différents ont chacun
+# leur branche `homebrew/<tag>` et sont faits pour coexister (une v1.0.1 ne
+# doit pas attendre la v1.0.0), et un groupe partagé annulerait purement et
+# simplement la release restée en attente si un troisième tag arrivait —
+# perdre une release vaut moins cher à personne. `cancel-in-progress: false` :
+# une release en cours de publication ne s'interrompt pas.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 env:
   CARGO_TERM_COLOR: always
 
@@ -184,16 +196,80 @@ jobs:
           GH_REPO: ${{ github.repository }}
           TAG: ${{ github.ref_name }}
         run: |
+          # `pipefail` : sans lui, un `curl` en échec ne faisait rien échouer.
+          # `sha256sum` lisait alors un flux vide et en tirait une somme
+          # parfaitement bien formée — celle de zéro octet. Les deux recettes
+          # partaient en release avec ce checksum-là, et le job sortait vert.
+          set -euo pipefail
+
+          # Le nom de tag est contraint ici, avant tout rendu — plutôt
+          # qu'échappé destination par destination. `git` accepte dans un nom
+          # de tag tout ce qu'il ne refuse pas nommément (l'espace, `~^:?*[`,
+          # `\`) : il accepte donc `` ` ``, `$`, `;`, `"` et `#{}`. Un tag
+          # `v1.0.0#{...}` rend une ligne `url` que `grep -cxF` compte, que
+          # `ruby -c` valide — et que Ruby interpole à l'évaluation, c'est-à-
+          # dire chez l'utilisateur qui lance `brew install` ; un tag
+          # `v1.0.0;id` rend un `pkgver=1.0.0;id` que `bash -n` accepte et que
+          # `makepkg` exécute. Ces valeurs partent dans du Ruby, du shell et
+          # (côté winget) du YAML : échapper pour l'une laisserait la suivante
+          # découverte, et la prochaine destination ajoutée avec elle.
+          # La forme retenue est celle que ce dépôt emploie réellement — `v`
+          # suivi d'un SemVer, sans métadonnée de build : `v1.0.0`,
+          # `v1.0.0-rc.3`. Elle rend par la même occasion exact le critère de
+          # préversion employé plus bas (« le tag contient un `-` ») : avec
+          # cette forme, un `-` ne peut plus être autre chose.
+          if ! printf '%s' "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+            echo "::error::nom de tag refusé : « ${TAG} ». Forme attendue : v<majeur>.<mineur>.<correctif>, préversion facultative (v1.0.0, v1.0.0-rc.3). Rien n'a été rendu."
+            exit 1
+          fi
+
           version="${TAG#v}"
           url="https://github.com/${GH_REPO}/archive/refs/tags/${TAG}.tar.gz"
           sha=$(curl -fsSL "$url" | sha256sum | cut -d' ' -f1)
 
+          # Rendu ligne à ligne plutôt qu'avec `sed` : dans un remplacement
+          # `sed`, `&` désigne le texte trouvé et le séparateur `|` termine la
+          # commande — or `git` accepte l'un comme l'autre dans un nom de tag
+          # (il ne refuse que l'espace, `~^:?*[` et `\`). Échapper demanderait
+          # de prévoir chaque métacaractère de chaque `sed` ; ici la valeur
+          # substituée n'est jamais réinterprétée, il n'y a rien à prévoir.
           if [ -f packaging/homebrew/bondebarras.rb ]; then
-            sed \
-              -e "s|url \".*\"|url \"${url}\"|" \
-              -e "s|sha256 \"[0-9a-f]*\"|sha256 \"${sha}\"|" \
-              -e "/# Placeholder: release.yml/d" \
-              packaging/homebrew/bondebarras.rb > bondebarras.rb
+            while IFS= read -r ligne || [ -n "$ligne" ]; do
+              case "$ligne" in
+                *'# Placeholder: release.yml'*) ;;
+                '  url "'*)    printf '  url "%s"\n' "$url" ;;
+                '  sha256 "'*) printf '  sha256 "%s"\n' "$sha" ;;
+                *)             printf '%s\n' "$ligne" ;;
+              esac
+            done < packaging/homebrew/bondebarras.rb > bondebarras.rb
+
+            # Contrôle de ce qui a été rendu, avant de l'attacher à la release.
+            # Les champs sont comparés à l'identique *et* comptés — un gabarit
+            # réindenté sortirait une formule au placeholder intact, du Ruby
+            # parfaitement valide, donc invisible pour `ruby -c` ; `ruby -c`
+            # rattrape le cas inverse, celui d'un tag portant un guillemet, qui
+            # ferme la chaîne alors que les deux champs restent conformes.
+            fautes=0
+            [ "$(grep -cxF "  url \"${url}\"" bondebarras.rb)" = 1 ] \
+              || { echo "::error::formule : ligne url absente, fausse ou en double"; fautes=1; }
+            [ "$(grep -cxF "  sha256 \"${sha}\"" bondebarras.rb)" = 1 ] \
+              || { echo "::error::formule : ligne sha256 absente, fausse ou en double"; fautes=1; }
+            [ "$(grep -cF 'Placeholder: release.yml' bondebarras.rb)" = 0 ] \
+              || { echo "::error::formule : commentaire Placeholder resté en place"; fautes=1; }
+            # `ruby` absent fait échouer le job, il ne rend pas la main à un
+            # `fautes=0`. Un contrôle qui s'éteint en silence est pire que pas
+            # de contrôle : il fabrique la confiance qu'une formule a été
+            # relue. Le PKGBUILD n'a pas ce défaut — `bash -n` tourne sous le
+            # bash qui exécute déjà cette étape, il ne peut pas manquer.
+            if command -v ruby > /dev/null; then
+              ruby -c bondebarras.rb > /dev/null \
+                || { echo "::error::formule : rejetée par ruby -c"; fautes=1; }
+            else
+              echo "::error::formule : ruby absent de ce runner — la syntaxe ne peut pas être contrôlée, et une formule non contrôlée ne part pas en release."
+              fautes=1
+            fi
+            [ "$fautes" = 0 ] || exit 1
+
             echo "Rendu bondebarras.rb pour ${TAG} (sha256 ${sha}) :"
             cat bondebarras.rb
           else
@@ -201,12 +277,25 @@ jobs:
           fi
 
           if [ -f packaging/aur/PKGBUILD ]; then
-            sed \
-              -e "s|^pkgver=.*|pkgver=${version}|" \
-              -e "s|^sha256sums=('[0-9a-f]*')|sha256sums=('${sha}')|" \
-              -e "/# Fill with the real checksum/d" \
-              -e "/# release tarball's sha256/d" \
-              packaging/aur/PKGBUILD > PKGBUILD
+            while IFS= read -r ligne || [ -n "$ligne" ]; do
+              case "$ligne" in
+                *'# Fill with the real checksum'* | *"# release tarball's sha256"*) ;;
+                'pkgver='*)       printf 'pkgver=%s\n' "$version" ;;
+                "sha256sums=('"*) printf "sha256sums=('%s')\n" "$sha" ;;
+                *)                printf '%s\n' "$ligne" ;;
+              esac
+            done < packaging/aur/PKGBUILD > PKGBUILD
+
+            # Mêmes contrôles, transposés : `bash -n` est au PKGBUILD ce que
+            # `ruby -c` est à la formule.
+            fautes=0
+            [ "$(grep -cxF "pkgver=${version}" PKGBUILD)" = 1 ] \
+              || { echo "::error::PKGBUILD : ligne pkgver absente, fausse ou en double"; fautes=1; }
+            [ "$(grep -cxF "sha256sums=('${sha}')" PKGBUILD)" = 1 ] \
+              || { echo "::error::PKGBUILD : ligne sha256sums absente, fausse ou en double"; fautes=1; }
+            bash -n PKGBUILD || { echo "::error::PKGBUILD : rejeté par bash -n"; fautes=1; }
+            [ "$fautes" = 0 ] || exit 1
+
             echo "Rendu PKGBUILD pour ${TAG} (sha256 ${sha}) :"
             cat PKGBUILD
           else
@@ -227,52 +316,224 @@ jobs:
           prerelease: ${{ contains(github.ref_name, '-') }}
 
   # ---------------------------------------------------------------------------
-  # Homebrew (macOS) : rend Formula/bondebarras.rb sur la branche par défaut à
-  # partir du gabarit packaging/homebrew/bondebarras.rb (source de vérité unique,
-  # même sed que le rendu de l'asset de release ci-dessus). Installation
-  # côté utilisateur :
+  # Homebrew (macOS) : ce dépôt est son propre tap. Installation côté
+  # utilisateur :
   #   brew tap systm-d/bondebarras https://github.com/systm-d/bondebarras
   #   brew install bondebarras
+  # `brew` lit donc Formula/bondebarras.rb sur la branche par défaut de ce
+  # dépôt-ci — laquelle n'accepte aucune poussée directe (règle « main
+  # protégée », sans acteur de dérogation). Le job rend la formule à partir du
+  # gabarit packaging/homebrew/bondebarras.rb (source de vérité unique, rendu
+  # ligne à ligne, au caractère près comme l'asset de release ci-dessus) et
+  # l'ouvre en pull request : une release qui part de travers propose une
+  # modification relisible, au lieu d'écrire sans relecture ni recours dans le
+  # fichier que `brew install` sert.
+  # Et il ne défait aucun geste humain : il ne réécrit pas une branche qu'il
+  # pourrait ne pas avoir laissée telle quelle, et ne rouvre pas une pull
+  # request qu'on a fermée sans la fusionner. Ce job tourne sans surveillance,
+  # après publication — personne n'est là pour rattraper ce qu'il écrase.
   # ---------------------------------------------------------------------------
   homebrew:
-    name: Mettre à jour la formule Homebrew
+    name: Proposer la mise à jour de la formule Homebrew
     needs: release
     runs-on: ubuntu-latest
     # Jamais sur une préversion (même critère que la release : un `-` dans le
-    # tag) : commiter une release candidate dans Formula/ la servirait comme
-    # version stable à tout `brew install bondebarras`.
+    # tag) : proposer une release candidate dans Formula/ la servirait, une
+    # fois la pull request fusionnée, comme version stable à tout
+    # `brew install bondebarras`.
     if: startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-')
+    # Le tap étant ce dépôt-ci, le GITHUB_TOKEN du job suffit : aucun jeton
+    # personnel à créer ni à faire tourner. `contents: write` pousse la
+    # branche, `pull-requests: write` ouvre la pull request — les permissions
+    # par défaut du dépôt étant en lecture seule, ce bloc est ce qui les
+    # accorde.
     permissions:
       contents: write
+      pull-requests: write
     steps:
       - uses: actions/checkout@v7
         with:
           ref: main
           fetch-depth: 0
 
-      - name: Mettre à jour la formule
+      - name: Ouvrir la pull request de mise à jour de la formule
         env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
           TAG: ${{ github.ref_name }}
         run: |
+          set -euo pipefail
+
+          # Même contrainte, au caractère près, qu'au rendu de l'asset de
+          # release ci-dessus — et pour la même raison, détaillée là-haut :
+          # un nom de tag que `git` accepte peut porter du Ruby (`#{...}`)
+          # qui s'interpole chez qui lance `brew install`. On contraint
+          # l'entrée une fois, avant tout rendu, plutôt que d'échapper à
+          # chaque sortie.
+          if ! printf '%s' "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+            echo "::error::nom de tag refusé : « ${TAG} ». Forme attendue : v<majeur>.<mineur>.<correctif>, préversion facultative (v1.0.0, v1.0.0-rc.3). Rien n'a été rendu, rien n'a été poussé."
+            exit 1
+          fi
+
           if [ ! -f packaging/homebrew/bondebarras.rb ]; then
             echo "packaging/homebrew/bondebarras.rb absent sur main (branche pas encore mergée) — étape ignorée."
             exit 0
           fi
+
           version="${TAG#v}"
           url="https://github.com/${GH_REPO}/archive/refs/tags/${TAG}.tar.gz"
           sha=$(curl -fsSL "$url" | sha256sum | cut -d' ' -f1)
+
+          # Rendu ligne à ligne, jamais `sed` : dans un remplacement `sed`, `&`
+          # désigne le texte trouvé et le séparateur `|` termine la commande —
+          # or `git` accepte l'un comme l'autre dans un nom de tag. Le même
+          # rendu, au caractère près, que l'asset de release ci-dessus.
           mkdir -p Formula
-          sed \
-            -e "s|url \".*\"|url \"${url}\"|" \
-            -e "s|sha256 \"[0-9a-f]*\"|sha256 \"${sha}\"|" \
-            -e "/# Placeholder: release.yml/d" \
-            packaging/homebrew/bondebarras.rb > Formula/bondebarras.rb
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add Formula/bondebarras.rb
-          git commit -m "homebrew: bondebarras ${version}" || { echo "Formule déjà à jour"; exit 0; }
-          git push
+          while IFS= read -r ligne || [ -n "$ligne" ]; do
+            case "$ligne" in
+              *'# Placeholder: release.yml'*) ;;
+              '  url "'*)    printf '  url "%s"\n' "$url" ;;
+              '  sha256 "'*) printf '  sha256 "%s"\n' "$sha" ;;
+              *)             printf '%s\n' "$ligne" ;;
+            esac
+          done < packaging/homebrew/bondebarras.rb > Formula/bondebarras.rb
+
+          # Personne ne relit cette formule entre son rendu et la pull request :
+          # ce contrôle est le seul. Les champs sont comparés à l'identique *et*
+          # comptés — un gabarit réindenté sortirait une formule au placeholder
+          # intact, du Ruby parfaitement valide, donc invisible pour `ruby -c` ;
+          # `ruby -c` rattrape le cas inverse, celui d'un tag portant un
+          # guillemet, qui ferme la chaîne alors que les champs restent
+          # conformes.
+          fautes=0
+          [ "$(grep -cxF "  url \"${url}\"" Formula/bondebarras.rb)" = 1 ] \
+            || { echo "::error::formule : ligne url absente, fausse ou en double"; fautes=1; }
+          [ "$(grep -cxF "  sha256 \"${sha}\"" Formula/bondebarras.rb)" = 1 ] \
+            || { echo "::error::formule : ligne sha256 absente, fausse ou en double"; fautes=1; }
+          [ "$(grep -cF 'Placeholder: release.yml' Formula/bondebarras.rb)" = 0 ] \
+            || { echo "::error::formule : commentaire Placeholder resté en place"; fautes=1; }
+          # `ruby` absent fait échouer le job. Ce contrôle est le seul à voir
+          # la formule avant qu'un relecteur la voie : s'il ne tourne pas, il
+          # ne doit pas se lire comme s'il avait tourné.
+          if command -v ruby > /dev/null; then
+            ruby -c Formula/bondebarras.rb > /dev/null \
+              || { echo "::error::formule : rejetée par ruby -c"; fautes=1; }
+          else
+            echo "::error::formule : ruby absent de ce runner — la syntaxe ne peut pas être contrôlée, et une formule non contrôlée ne part pas en pull request."
+            fautes=1
+          fi
+          [ "$fautes" = 0 ] || { echo "::error::formule rendue invalide — rien ne sera proposé."; exit 1; }
+
+          echo "Formule rendue pour ${TAG} (sha256 ${sha}) :"
+          cat Formula/bondebarras.rb
+
+          # `git status` plutôt que `git diff` : aujourd'hui Formula/ n'existe
+          # pas sur main (#21), la formule rendue y est donc un fichier non
+          # suivi — invisible pour `git diff`, qui conclurait à tort « déjà à
+          # jour » et ne proposerait jamais la première formule.
+          if [ -z "$(git status --porcelain -- Formula/bondebarras.rb)" ]; then
+            echo "Formule identique à celle de main — aucune pull request à ouvrir."
+            exit 0
+          fi
+
+          # Une branche par tag, jamais une branche fixe : si une v1.0.1 sort
+          # avant que la pull request de la v1.0.0 soit fusionnée, les deux
+          # doivent coexister. Sur une branche partagée, la seconde release
+          # réécrirait la première — y compris la pull request restée ouverte,
+          # dont le contenu changerait sous les yeux du relecteur.
+          branch="homebrew/${TAG}"
+
+          # Ce qu'un humain a déjà décidé de ce tag prime sur toute relance.
+          # `--state all`, jamais `--state open` : une pull request fermée sans
+          # fusion est un refus, et `--state open` ne la voit pas — la relance
+          # en rouvrait donc une seconde, après qu'on eut dit non. Pas de
+          # `|| true` non plus : si `gh` ne répond pas, on ne sait rien, et ne
+          # rien savoir ne doit jamais se lire « aucune pull request ».
+          etats=$(gh pr list --head "$branch" --state all --limit 100 \
+            --json state,url --jq '.[] | "\(.state) \(.url)"')
+          ouverte=$(printf '%s\n' "$etats" | grep -m1 '^OPEN ' || true)
+          fusionnee=$(printf '%s\n' "$etats" | grep -m1 '^MERGED ' || true)
+          fermee=$(printf '%s\n' "$etats" | grep -m1 '^CLOSED ' || true)
+
+          if [ -n "$ouverte" ]; then
+            echo "Pull request déjà ouverte pour ${branch} : ${ouverte#* } — rien à rouvrir, et rien à pousser sur sa branche : un relecteur la lit peut-être en ce moment."
+            exit 0
+          fi
+
+          if [ -n "$fusionnee" ]; then
+            echo "Pull request déjà fusionnée pour ${branch} : ${fusionnee#* } — rien à proposer."
+            exit 0
+          fi
+
+          if [ -n "$fermee" ]; then
+            # Un refus humain ne se contourne pas — et ne se tait pas non plus.
+            # La release est publiée depuis longtemps quand ce job tourne : ce
+            # rouge n'annule rien, il est seulement la trace visible que le tap
+            # n'a pas bougé. Rouvrir une seconde pull request, elle, annulerait
+            # le refus sans que personne ne l'apprenne.
+            echo "::error::${fermee#* } a été fermée sans fusion : la formule de ${TAG} a déjà été refusée. Ce job n'en rouvre pas une seconde. Pour la faire passer malgré tout, rouvrir cette pull request, ou en ouvrir une à la main depuis ${branch}."
+            exit 1
+          fi
+
+          # Aucune pull request pour ce tag ; la branche, elle, peut déjà
+          # exister — un `gh pr create` a pu échouer après la poussée. Elle
+          # n'est jamais réécrite pour autant : ni `git push --force`, qui
+          # effacerait une correction poussée à la main, ni un push simple. Le
+          # seul test qui sépare « notre branche, intacte » de « une branche
+          # qu'on a reprise » est son contenu — `git commit --amend` conserve
+          # l'auteur du bot, l'auteur ne prouve donc rien.
+          if git ls-remote --exit-code --heads origin "$branch" > /dev/null 2>&1; then
+            git fetch --no-tags -q origin "+refs/heads/${branch}:refs/remotes/origin/${branch}"
+            distante="${RUNNER_TEMP}/formule-distante.rb"
+            git show "refs/remotes/origin/${branch}:Formula/bondebarras.rb" > "$distante" 2>/dev/null \
+              || : > "$distante"
+            if cmp -s "$distante" Formula/bondebarras.rb; then
+              echo "Branche ${branch} déjà poussée, et déjà porteuse de cette formule au caractère près — rien à pousser ; on reprend à l'ouverture de la pull request."
+            else
+              echo "::error::La branche ${branch} existe, ne porte pas la formule rendue ici, et n'a aucune pull request. Ce job ne réécrit pas une branche dont il ne peut pas prouver qu'il l'a laissée telle quelle. Comparer Formula/bondebarras.rb sur ${branch} avec la formule journalisée ci-dessus, puis ouvrir la pull request à la main — ou supprimer la branche s'il ne s'agit que d'un reliquat, et relancer ce job."
+              exit 1
+            fi
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git switch -c "$branch"
+            git add Formula/bondebarras.rb
+            git commit -m "homebrew: bondebarras ${version}"
+            git push origin "$branch"
+          fi
+
+          body="${RUNNER_TEMP}/homebrew-pr-body.md"
+          cat > "$body" <<EOF
+          Formule rendue pour le tag \`${TAG}\` à partir de
+          \`packaging/homebrew/bondebarras.rb\`, avec l'URL et la somme sha256 de
+          l'archive source de ce tag.
+
+          | | |
+          |---|---|
+          | version | \`${version}\` |
+          | archive | ${url} |
+          | sha256 | \`${sha}\` |
+
+          Ouverte par le job \`homebrew\` de \`.github/workflows/release.yml\`. La
+          fusion reste une décision humaine : c'est ce fichier que
+          \`brew install bondebarras\` sert.
+
+          **Les contrôles requis ne démarreront pas seuls.** GitHub ne déclenche
+          aucun workflow sur une pull request ouverte avec \`GITHUB_TOKEN\`. Pour
+          les obtenir : fermer puis rouvrir cette pull request, ou lancer le
+          workflow \`CI\` à la main sur la branche \`${branch}\`.
+          EOF
+
+          # Échec bruyant assumé : la release elle-même est déjà publiée (ce job
+          # en dépend), il n'y a donc rien à rétracter ici. Sortir en succès
+          # laisserait seulement invisible le fait que le tap n'a pas bougé — et
+          # `brew install` continuerait à servir la version précédente sans que
+          # personne l'apprenne.
+          gh pr create \
+            --base main \
+            --head "$branch" \
+            --title "homebrew : bondebarras ${version}" \
+            --body-file "$body"
 
   # ---------------------------------------------------------------------------
   # winget (Windows) : génère les manifestes pointant sur le .exe autonome.
@@ -294,6 +555,21 @@ jobs:
           GH_REPO: ${{ github.repository }}
           TAG: ${{ github.ref_name }}
         run: |
+          # `pipefail` manquait ici comme il manquait au rendu de l'asset de
+          # release : un `curl` en échec laissait `sha256sum` lire un flux
+          # vide et en tirer une somme parfaitement bien formée, celle de zéro
+          # octet, qui partait dans `InstallerSha256`.
+          set -euo pipefail
+
+          # Même contrainte de nom de tag qu'aux deux rendus ci-dessus : ici
+          # la valeur part dans du YAML et dans une URL de téléchargement.
+          # C'est la troisième destination, et la raison de contraindre
+          # l'entrée plutôt que d'échapper chaque sortie.
+          if ! printf '%s' "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+            echo "::error::nom de tag refusé : « ${TAG} ». Forme attendue : v<majeur>.<mineur>.<correctif>, préversion facultative (v1.0.0, v1.0.0-rc.3). Aucun manifeste n'a été généré."
+            exit 1
+          fi
+
           version="${TAG#v}"
           url="https://github.com/${GH_REPO}/releases/download/${TAG}/bondebarras-windows-x86_64.exe"
           sha=$(curl -fsSL "$url" | sha256sum | cut -d' ' -f1 | tr 'a-f' 'A-F')

@@ -322,7 +322,9 @@ clippy `all = { level = "warn", priority = -1 }`.
 ### 9.3 Packaging
 
 `packaging/homebrew/bondebarras.rb`, `packaging/aur/PKGBUILD`,
-`packaging/winget/README.md`, `Formula/bondebarras.rb` (rendu par la CI sur `main`).
+`packaging/winget/README.md`, `Formula/bondebarras.rb` (retiré du dépôt jusqu'à la
+première stable, #21 ; la CI le propose alors en pull request contre `main` — elle
+n'y pousse pas, `main` étant protégée sans dérogation, #35).
 
 ### 9.4 Landing page
 

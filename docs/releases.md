@@ -10,9 +10,22 @@ Where to get each artifact, and how to verify it, is in
 
 ## Stable releases and pre-releases
 
-A release is produced by pushing a tag matching `v*`. **The tag itself decides
-whether the release is a pre-release: one containing a `-` is published as
-such.**
+A release is produced by pushing a tag named `v` followed by a version —
+`v<major>.<minor>.<patch>`, with an optional `-<pre-release>` suffix.
+**The tag itself decides whether the release is a pre-release: one containing
+a `-` is published as such.**
+
+**A tag of any other shape fails the release, loudly, before a single file is
+rendered.** Git accepts far more in a tag name than this project has ever used
+— backticks, `$(…)`, `;`, quotes, `#{…}` — and the workflow substitutes the tag
+into a Ruby formula, a shell `PKGBUILD` and a set of YAML manifests. A `#{…}`
+reaching the formula's `url` line passes every field check and `ruby -c`, then
+gets interpolated by Ruby on the machine running `brew install`. So the tag
+name is constrained once, on the way in, rather than escaped once per
+destination: escaping per destination leaves the next destination added
+uncovered. Build metadata (`v1.0.0+build.5`) is refused along with the rest —
+nothing downstream handles it, and `bondebarras update` drops it when comparing
+versions, so such a release could never be offered as an upgrade anyway.
 
 | Tag | GitHub status | Served as *Latest*? |
 | --- | --- | --- |
@@ -23,8 +36,9 @@ such.**
 This one rule drives everything downstream: a pre-release tag is published with
 its binaries and packages, but the Homebrew and winget jobs are skipped, and
 `bondebarras update` — which reads GitHub's `releases/latest` — does not see
-it. That is deliberate. Committing a release candidate to the Homebrew tap
-would serve it as *the* stable version to every `brew install`.
+it. That is deliberate. A release candidate landing in the Homebrew tap would
+be served as *the* stable version to every `brew install` — so the job that
+proposes the formula never runs on a pre-release tag at all.
 
 **Today there are two releases, `v1.0.0-rc.2` and `v1.0.0-rc.3`, and both
 are pre-releases.** No stable release has ever been published.
@@ -47,8 +61,14 @@ On every `v*` tag:
 
 On a **stable** tag only, two more steps run:
 
-- the Homebrew formula is committed to `Formula/bondebarras.rb` on the default
-  branch;
+- the Homebrew formula is rendered and **opened as a pull request** against the
+  default branch, adding `Formula/bondebarras.rb` — on a branch named after the
+  tag, so a second release never overwrites a pull request still open for the
+  first. Nothing is merged automatically. The rendered formula is checked
+  before it is proposed — the two substituted fields compared exactly, then
+  `ruby -c` — and a runner without `ruby` fails the job instead of skipping
+  the check, because nothing else reads that file between its rendering and
+  the pull request;
 - winget manifests are generated and attached as `winget-manifests.tar.gz`.
 
 Publication to crates.io is opt-in: it runs only when the repository variable
@@ -106,7 +126,7 @@ Verification commands for a manual download are in
 
 | Channel | Policy | State today |
 | --- | --- | --- |
-| **Homebrew** | The formula is rendered from `packaging/homebrew/bondebarras.rb` and committed to the default branch — **on a stable tag only** | Planned. `brew install bondebarras` does not work yet |
+| **Homebrew** | The formula is rendered from `packaging/homebrew/bondebarras.rb` and opened as a pull request against the default branch — **on a stable tag only**; merging it is a human decision | Planned. `brew install bondebarras` does not work yet |
 | **winget** | Manifests are generated and attached to the release — **on a stable tag only**. The *first* publication additionally requires a pull request to `microsoft/winget-pkgs` | Planned. `winget install bondebarras` does not work yet |
 | **AUR** | **No job exists**, and no package was ever submitted. A rendered `PKGBUILD` is attached to every release instead | Not published. `yay -S bondebarras` does not work, and never has |
 

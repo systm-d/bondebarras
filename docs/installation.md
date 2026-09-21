@@ -188,9 +188,10 @@ latest release. `bondebarras update` will correctly report such a build as
 Three commands you may expect **do not work today**, and bondebarras itself
 never suggests them:
 
-- **`brew install bondebarras`** — the formula is generated and committed only
-  on a *stable* tag. Committing a release candidate to the tap would serve it
-  as the stable version to everyone.
+- **`brew install bondebarras`** — the formula is generated only on a *stable*
+  tag, and **opened as a pull request** rather than committed; merging it is a
+  human decision. A release candidate landing in the tap would be served as the
+  stable version to everyone.
 - **`winget install bondebarras`** — the manifests are generated only on a
   stable tag, and the first publication additionally requires a pull request
   to `microsoft/winget-pkgs`.
