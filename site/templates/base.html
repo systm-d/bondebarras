@@ -17,7 +17,7 @@
   {% block content %}{% endblock %}
   <footer class="footer">
     <span>bondebarras · local-first · open source ·
-      <a href="{{ config.extra.repo_url }}">GitHub</a></span>
+      <a href="{{ config.extra.repo_url | safe }}">GitHub</a></span>
   </footer>
 </body>
 </html>

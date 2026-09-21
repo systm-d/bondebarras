@@ -17,3 +17,6 @@ description = "Auditez et nettoyez vos organisations GitHub depuis une seule int
 [extra]
 brand_color = "#d97757"
 repo_url = "https://github.com/systm-d/bondebarras"
+# The documentation lives in the repository, not on this site: the hero's
+# tertiary link and every "read more" below point at it.
+docs_url = "https://github.com/systm-d/bondebarras/blob/main/docs/README.md"
