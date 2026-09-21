@@ -80,9 +80,11 @@ is drawn only when the column has at least two inner lines.
 
 ### Column 3 — `RESSOURCES`
 
-The resources of the loaded repository, biggest first by default. At least 40
-cells wide whenever it shares the screen: this is the column deletion happens
-in, so it is never the one a narrow terminal squeezes or drops.
+The resources of the loaded repository, heaviest first by default — and the
+families GitHub states no size for gathered at the end, in a group of their
+own. At least 40 cells wide whenever it shares the screen: this is the column
+deletion happens in, so it is never the one a narrow terminal squeezes or
+drops.
 
 Its title counts what is listed and what is ticked:
 
@@ -241,8 +243,22 @@ nothing. Test: `an_org_key_that_moves_no_org_keeps_the_repository_tick`.
 
 Both act on the resources column only.
 
-- **`s`** cycles the sort: **size** (biggest first, the default — size is why
-  you are here), then **age** (oldest first), then **name**.
+- **`s`** cycles the sort: **size** (the default — size is why you are
+  here), then **age** (oldest first), then **name**.
+
+  Size orders what it can measure, heaviest first, and puts what it cannot at
+  the end rather than pretending. A workflow run, a package version, a branch
+  and a tag carry a placeholder zero, not a measurement (`api::runs::list`
+  writes it in as much); ranking them among the lightest rows would answer a
+  question nobody asked. They form a group at the end instead — last, not
+  first, because three hundred runs at the top would push the answer off
+  screen. A cache genuinely *measured* at zero sorts above them, where the
+  old tie on `Reverse(0)` used to bury it. Within each group the listing's
+  own order survives, so two renderings of the same screen agree.
+  `clean::size_rank` decides it, and both the TUI and the headless scan read
+  it. Tests: `a_measured_row_outranks_an_unmeasured_one_even_at_zero_bytes`,
+  `the_size_sort_ranks_measured_rows_and_lists_unmeasured_ones_after_them`,
+  `sorting_cycles_size_then_age_then_name`.
 - **`f`** opens the filter. It is a mode, deliberately: without one, the
   shortcut keys would shadow every character they use, and a cache key
   containing `s` or `d` would be untypeable. `Entrée` or `Esc` leaves the
