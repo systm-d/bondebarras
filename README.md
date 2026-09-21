@@ -209,6 +209,16 @@ quality gate every change must pass. Vulnerabilities go through
 Dual-licensed under **MIT OR Apache-2.0**, at your option — see
 [LICENSE-MIT](LICENSE-MIT) and [LICENSE-APACHE](LICENSE-APACHE).
 
+GitHub's repository sidebar reads **Other** rather than naming a licence.
+That is the honest answer, not a misconfiguration: its detector maps one
+file to one licence and has no way to say *either of these two, your
+choice*. Adding a single `LICENSE` file would fill the badge in — by
+asserting one licence where the project grants both. The release archives,
+the `.deb` and the `.rpm` all ship the two files together for the same
+reason: the choice belongs to whoever uses the tool, so both texts travel
+with it. `Cargo.toml` states `MIT OR Apache-2.0`, which is the declaration
+crates.io and `cargo` actually read.
+
 Copyright © 2026 Kevin Delfour / systm-d.
 
 [rc]: https://github.com/systm-d/bondebarras/releases/tag/v1.0.0-rc.3
