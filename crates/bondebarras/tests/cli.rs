@@ -590,9 +590,36 @@ fn resolve(page: &str, target: &str) -> Option<String> {
 /// downloaded zip as well. The cost is the honest one, and it is the smaller
 /// one: this list ages, and the day a tool writes somewhere new, somebody
 /// adds a line to it.
+/// The census and the link checker walk the tree with different rules, on
+/// purpose: the census freezes whole subtrees (`FROZEN`), the link checker
+/// skips tool directories by name at any depth (`vendor`, `node_modules`,
+/// …). Nothing made the two agree, and a page could fall between them — a
+/// `docs/vendor/guide.md` was required by the census and silently exempt
+/// from link checking, so a dead link in it went unseen while the suite
+/// stayed green.
+///
+/// This does not merge the two rules; they answer different questions. It
+/// makes their disagreement impossible to reach without being told: a page
+/// the census insists exists must also be one whose links are read.
+#[test]
+fn every_censused_page_is_also_link_checked() {
+    let root = repo_root();
+    let mut censused = markdown_in(&root, "docs");
+    censused.extend(markdown_in(&root, "site/content"));
+    let checked = all_markdown(&root);
+
+    let unread: Vec<&String> = censused.iter().filter(|p| !checked.contains(p)).collect();
+    assert!(
+        unread.is_empty(),
+        "the census requires {unread:?}, and the link checker never reads \
+         them — one of the two filters has to change, because a page that \
+         must exist and whose links nobody checks is the worst of both"
+    );
+}
+
 fn all_markdown(root: &Path) -> Vec<String> {
     const SKIPPED_NAMES: [&str; 4] = [".git", "target", "vendor", "node_modules"];
-    const SKIPPED_PATHS: [&str; 3] = [".worktrees", "site/public", "docs/audits"];
+    const SKIPPED_PATHS: [&str; 4] = [".worktrees", "site/public", "site/themes", "docs/audits"];
     markdown_below(root, "", |path, name| {
         SKIPPED_NAMES.contains(&name) || SKIPPED_PATHS.contains(&path)
     })
